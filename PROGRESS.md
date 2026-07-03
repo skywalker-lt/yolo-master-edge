@@ -18,10 +18,21 @@ writeup. Scoping decisions: **Jetson available**, **2nd format = NCNN (pnnx)**,
 | 2b. CUDA inference (ORT CUDA-EP) | ✅ verified (mAP == CPU, −0.02 pt; 271 FPS H200) |
 | 2c. CUDA C++ binary vs PyTorch (548 imgs) | ✅ mAP50-95 −0.03% AND mAP50 −0.10%, both < 0.5% |
 | 3. C++ edge runners (ORT + NCNN) | ✅ v2 versatile runner; 16/16 robustness tests pass (x86_64) |
-| 4. CMake + pre-built binaries (x86_64 ✅ / Jetson aarch64 ⬜) | 🟡 x86_64 done |
-| 5. Benchmark (latency/FPS) | ⬜ |
-| 6. Writeup + deployment repo + optional examples/ PR | ⬜ |
-| (stretch) INT8, MNN, Windows | ⬜ deferred |
+| 4. CMake + pre-built binaries | 🟡 Linux x86_64 ✅ + **Windows 11 (VS2026/MSVC) ✅** ; Jetson aarch64 ⬜ (adapter shipping) |
+| — Deployment repo | ✅ github.com/skywalker-lt/yolo-master-edge (cross-platform CMake, models, scripts) |
+| 5. Benchmark (latency/FPS) | ✅ ONNX vs NCNN on Windows CPU + H200 CUDA (table below) |
+| 6. Writeup + deployment repo + optional examples/ PR | 🟡 repo ✅; writeup ⬜ |
+| (stretch) INT8, MNN | ⬜ INT8 findings logged (Orin TRT); MNN ⬜ |
+
+### Benchmark — format comparison (VisDrone val, 548 imgs, per-frame inference)
+| Platform | Backend | pre | infer | post | FPS | total dets |
+|---|---|---|---|---|---|---|
+| Windows 11 CPU | ONNX (ORT) | 1.6 ms | **37.6 ms** | 0.2 ms | **25.4** | 21934 |
+| Windows 11 CPU | NCNN (CPU) | 1.6 ms | **80.1 ms** | 0.2 ms | **12.2** | 21934 |
+| Linux H200 | ONNX CUDA (C++) | — | **7.8 ms** | — | **~128** | — |
+- ONNX **2.1x faster than ncnn on x86 CPU** (ORT is x86-tuned; ncnn's edge is ARM -> expect the flip on Orin).
+- Both formats emit **identical detections (21934 == 21934)** over the full set -> functional format parity, not just close mAP.
+- Practical no-Jetson deployment: **~25 FPS** (Windows ONNX CPU).
 
 ---
 
