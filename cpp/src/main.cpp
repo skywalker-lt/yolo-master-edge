@@ -1,4 +1,4 @@
-// yolomaster_edge — universal, adaptive YOLO-Master edge runner.
+// yolomaster_edge - universal, adaptive YOLO-Master edge runner.
 // Runtime model loading (no baked-in weights), backend/classes/imgsz auto-detected
 // from the model, versatile --source (image / dir / video / dataset.yaml).
 #include "yolomaster.hpp"

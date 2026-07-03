@@ -11,6 +11,13 @@ static double ms_since(const clk::time_point& t) {
     return std::chrono::duration<double, std::milli>(clk::now() - t).count();
 }
 
+// ORT takes the model path as wchar_t* on Windows, char* elsewhere (ORTCHAR_T).
+#ifdef _WIN32
+static std::wstring ort_path(const std::string& s) { return std::wstring(s.begin(), s.end()); }
+#else
+static const std::string& ort_path(const std::string& s) { return s; }
+#endif
+
 OrtBackend::OrtBackend(const std::string& model_path, int threads, const std::string& device)
     : env_(ORT_LOGGING_LEVEL_WARNING, "yolomaster") {
     opts_.SetIntraOpNumThreads(threads);
@@ -27,7 +34,7 @@ OrtBackend::OrtBackend(const std::string& model_path, int threads, const std::st
             active_ep = "CPU";
         }
     }
-    session_ = std::make_unique<Ort::Session>(env_, model_path.c_str(), opts_);
+    session_ = std::make_unique<Ort::Session>(env_, ort_path(model_path).c_str(), opts_);
 
     const size_t n_in = session_->GetInputCount();
     const size_t n_out = session_->GetOutputCount();

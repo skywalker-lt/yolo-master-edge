@@ -1,4 +1,4 @@
-// YOLO-Master edge inference — shared types & ops (backend/model-agnostic).
+// YOLO-Master edge inference - shared types & ops (backend/model-agnostic).
 #pragma once
 #include <string>
 #include <vector>
