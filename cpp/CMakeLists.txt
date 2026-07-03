@@ -71,7 +71,11 @@ target_compile_definitions(yolomaster_edge PRIVATE ${DEFS})
 if(WIN32)
   # copy backend DLLs next to the exe; OpenCV's opencv_world DLL: add its bin dir to PATH
   # (C:/dev/opencv/build/x64/vc16/bin) or it is auto-copied below if found.
-  file(GLOB OCV_DLLS "${OpenCV_DIR}/x64/*/bin/opencv_world*.dll")
+  # OpenCV DLL location depends on whether OpenCV_DIR = build/ or build/x64/vcNN/lib
+  file(GLOB OCV_DLLS
+    "${OpenCV_DIR}/x64/*/bin/opencv_world*.dll"   # OpenCV_DIR = <opencv>/build
+    "${OpenCV_DIR}/../bin/opencv_world*.dll"       # OpenCV_DIR = <opencv>/build/x64/vcNN/lib
+    "${OpenCV_DIR}/bin/opencv_world*.dll")
   foreach(dll ${RUNTIME_DLLS} ${OCV_DLLS})
     add_custom_command(TARGET yolomaster_edge POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll}" "$<TARGET_FILE_DIR:yolomaster_edge>"
