@@ -1,7 +1,6 @@
 // Shared, backend/model-agnostic ops: class tables, letterbox, decode+NMS,
 // drawing, model-metadata parsing, and versatile source resolution.
 #include "yolomaster.hpp"
-#include <opencv2/dnn.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -40,6 +39,34 @@ cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info) {
     cv::Mat out(imgsz, imgsz, img.type(), cv::Scalar(114, 114, 114));
     resized.copyTo(out(cv::Rect(info.pad_x, info.pad_y, nw, nh)));
     return out;
+}
+
+// greedy per-box NMS (score-descending, IoU suppression) — replaces
+// cv::dnn::NMSBoxes; identical semantics (keep is returned score-descending).
+static void nms_greedy(const std::vector<cv::Rect2d>& boxes, const std::vector<float>& scores,
+                       float conf, float iou_thr, std::vector<int>& keep) {
+    std::vector<int> order;
+    order.reserve(scores.size());
+    for (size_t i = 0; i < scores.size(); ++i)
+        if (scores[i] >= conf) order.push_back(static_cast<int>(i));
+    std::sort(order.begin(), order.end(), [&](int a, int b) { return scores[a] > scores[b]; });
+    std::vector<char> dead(boxes.size(), 0);
+    for (size_t m = 0; m < order.size(); ++m) {
+        const int i = order[m];
+        if (dead[i]) continue;
+        keep.push_back(i);
+        for (size_t n = m + 1; n < order.size(); ++n) {
+            const int j = order[n];
+            if (dead[j]) continue;
+            const double xx1 = std::max(boxes[i].x, boxes[j].x);
+            const double yy1 = std::max(boxes[i].y, boxes[j].y);
+            const double xx2 = std::min(boxes[i].x + boxes[i].width,  boxes[j].x + boxes[j].width);
+            const double yy2 = std::min(boxes[i].y + boxes[i].height, boxes[j].y + boxes[j].height);
+            const double inter = std::max(0.0, xx2 - xx1) * std::max(0.0, yy2 - yy1);
+            const double uni = boxes[i].area() + boxes[j].area() - inter;
+            if (uni > 0 && inter / uni > iou_thr) dead[j] = 1;
+        }
+    }
 }
 
 std::vector<Detection> decode(const float* out, int feat_dim, int num_anchors,
@@ -84,7 +111,7 @@ std::vector<Detection> decode(const float* out, int feat_dim, int num_anchors,
         const double OFF = 8192.0;   // > any VisDrone image dimension
         std::vector<cv::Rect2d> off = boxes;
         for (size_t k = 0; k < off.size(); ++k) { off[k].x += ids[k] * OFF; off[k].y += ids[k] * OFF; }
-        cv::dnn::NMSBoxes(off, scores, cfg.conf_thresh, cfg.iou_thresh, keep);
+        nms_greedy(off, scores, cfg.conf_thresh, cfg.iou_thresh, keep);
     }
     std::vector<Detection> dets;
     const cv::Rect2d frame(0, 0, lb.orig_w, lb.orig_h);
