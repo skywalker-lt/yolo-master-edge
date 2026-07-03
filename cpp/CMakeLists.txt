@@ -92,6 +92,7 @@ if(WIN32)
     "${OpenCV_DIR}/x64/*/bin/opencv_world*.dll"   # OpenCV_DIR = <opencv>/build
     "${OpenCV_DIR}/../bin/opencv_world*.dll"       # OpenCV_DIR = <opencv>/build/x64/vcNN/lib
     "${OpenCV_DIR}/bin/opencv_world*.dll")
+  list(FILTER OCV_DLLS EXCLUDE REGEX "[0-9]d\\.dll$")   # drop the ~60MB debug opencv_world*d.dll
   foreach(dll ${RUNTIME_DLLS} ${OCV_DLLS})
     add_custom_command(TARGET yolomaster_edge POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll}" "$<TARGET_FILE_DIR:yolomaster_edge>"
