@@ -1,0 +1,17 @@
+# platform-specific SDKs (install per platform: OpenCV / onnxruntime / ncnn)
+# NOTE: anchored to root so cpp/third_party/CLI11.hpp (needed to build) is kept
+/third_party/
+# build + runtime outputs
+cpp/build/
+runs_edge/
+preds_*/
+results/
+visdrone50/
+__pycache__/
+*.pyc
+# quantization intermediates + deferred INT8 experiments
+models/*.prep.onnx
+models/esmoe_n_visdrone.onnx
+models/*int8*.onnx
+# stray training run dirs
+v0.1-N-*/
