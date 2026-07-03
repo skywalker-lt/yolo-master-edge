@@ -15,3 +15,6 @@ models/esmoe_n_visdrone.onnx
 models/*int8*.onnx
 # stray training run dirs
 v0.1-N-*/
+
+# release bundles (distribute via GitHub Releases, not git)
+dist/

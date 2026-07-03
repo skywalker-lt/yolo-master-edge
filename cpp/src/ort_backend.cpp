@@ -1,5 +1,4 @@
 #include "ort_backend.hpp"
-#include <opencv2/dnn.hpp>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -69,10 +68,20 @@ std::vector<Detection> OrtBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     // ---- preprocess: letterbox -> NCHW float RGB /255 ----
     auto t0 = clk::now();
     LetterboxInfo lb;
-    cv::Mat padded = letterbox(bgr, cfg.imgsz, lb);
-    cv::Mat blob = cv::dnn::blobFromImage(padded, 1.0 / 255.0,
-                                          cv::Size(cfg.imgsz, cfg.imgsz),
-                                          cv::Scalar(), /*swapRB=*/true, /*crop=*/false, CV_32F);
+    cv::Mat padded = letterbox(bgr, cfg.imgsz, lb);   // imgsz x imgsz, CV_8UC3 BGR
+    // NCHW float RGB /255 (replaces cv::dnn::blobFromImage with swapRB=true)
+    const int sz = cfg.imgsz, hw = sz * sz;
+    std::vector<float> blob(3 * hw);
+    for (int y = 0; y < sz; ++y) {
+        const uint8_t* row = padded.ptr<uint8_t>(y);
+        for (int x = 0; x < sz; ++x) {
+            const uint8_t* px = row + x * 3;          // BGR
+            const int idx = y * sz + x;
+            blob[idx]          = px[2] * (1.0f / 255); // R
+            blob[hw + idx]     = px[1] * (1.0f / 255); // G
+            blob[2 * hw + idx] = px[0] * (1.0f / 255); // B
+        }
+    }
     pre_ms = ms_since(t0);
 
     // ---- inference ----
@@ -80,7 +89,7 @@ std::vector<Detection> OrtBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     std::array<int64_t, 4> in_shape{1, 3, cfg.imgsz, cfg.imgsz};
     Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
     Ort::Value in_tensor = Ort::Value::CreateTensor<float>(
-        mem, reinterpret_cast<float*>(blob.data), blob.total(),
+        mem, blob.data(), blob.size(),
         in_shape.data(), in_shape.size());
     auto outs = session_->Run(Ort::RunOptions{nullptr}, in_names_.data(), &in_tensor, 1,
                               out_names_.data(), out_names_.size());

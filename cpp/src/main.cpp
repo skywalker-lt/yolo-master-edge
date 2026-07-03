@@ -9,6 +9,8 @@
 #include "ncnn_backend.hpp"
 #endif
 #include "CLI11.hpp"
+#include "stb_image.h"
+#include "stb_image_write.h"
 
 #include <chrono>
 #include <filesystem>
@@ -21,6 +23,22 @@ namespace fs = std::filesystem;
 
 static bool ends_with(const std::string& s, const std::string& suf) {
     return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
+}
+
+// image I/O via stb (avoids OpenCV imgcodecs -> GDAL/DB/poppler dependency closure)
+static cv::Mat imread_bgr(const std::string& path) {
+    int w, h, n;
+    unsigned char* d = stbi_load(path.c_str(), &w, &h, &n, 3);   // force 3-channel RGB
+    if (!d) return cv::Mat();
+    cv::Mat bgr;
+    cv::cvtColor(cv::Mat(h, w, CV_8UC3, d), bgr, cv::COLOR_RGB2BGR);
+    stbi_image_free(d);
+    return bgr;
+}
+static bool imwrite_jpg(const std::string& path, const cv::Mat& bgr) {
+    cv::Mat rgb; cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
+    if (!rgb.isContinuous()) rgb = rgb.clone();
+    return stbi_write_jpg(path.c_str(), rgb.cols, rgb.rows, 3, rgb.data, 90) != 0;
 }
 
 int main(int argc, char** argv) {
@@ -132,7 +150,7 @@ int main(int argc, char** argv) {
         if (!no_save) {
             cv::Mat vis = img.clone();
             draw(vis, dets, cfg);
-            cv::imwrite((fs::path(outdir) / (fs::path(tag).stem().string() + ".jpg")).string(), vis);
+            imwrite_jpg((fs::path(outdir) / (fs::path(tag).stem().string() + ".jpg")).string(), vis);
         }
         if (!savetxt.empty()) {                       // 'class conf x1 y1 x2 y2' (pixel xyxy)
             std::ofstream f((fs::path(savetxt) / (fs::path(tag).stem().string() + ".txt")).string());
@@ -143,6 +161,7 @@ int main(int argc, char** argv) {
     };
 
     if (kind == SourceKind::Video) {
+#ifdef HAVE_VIDEOIO
         cv::VideoCapture cap(source);
         if (!cap.isOpened()) { std::cerr << "cannot open video: " << source << "\n"; return 4; }
         cv::Mat frame; long idx = 0;
@@ -151,10 +170,14 @@ int main(int argc, char** argv) {
             run_one(frame, source + "#" + std::to_string(idx));
             ++idx;
         }
+#else
+        std::cerr << "video source not supported in this portable build; use image/dir/dataset\n";
+        return 4;
+#endif
     } else {
         auto imgs = gather_images(source, limit);
         if (imgs.empty()) { std::cerr << "no inputs resolved from source: " << source << "\n"; return 4; }
-        for (const auto& p : imgs) run_one(cv::imread(p), p);
+        for (const auto& p : imgs) run_one(imread_bgr(p), p);
     }
 
     if (frames == 0) { std::cerr << "no frames processed\n"; return 5; }

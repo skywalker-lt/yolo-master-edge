@@ -7,7 +7,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-find_package(OpenCV REQUIRED)   # set -DOpenCV_DIR=C:/dev/opencv/build on Windows
+# PORTABLE=ON -> slim relocatable bundle: link only the OpenCV modules headless
+# image inference needs (drops videoio/highgui -> no FFmpeg/GStreamer/X11 closure).
+option(PORTABLE "Slim relocatable build: image inference only, minimal OpenCV deps" OFF)
+# image I/O via stb + hand-written NMS -> only need core+imgproc (no imgcodecs->GDAL,
+# no dnn->protobuf). Full build adds videoio for cv::VideoCapture (--source video).
+if(PORTABLE)
+  find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+else()
+  find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio)   # -DOpenCV_DIR=... on Windows
+endif()
 
 # SDK roots — override per platform:
 #   Linux : cmake -DONNXRUNTIME_ROOT=/path -DNCNN_ROOT=/path ..
@@ -18,10 +27,13 @@ set(NCNN_ROOT        "${CMAKE_SOURCE_DIR}/../third_party/ncnn"        CACHE PATH
 option(USE_ORT  "Build ONNXRuntime backend" ON)
 option(USE_NCNN "Build ncnn backend"        ON)
 
-set(SRC  src/common.cpp src/main.cpp)
+set(SRC  src/common.cpp src/main.cpp src/stb_impl.cpp)
 set(INCS include third_party ${OpenCV_INCLUDE_DIRS})
 set(LIBS ${OpenCV_LIBS})
 set(DEFS "")
+if(NOT PORTABLE)
+  list(APPEND DEFS HAVE_VIDEOIO)   # cv::VideoCapture (--source video) needs opencv_videoio
+endif()
 set(RPATH "")
 set(RUNTIME_DLLS "")   # Windows: DLLs to copy next to the .exe
 
@@ -69,6 +81,10 @@ target_link_libraries(yolomaster_edge PRIVATE ${LIBS})
 target_compile_definitions(yolomaster_edge PRIVATE ${DEFS})
 
 if(WIN32)
+  # bundle the MSVC runtime (VCRUNTIME140.dll etc.) so the exe needs no VC++ Redist on targets
+  set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP ON)
+  include(InstallRequiredSystemLibraries)
+  list(APPEND RUNTIME_DLLS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS})
   # copy backend DLLs next to the exe; OpenCV's opencv_world DLL: add its bin dir to PATH
   # (C:/dev/opencv/build/x64/vc16/bin) or it is auto-copied below if found.
   # OpenCV DLL location depends on whether OpenCV_DIR = build/ or build/x64/vcNN/lib
