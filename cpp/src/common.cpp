@@ -41,7 +41,7 @@ cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info) {
     return out;
 }
 
-// greedy per-box NMS (score-descending, IoU suppression) — replaces
+// greedy per-box NMS (score-descending, IoU suppression) - replaces
 // cv::dnn::NMSBoxes; identical semantics (keep is returned score-descending).
 static void nms_greedy(const std::vector<cv::Rect2d>& boxes, const std::vector<float>& scores,
                        float conf, float iou_thr, std::vector<int>& keep) {
