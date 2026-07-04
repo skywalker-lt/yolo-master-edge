@@ -83,7 +83,7 @@ MNN's offline quantizer (`mnnquant`) aborts immediately on this model — `std::
 
 ### 3.6 Where INT8 actually pays off
 
-On x86 CPU, INT8 is *slower* than FP32 for this operator mix — the QDQ/QOperator kernels don't engage INT8 SIMD paths that beat the well-tuned FP32 convolutions, and the FP32↔INT8 boundaries around the excluded blocks add conversion overhead. This is expected, not a defect: INT8's throughput win is a property of **INT8 tensor-core hardware** (TensorRT on Orin, NPUs), not of desktop CPUs. We therefore treat the ONNX INT8 result as the **accuracy proof** (−0.84%, in budget) and locate the **performance** validation on the TensorRT path (§8), where the same mixed-precision assignment maps onto tensor-core execution.
+On x86 CPU, INT8 is *slower* than FP32 — measured at **137 ms/frame vs 49 ms for FP32 on the same host, ~2.8× slower** (7.2 vs 19.5 FPS). The QDQ/QOperator kernels don't engage INT8 SIMD paths that beat the well-tuned FP32 convolutions, and the FP32↔INT8 boundaries around the excluded blocks add conversion overhead. This is expected, not a defect: INT8's throughput win is a property of **INT8 tensor-core hardware** (TensorRT on Orin, NPUs), not of desktop CPUs. We therefore treat the ONNX INT8 result as the **accuracy proof** (−0.84%, in budget) and locate the **performance** validation on the TensorRT path (§8), where the same mixed-precision assignment maps onto tensor-core execution.
 
 ## 4. The inference runtime
 
@@ -138,13 +138,14 @@ Per-frame inference, VisDrone val:
 | Linux CPU (4-thread) | ONNX (ORT) | 40.0 | 25.0 |
 | Linux CPU (4-thread) | **MNN** | 74.0 | 13.5 |
 | Linux CPU (4-thread) | NCNN | ~80 | ~12.5 |
+| Linux CPU (4-thread) | ONNX INT8 (mixed) | 137 | 7.2 |
 | Linux H200 | **ONNX CUDA (C++)** | 7.8 | **~128** |
 
-The ordering is consistent and explicable: **ORT is ~2× faster than MNN and NCNN on x86** because it is heavily x86/AVX-tuned, while MNN and NCNN are mobile/ARM-first runtimes — which is exactly why both are carried forward for the Orin, where that ranking is expected to invert. CUDA delivers a ~5× step over CPU. On x86 CPU no format beats ORT, so the "best export format" is platform-dependent, not absolute — the reason we ship three.
+The ordering is consistent and explicable: **ORT is ~2× faster than MNN and NCNN on x86** because it is heavily x86/AVX-tuned, while MNN and NCNN are mobile/ARM-first runtimes — which is exactly why both are carried forward for the Orin, where that ranking is expected to invert. CUDA delivers a ~5× step over CPU. **INT8 is the slowest CPU row (2.8× slower than FP32 ONNX), for the reasons in §3.6** — a reminder that INT8 is a *hardware*-dependent optimization, not a free win. On x86 CPU no format beats ORT, so the "best export format" is platform-dependent, not absolute — the reason we ship three.
 
 ## 7. Cross-platform builds and distribution
 
-A single cross-platform **CMake** builds and runs on two platforms today: **Linux x86_64** (with the ONNXRuntime CUDA EP; C++ CUDA mAP also < 0.5% vs PyTorch) and **Windows 11 x64** (VS 2026 / MSVC 19.5x). The Windows port surfaced three concrete portability issues, each fixed in the build system rather than worked around: `Ort::Session` takes `const wchar_t*` on Windows (a platform `ORTCHAR_T` shim); the prebuilt OpenCV config doesn't recognize the VS 2026 toolset and reports an empty runtime (point `OpenCV_DIR` at the concrete `vc16/lib` config); and the exe needs the MSVC runtime on clean targets (bundled via `InstallRequiredSystemLibraries`). Both platforms ship as **self-contained, relocatable bundles** — Linux 35 MB (`$ORIGIN`, 10 libs, verified isolated), Windows with its runtime bundled — installable by unzip.
+A single cross-platform **CMake** builds and runs on two platforms today: **Linux x86_64** (with the ONNXRuntime CUDA EP; C++ CUDA mAP50-95 = 0.2033, −0.03% vs PyTorch, at 7.8 ms/frame / ~128 FPS) and **Windows 11 x64** (VS 2026 / MSVC 19.5x). The Windows port surfaced three concrete portability issues, each fixed in the build system rather than worked around: `Ort::Session` takes `const wchar_t*` on Windows (a platform `ORTCHAR_T` shim); the prebuilt OpenCV config doesn't recognize the VS 2026 toolset and reports an empty runtime (point `OpenCV_DIR` at the concrete `vc16/lib` config); and the exe needs the MSVC runtime on clean targets (bundled via `InstallRequiredSystemLibraries`). Both platforms ship as **self-contained, relocatable bundles** — Linux 35 MB (`$ORIGIN`, 10 libs, verified isolated), Windows with its runtime bundled — installable by unzip.
 
 ## 8. Future work
 
