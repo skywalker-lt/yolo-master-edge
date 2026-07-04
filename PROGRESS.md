@@ -34,6 +34,14 @@ writeup. Scoping decisions: **Jetson available**, **2nd format = NCNN (pnnx)**,
 - Both formats emit **identical detections (21934 == 21934)** over the full set -> functional format parity, not just close mAP.
 - Practical no-Jetson deployment: **~25 FPS** (Windows ONNX CPU).
 
+### 3rd format: MNN (ultralytics has no ONNX->MNN val, so: mnnconvert + numerical parity)
+Converted the exact `sim.onnx` -> `esmoe_n_visdrone.mnn` (mnnconvert, 10.8 MB). Verified vs ONNX on
+100 val imgs (identical letterboxed inputs): **max|delta|=0.096, mean|delta|=9.7e-05** -> same graph,
+same mAP (already <0.5%). MNN pip has no py3.14 wheel -> ran in a minimal py3.11 side-env
+(`conda env mnn`, MNN 3.6). Fair same-box CPU (H200, 4 threads): **MNN 74.0 ms / 13.5 FPS** vs
+**ONNX 40.0 ms / 25.0 FPS** -> MNN ~1.85x slower on x86 (sits next to ncnn; both mobile/ARM-tuned).
+Script: `scripts/mnn_parity.py`. No new prebuilt binary (per scope).
+
 ---
 
 ## Key findings (the risk retirement)
