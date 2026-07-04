@@ -142,13 +142,17 @@ See `cpp/run_tests.sh` for the 16-test robustness battery.
 
 Validated on 548 VisDrone validation images against the PyTorch original (`mAP50-95 = 0.2036`), using identical settings (conf 0.001, NMS IoU 0.7, multi-label).
 
-| Model              | mAP50-95 | Δ vs PyTorch | Latency (CPU) | FPS  |
-| :----------------- | :------- | :----------- | :------------ | :--- |
-| ONNX (ONNX Runtime)| 0.2034   | −0.02%       | 40 ms         | 25.0 |
-| NCNN               | 0.2034   | −0.02%       | ~80 ms        | ~12.5|
-| MNN                | 0.2034   | −0.02%       | 74 ms         | 13.5 |
-| INT8 (mixed)       | 0.1952   | −0.84%       | —             | —    |
-| ONNX CUDA (H200)   | —        | —            | 7.8 ms        | ~128 |
+| Model                     | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
+| :------------------------ | :------- | :----------- | :------ | :---- |
+| ONNX (ONNX Runtime, CPU)  | 0.2034   | −0.02%       | 40 ms   | 25.0  |
+| NCNN (CPU)                | 0.2034   | −0.02%       | ~80 ms  | ~12.5 |
+| MNN (CPU)                 | 0.2034   | −0.02%       | 74 ms   | 13.5  |
+| INT8 mixed (CPU) ¹        | 0.1952   | −0.84%       | 137 ms  | 7.2   |
+| ONNX CUDA (H200 GPU)      | 0.2033   | −0.03%       | 7.8 ms  | ~128  |
+
+CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are the same graph.
+
+> ¹ **INT8 is *slower* than FP32 on CPU** (137 ms vs 49 ms on the same host). This is expected: the QDQ/QOperator kernels do not engage INT8 SIMD paths that beat the well-tuned FP32 convolutions, and the FP32↔INT8 boundaries around the mixed-precision blocks add overhead. INT8's *throughput* payoff requires INT8 tensor cores (TensorRT on NVIDIA Orin) — the INT8 result here is an **accuracy** proof (−0.84%, within budget), with the performance validation reserved for the on-device TensorRT path.
 
 See [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) for the full methodology, INT8 quantization deep-dive, and numerical parity analysis.
 
