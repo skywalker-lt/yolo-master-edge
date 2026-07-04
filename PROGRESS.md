@@ -182,7 +182,23 @@ extension, corrupt image skipped, static-imgsz mismatch auto-handled, missing-ar
   det per class>conf per anchor = ultralytics `multi_label=True`; the real driver). Multi-label is
   opt-in (post 0.7->3.9ms) for eval-parity; deploy default stays single-argmax/fast (= ultralytics predict).
 
-## INT8 quantization (attempted x86 CPU, DEFERRED to Orin TensorRT)
+## INT8 quantization -- CONFIRMED < 1.0% (mixed-precision ONNX)
+Static QOperator per-channel INT8 (onnxruntime.quantization), MinMax, 300 VisDrone-train calib
+imgs (no val leakage). The 3 quant-hostile blocks kept FP32: detection head `/model.25/`,
+area-attention `/attn/`, ES-MoE `routing` (289 nodes); everything else INT8. 10.9 -> 5.4 MB (2.0x).
+mAP on 548 val (same eval_map pipeline as the fp32 formats):
+
+| Model | mAP50 | mAP50-95 | delta mAP50-95 vs PyTorch |
+|---|---|---|---|
+| PyTorch | 0.3504 | 0.2036 | - (ref) |
+| INT8 mixed | 0.3377 | **0.1952** | **-0.84%  (PASS < 1.0%)** |
+
+Progression that got there: full-INT8 -> **0.0** (cls head collapses) -> head-fp32 -> **-1.12%** ->
++attn+router fp32 -> **-0.84%** (PASS). CPU INT8 has no speedup (deploy INT8 belongs on the Orin's
+tensor cores via TensorRT), but the **accuracy target is met**. MNN/ncnn INT8: MNN quantizer crashes
+on the attention dynamic-shape intermediates; deferred.
+
+## (superseded) INT8 earlier attempt log
 No ultralytics ONNX-INT8 path -> hand-rolled `scripts/quantize_int8.py` (onnxruntime.quantization,
 static QDQ/QOperator, per-channel, opset->17, `--exclude` for mixed precision). Calibrate on VisDrone
 train (500 imgs, no leakage). Findings on 548 val imgs (mAP50-95, ref PyTorch 0.2036):
