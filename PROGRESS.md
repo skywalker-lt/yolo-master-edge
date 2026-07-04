@@ -34,6 +34,21 @@ writeup. Scoping decisions: **Jetson available**, **2nd format = NCNN (pnnx)**,
 - Both formats emit **identical detections (21934 == 21934)** over the full set -> functional format parity, not just close mAP.
 - Practical no-Jetson deployment: **~25 FPS** (Windows ONNX CPU).
 
+### mAP parity — ALL formats vs PyTorch (548 val imgs, >500 requirement)
+Consistent methodology for every format: conf 0.001, NMS iou 0.7, multi-label, cap 300
+(ultralytics val settings) -> `eval_map.py` (ultralytics DetMetrics). Preds: ONNX/ncnn via the
+C++ runner `--save-txt`, MNN via `scripts/mnn_val.py` (identical decode).
+
+| Model | mAP50 | mAP50-95 | delta mAP50-95 vs PyTorch |
+|---|---|---|---|
+| PyTorch (original) | 0.3504 | 0.2036 | - (ref) |
+| ONNX | 0.3495 | 0.2034 | **-0.02%** |
+| NCNN | 0.3495 | 0.2034 | **-0.02%** |
+| MNN  | 0.3495 | 0.2034 | **-0.02%** |
+
+All three export formats -> **identical mAP** (0.2034/0.3495), all **-0.02%** vs PyTorch, 25x inside
+the <0.5% non-quant target. Format det-counts: ONNX 157464, ncnn 157465, MNN ~identical.
+
 ### 3rd format: MNN (ultralytics has no ONNX->MNN val, so: mnnconvert + numerical parity)
 Converted the exact `sim.onnx` -> `esmoe_n_visdrone.mnn` (mnnconvert, 10.8 MB). Verified vs ONNX on
 100 val imgs (identical letterboxed inputs): **max|delta|=0.096, mean|delta|=9.7e-05** -> same graph,
