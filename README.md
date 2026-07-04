@@ -2,14 +2,14 @@
 
 <img alt="C++" src="https://img.shields.io/badge/C++-17-blue.svg?style=flat&logo=c%2B%2B"> <img alt="Onnx-runtime" src="https://img.shields.io/badge/OnnxRuntime-717272.svg?logo=Onnx&logoColor=white"> <img alt="NCNN" src="https://img.shields.io/badge/NCNN-Tencent-blue.svg"> <img alt="MNN" src="https://img.shields.io/badge/MNN-Alibaba-orange.svg"> <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey.svg">
 
-This project provides a universal C++ inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) **EsMoE-N** object-detection models, leveraging both the [ONNX Runtime](https://onnxruntime.ai/) and [NCNN](https://github.com/Tencent/ncnn) backends together with the [OpenCV](https://opencv.org/) library. A single binary runs either backend on CPU and [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), auto-detecting the model format, class names, and input size — designed for edge deployment of vertical-domain detectors (VisDrone aerial imagery, SKU-110K retail).
+This project provides a universal C++ inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) **EsMoE-N** object-detection models, leveraging both the [ONNX Runtime](https://onnxruntime.ai/) and [NCNN](https://github.com/Tencent/ncnn) backends together with the [OpenCV](https://opencv.org/) library. A single binary runs either backend on CPU and [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), auto-detecting the the model format, class names, and input size — designed for edge deployment of vertical-domain detectors (VisDrone aerial imagery, SKU-110K, etc.).
 
 ## ✨ Benefits
 
-- **One Universal Binary:** A single executable drives both **ONNX Runtime** and **NCNN** backends; the backend, class names, and input size are auto-detected from the model — no recompilation or dataset YAML needed at runtime.
+- **One Universal Binary:** A single executable integrates both **ONNX Runtime** and **NCNN** backends; the backend, class names, and input size are auto-detected from the model — no recompilation or any dataset YAML needed at runtime.
 - **Verified Accuracy:** Reproduces the PyTorch original to **< 0.5%** mAP50-95 across ONNX / NCNN / MNN, and **< 1.0%** under INT8 quantization, on 548 VisDrone validation images.
-- **Deployment-Friendly:** Cross-platform [CMake](https://cmake.org/) build producing **self-contained, relocatable bundles** for Linux x86_64 and Windows 10/11 — installable by unzip, no dependencies on the target.
-- **Acceleration:** Supports FP32 CPU inference and [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) GPU acceleration through the ONNX Runtime CUDA Execution Provider.
+- **Deployment-Friendly:** Cross-platform [CMake](https://cmake.org/) build producing **self-contained and relocatable bundles** for Linux x86_64 and Windows 10/11 — installable by unzip, no dependencies on the target.
+- **GPU Acceleration:** Supports FP32 CPU inference and [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) GPU acceleration through the ONNX Runtime CUDA Execution Provider. (Currently the v0.1 binaries only support GPU on Linux with CUDA12.)
 
 ## ☕ Note
 
@@ -17,7 +17,7 @@ The exported models embed their class names, input size, and stride as ONNX/NCNN
 
 ## 📦 Exporting Models
 
-Pre-exported models ship under `models/` (`esmoe_n_visdrone_sim.onnx`, `esmoe_n_visdrone_ncnn/`, `esmoe_n_visdrone.mnn`, `esmoe_n_visdrone_int8_mixed.onnx`). To export your own trained [YOLO-Master](https://github.com/Tencent/YOLO-Master) checkpoint, use the Ultralytics `export` mode.
+Pre-exported models (trained on VisDrone) ship under `models/` (`esmoe_n_visdrone_sim.onnx`, `esmoe_n_visdrone_ncnn/`, `esmoe_n_visdrone.mnn`, `esmoe_n_visdrone_int8_mixed.onnx`). To export your own trained [YOLO-Master](https://github.com/Tencent/YOLO-Master) checkpoint, use the Ultralytics `export` mode.
 
 ### ONNX
 
@@ -46,7 +46,7 @@ For more details on exporting, refer to the [Ultralytics Export documentation](h
 
 ## ⚙️ Dependencies
 
-Ensure you have the following dependencies installed:
+Ensure you have the following dependencies installed （not required if you only want to smoke-test the pre-built bundles):
 
 | Dependency                                                          | Version       | Notes                                                                                                          |
 | :------------------------------------------------------------------ | :------------ | :------------------------------------------------------------------------------------------------------------- |
@@ -140,7 +140,7 @@ See `cpp/run_tests.sh` for the 16-test robustness battery.
 
 ## 📊 Results
 
-Validated on 548 VisDrone validation images against the PyTorch original (`mAP50-95 = 0.2036`), using identical settings (conf 0.001, NMS IoU 0.7, multi-label).
+Validated on full 548 VisDrone validation images against the PyTorch original (`mAP50-95 = 0.2036`), using identical settings (conf 0.001, NMS IoU 0.7, multi-label).
 
 | Model                     | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
 | :------------------------ | :------- | :----------- | :------ | :---- |
@@ -150,9 +150,9 @@ Validated on 548 VisDrone validation images against the PyTorch original (`mAP50
 | INT8 mixed (CPU) ¹        | 0.1952   | −0.84%       | 137 ms  | 7.2   |
 | ONNX CUDA (H200 GPU)      | 0.2033   | −0.03%       | 7.8 ms  | ~128  |
 
-CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are the same graph.
+CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph.
 
-> ¹ **INT8 is *slower* than FP32 on CPU** (137 ms vs 49 ms on the same host). This is expected: the QDQ/QOperator kernels do not engage INT8 SIMD paths that beat the well-tuned FP32 convolutions, and the FP32↔INT8 boundaries around the mixed-precision blocks add overhead. INT8's *throughput* payoff requires INT8 tensor cores (TensorRT on NVIDIA Orin) — the INT8 result here is an **accuracy** proof (−0.84%, within budget), with the performance validation reserved for the on-device TensorRT path.
+> ¹ **INT8 is *slower* than FP32 on CPU** (137 ms vs 49 ms on the same host). This is expectedc and here's why: the QDQ/QOperator kernels do not engage INT8 SIMD paths that beat the well-tuned FP32 convolutions, and the FP32↔INT8 boundaries around the mixed-precision blocks add overhead. INT8's *throughput* payoff requires INT8 tensor cores (TensorRT on NVIDIA Orin) — the INT8 result here is an **accuracy** proof (−0.84%, within budget), with the performance validation reserved for the on-device TensorRT path.
 
 See [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) for the full methodology, INT8 quantization deep-dive, and numerical parity analysis.
 
