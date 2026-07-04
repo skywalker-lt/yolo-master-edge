@@ -11,7 +11,6 @@ Verified vs PyTorch on VisDrone (548 val imgs): **mAP50 −0.10%, mAP50-95 −0.
 cpp/            C++ runner (CMake): src/, include/, third_party/CLI11.hpp, run_tests.sh
 scripts/        eval_map.py (mAP vs GT), quantize_int8.py, compare/quant helpers
 models/         esmoe_n_visdrone_sim.onnx, esmoe_n_visdrone_ncnn/  (deploy models)
-PROGRESS.md     full build/verification log
 ```
 
 ## Build — Linux
@@ -47,4 +46,4 @@ yolomaster_edge --model models/esmoe_n_visdrone_sim.onnx --source <img|dir|video
 # --device cuda   (ONNX backend, ORT-GPU SDK)   --multi-label (mAP-parity mode, conf 0.001)
 ```
 
-See `cpp/run_tests.sh` for the 16-test robustness battery and `PROGRESS.md` for details.
+See `cpp/run_tests.sh` for the 16-test robustness battery.
