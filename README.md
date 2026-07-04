@@ -17,7 +17,7 @@ The exported models embed their class names, input size, and stride as ONNX/NCNN
 
 ## 📦 Exporting Models
 
-Pre-exported models (trained on VisDrone) ship under `models/` (`esmoe_n_visdrone_sim.onnx`, `esmoe_n_visdrone_ncnn/`, `esmoe_n_visdrone.mnn`, `esmoe_n_visdrone_int8_mixed.onnx`). To export your own trained [YOLO-Master](https://github.com/Tencent/YOLO-Master) checkpoint, use the Ultralytics `export` mode.
+Pre-built models (trained on VisDrone) are attached to the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases) page. To export your own trained [YOLO-Master](https://github.com/Tencent/YOLO-Master) checkpoint, use the Ultralytics `export` mode.
 
 ### ONNX
 
