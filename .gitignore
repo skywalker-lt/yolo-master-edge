@@ -25,3 +25,6 @@ PROGRESS.md
 # internal dev helpers / release ops (local-only)
 scripts/_*
 scripts/make_release.sh
+
+# model binaries -> shipped as GitHub Release assets, not tracked
+models/

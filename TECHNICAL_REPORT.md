@@ -154,4 +154,4 @@ A single cross-platform **CMake** builds and runs on two platforms today: **Linu
 
 ---
 
-*Reproducibility:* the C++ runtime, all scripts (`quantize_int8.py`, `eval_map.py`, `mnn_val.py`, `mnn_parity.py`, `package_linux.sh`), the exported models, and the prebuilt bundles are in the repository above.
+*Reproducibility:* the C++ runtime and all scripts (`quantize_int8.py`, `eval_map.py`, `mnn_val.py`, `mnn_parity.py`, `package_linux.sh`) are in the repository above; the exported models and prebuilt bundles are attached to the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases) page.
