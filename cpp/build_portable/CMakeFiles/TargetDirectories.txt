@@ -1,3 +1,0 @@
-/data/yolo-master-edge/cpp/build_portable/CMakeFiles/yolomaster_edge.dir
-/data/yolo-master-edge/cpp/build_portable/CMakeFiles/edit_cache.dir
-/data/yolo-master-edge/cpp/build_portable/CMakeFiles/rebuild_cache.dir

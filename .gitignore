@@ -2,7 +2,7 @@
 # NOTE: anchored to root so cpp/third_party/CLI11.hpp (needed to build) is kept
 /third_party/
 # build + runtime outputs
-cpp/build/
+cpp/build*/
 runs_edge/
 preds_*/
 results/
@@ -21,3 +21,7 @@ dist/
 
 # local-only build log (not published)
 PROGRESS.md
+
+# internal dev helpers / release ops (local-only)
+scripts/_*
+scripts/make_release.sh
