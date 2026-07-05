@@ -34,6 +34,9 @@ bash 20_build_runner.sh   # build the C++ runner (aarch64) + run it
 
 ## Notes
 
+- **FP16 build bug (Orin/TRT 10.16.2):** pure `--fp16` at `OPT<=2` fails with a KTM `sm80`-shader
+  assertion (empty engine). Use `--builderOptimizationLevel=3`, or the `--int8 --fp16` path. Full repro in [`DEPLOYMENT_LOG.md`](DEPLOYMENT_LOG.md) §4.
+
 - **4 GB Orin Nano:** the TensorRT *builder* is memory-hungry. Build **headless**
   (`sudo systemctl isolate multi-user.target`) and use a small workspace (`WORKSPACE=256 bash 10_trt_bench.sh`),
   or tactic profiling OOMs. Runtime inference is fine — the model is tiny; only the build is tight.
