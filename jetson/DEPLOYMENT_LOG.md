@@ -78,7 +78,11 @@ device's `sm87` (Orin)**, tripping the assertion and producing an empty engine.
   the §2 number was obtained; it FP16-fell-back for lack of calibration).
 
 ### Takeaway for the kit
-`OPT=2` is safe for the INT8/mixed path but **pure FP16 needs `OPT>=3` on Orin/TRT 10.16.2**.
+The KTM bug is triggered by **FP16 conv tactics**, so it hits *any* build that profiles FP16 layers at
+`OPT<=2` — confirmed on **both** pure `--fp16` **and** the mixed **QDQ INT8** build (whose head/attn/router
+stay FP16 per §3.3; it failed at OPT=2 after 348 s, then built at OPT=3). **On Orin / TRT 10.16.2, use
+`--builderOptimizationLevel=3` for any build that keeps FP16 layers** (FP16 or mixed-precision INT8). The
+earlier 31.6 FPS run avoided it only because the *plain* ONNX (no Q/DQ) happened to pick a different tactic.
 
 ## 4b. GOTCHA (reproducible): QDQ INT8 parse fails on asymmetric zero-point
 
