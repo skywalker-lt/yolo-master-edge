@@ -23,13 +23,23 @@ fi
 echo "using trtexec: $TRTEXEC"
 mkdir -p models engines
 
+# TensorRT builder workspace (MB). 4GB Orin Nano: use 256 and build headless
+# (sudo systemctl isolate multi-user.target) or the builder OOMs on tactic profiling.
+WORKSPACE="${WORKSPACE:-512}"
+FREE_MB=$(free -m 2>/dev/null | awk '/Mem:/{print $7}')
+if [ -n "$FREE_MB" ] && [ "$FREE_MB" -lt 1200 ]; then
+  echo "  ⚠ only ${FREE_MB}MB RAM free — low. Go headless: sudo systemctl isolate multi-user.target"
+  echo "    and/or lower the workspace:  WORKSPACE=256 bash $0"
+fi
+echo "  builder workspace: ${WORKSPACE} MB (override with WORKSPACE=<mb>)"
+
 bench() {  # name  extra-flags
   local name="$1"; shift
   local log="engines/trtexec_${name}.log"
   echo "==================== $name (building — full log streams below) ===================="
   # stream the FULL trtexec output (so engine-build progress is visible) AND save it
   "$TRTEXEC" --onnx="$M" --saveEngine="engines/esmoe_n_${name}.engine" \
-             --memPoolSize=workspace:2048 "$@" 2>&1 | tee "$log"
+             --memPoolSize=workspace:"${WORKSPACE}" "$@" 2>&1 | tee "$log"
   echo "-------------------- $name RESULT --------------------"
   grep -iE "Throughput|GPU Compute Time:|Latency: min|Total Host Walltime|error|failed|Engine built" "$log" \
     | tail -10 | sed 's/^/  /'

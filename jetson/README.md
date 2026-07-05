@@ -34,6 +34,10 @@ bash 20_build_runner.sh   # build the C++ runner (aarch64) + run it
 
 ## Notes
 
+- **4 GB Orin Nano:** the TensorRT *builder* is memory-hungry. Build **headless**
+  (`sudo systemctl isolate multi-user.target`) and use a small workspace (`WORKSPACE=256 bash 10_trt_bench.sh`),
+  or tactic profiling OOMs. Runtime inference is fine — the model is tiny; only the build is tight.
+
 - **INT8 accuracy:** `trtexec --int8` here measures *speed* with dynamic ranges (not calibrated). For the
   <1% mAP INT8 model, build the engine from a calibrated model — keep the detection head in FP16
   (`--precisionConstraints`/`--layerPrecisions`), mirroring the mixed-precision recipe from `TECHNICAL_REPORT.md §3`.
