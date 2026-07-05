@@ -32,6 +32,18 @@ bash 20_build_runner.sh   # build the C++ runner (aarch64) + run it
 | `10_trt_bench.sh` | `*.engine` + **GPU FPS** (FP16, INT8) | the real payoff — Orin's tensor cores; INT8 finally *faster* than FP16 |
 | `20_build_runner.sh` | `yolomaster_edge` (aarch64) + per-frame latency | the portable runner, same binary as Linux/Windows |
 
+## GPU inference — two routes
+
+| Route | Script | Ships | Pros | Needs |
+|---|---|---|---|---|
+| **Native TRT** | `21_build_trt_runner.sh` | a prebuilt `.engine` | leanest deps (just JetPack TRT+CUDA); direct | build the engine per device via `trtexec` (KTM/OOM caveats, §4) |
+| **ORT + TRT-EP** | `22_build_ort_trt.sh` | the `.onnx` | portable; auto engine build+cache; auto INT8(QDQ)/FP16/CUDA fallback | a Jetson ONNXRuntime **with the TensorRT EP**, matched to your CUDA/TRT |
+
+Both run on the GPU. Native TRT is easiest to provision (JetPack only). ORT+TRT-EP is more portable —
+ship one `.onnx`, ORT builds+caches the engine on first run and picks INT8 (where QDQ) / FP16 / CUDA per
+layer automatically. On bleeding-edge CUDA (e.g. 13.x) a prebuilt Jetson ORT-gpu may not exist yet →
+build ORT from source or use the native TRT path.
+
 ## Notes
 
 - **FP16 build bug (Orin/TRT 10.16.2):** pure `--fp16` at `OPT<=2` fails with a KTM `sm80`-shader
