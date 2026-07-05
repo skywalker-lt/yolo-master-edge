@@ -4,18 +4,36 @@
 set -e
 cd "$(dirname "$0")"
 M=models/esmoe_n_visdrone_sim.onnx
-TRTEXEC=$(command -v trtexec || echo /usr/src/tensorrt/bin/trtexec)
+# locate trtexec across the common JetPack paths (env override wins)
+TRTEXEC="${TRTEXEC:-}"
+if [ -z "$TRTEXEC" ] || [ ! -x "$TRTEXEC" ]; then
+  for c in "$(command -v trtexec 2>/dev/null)" \
+           /usr/src/tensorrt/bin/trtexec \
+           /usr/src/tensorrt/bin/aarch64-linux-gnu/trtexec \
+           "$(find /usr -name trtexec -type f 2>/dev/null | head -1)"; do
+    [ -n "$c" ] && [ -x "$c" ] && { TRTEXEC="$c"; break; }
+  done
+fi
 [ -f "$M" ]        || { echo "missing $M — see 00_setup.sh"; exit 1; }
-[ -x "$TRTEXEC" ]  || { echo "trtexec not found"; exit 1; }
+if [ -z "$TRTEXEC" ] || [ ! -x "$TRTEXEC" ]; then
+  echo "trtexec not found. Build it:  cd /usr/src/tensorrt/samples/trtexec && sudo make -j\$(nproc)"
+  echo "or install it:  sudo apt install -y tensorrt   (then re-run)"
+  exit 1
+fi
+echo "using trtexec: $TRTEXEC"
 mkdir -p models engines
 
 bench() {  # name  extra-flags
   local name="$1"; shift
-  echo "==================== $name ===================="
+  local log="engines/trtexec_${name}.log"
+  echo "==================== $name (building — full log streams below) ===================="
+  # stream the FULL trtexec output (so engine-build progress is visible) AND save it
   "$TRTEXEC" --onnx="$M" --saveEngine="engines/esmoe_n_${name}.engine" \
-             --memPoolSize=workspace:2048 "$@" 2>&1 \
-    | grep -iE "Throughput|GPU Compute Time: .*mean|Latency: .*mean|error|failed" \
-    | sed 's/^/  /'
+             --memPoolSize=workspace:2048 "$@" 2>&1 | tee "$log"
+  echo "-------------------- $name RESULT --------------------"
+  grep -iE "Throughput|GPU Compute Time:|Latency: min|Total Host Walltime|error|failed|Engine built" "$log" \
+    | tail -10 | sed 's/^/  /'
+  echo
 }
 
 bench fp16  --fp16
