@@ -37,10 +37,25 @@ def jpeg_size(path):
 def load_gt(path, w, h):
     if not os.path.exists(path):
         return np.zeros((0, 4)), np.zeros((0,), int)
-    rows = [r.split() for r in open(path).read().splitlines() if r.strip()]
-    if not rows:
+    lines = [l for l in open(path).read().splitlines() if l.strip()]
+    if not lines:
         return np.zeros((0, 4)), np.zeros((0,), int)
-    a = np.array(rows, float)
+    if "," in lines[0]:
+        # original VisDrone: x,y,w,h,score,category,trunc,occ (pixel). Matches ultralytics'
+        # visdrone2yolo: skip score==0 (ignored regions), class = category-1, keep classes 0..9.
+        boxes, cls = [], []
+        for l in lines:
+            v = l.split(",")
+            if v[4] == "0":
+                continue
+            c = int(v[5]) - 1
+            if c < 0 or c > 9:
+                continue
+            x, y, bw, bh = float(v[0]), float(v[1]), float(v[2]), float(v[3])
+            boxes.append([x, y, x + bw, y + bh]); cls.append(c)
+        return (np.array(boxes, float).reshape(-1, 4), np.array(cls, int))
+    # YOLO: class cx cy w h (normalized)
+    a = np.array([l.split() for l in lines], float)
     cls = a[:, 0].astype(int)
     cx, cy, bw, bh = a[:, 1] * w, a[:, 2] * h, a[:, 3] * w, a[:, 4] * h
     xyxy = np.stack([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], 1)
