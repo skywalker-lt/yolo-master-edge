@@ -107,6 +107,33 @@ but it's mandatory for the GPU INT8 path.
 The **QOperator** INT8 model used for the CPU/ORT accuracy check (−0.84% mAP) is a *different* format and
 does not go through this parser; only the **QDQ-for-TensorRT** export needs `--symmetric`.
 
+## 4c. GOTCHA (reproducible): QDQ INT8 parse fails on int32-quantized bias
+
+### Reproduction
+After fixing §4b (symmetric), `trtexec --int8 --fp16` on the QDQ model:
+```
+[E] Error[3]: IDequantizeLayer::setPrecision: A DequantizeLayer can only run in
+    kINT8/kFP8/kFP4/kINT4 precision
+[E] While parsing DequantizeLinear -> "model.0.conv.bias"  (input: bias_quantized, int32)
+[E] Failed to parse onnx file
+```
+### Root cause
+ONNXRuntime quantizes conv **biases to INT32** (standard: `bias_scale = input_scale × weight_scale`) and
+emits an int32 `DequantizeLinear`. TensorRT's `DequantizeLayer` accepts only INT8/FP8/FP4/INT4 — and TRT
+handles conv bias **internally**, so it wants *no* Q/DQ on biases at all.
+
+### Fix (two options)
+- **At quantization:** `extra_options={"QuantizeBias": False}` (exposed via `--symmetric` in
+  `scripts/quantize_int8.py`, which now sets it) — biases stay FP32, no int32 DQ.
+- **Post-hoc surgery (exact, no re-calibration):** drop each int32-bias `DequantizeLinear` and inline the
+  reconstructed FP32 bias `= int32_bias × scale` (zp=0). Verified `max|Δ| = 0` vs the pre-surgery model —
+  it's numerically identical, just TRT-parseable. (Used here to avoid a 4th 15-min calibration.)
+
+### The three ORT→TensorRT QDQ requirements (summary)
+For an `onnxruntime.quantization` QDQ model to build in TensorRT: **(1)** symmetric activations
+(§4b), **(2)** no int32-bias DQ (§4c), **(3)** opset ≥ 13 for per-channel DQ. All handled by
+`quantize_int8.py --symmetric` (+ the opset upgrade it already does).
+
 ## 5. `--builderOptimizationLevel` tradeoff
 
 Controls how hard TensorRT searches for the fastest per-layer kernel **at build time**. Higher = profiles

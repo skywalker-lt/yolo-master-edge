@@ -90,7 +90,8 @@ def main():
         # TensorRT requires symmetric quantization (zero_point=0); ORT defaults to
         # asymmetric activations -> "Non-zero zero point is not supported" at parse.
         extra_options={"ActivationSymmetric": args.symmetric,
-                       "WeightSymmetric": args.symmetric} if args.symmetric else {},
+                       "WeightSymmetric": args.symmetric,
+                       "QuantizeBias": False} if args.symmetric else {},  # QuantizeBias off: TRT rejects int32-bias DQ
     )
 
     # restore ultralytics metadata (names/imgsz) so YOLO(int8).val() works
