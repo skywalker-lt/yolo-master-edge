@@ -39,6 +39,8 @@ bash 20_build_runner.sh   # build the C++ runner (aarch64) + run it
 | **Native TRT** | `21_build_trt_runner.sh` | a prebuilt `.engine` | leanest deps (just JetPack TRT+CUDA); direct | build the engine per device via `trtexec` (KTM/OOM caveats, §4) |
 | **ORT + TRT-EP** | `22_build_ort_trt.sh` | the `.onnx` | portable; auto engine build+cache; auto INT8(QDQ)/FP16/CUDA fallback | a Jetson ONNXRuntime **with the TensorRT EP**, matched to your CUDA/TRT |
 
+> **ORT provisioning caveat:** the TRT-EP path needs a Jetson ONNXRuntime built with the TensorRT EP. NVIDIA ships this for **standard JetPack (jp6/cu12x)** via `pypi.jetson-ai-lab.dev` (PyPI's `onnxruntime-gpu` is x86-only). On **bleeding-edge CUDA (13.x)** no prebuilt wheel exists yet → build ORT from source, or use the **native TRT backend** (`21_build_trt_runner.sh`), which needs only JetPack and is the validated path (35.7 FPS / 0.3488 mAP50).
+
 Both run on the GPU. Native TRT is easiest to provision (JetPack only). ORT+TRT-EP is more portable —
 ship one `.onnx`, ORT builds+caches the engine on first run and picks INT8 (where QDQ) / FP16 / CUDA per
 layer automatically. On bleeding-edge CUDA (e.g. 13.x) a prebuilt Jetson ORT-gpu may not exist yet →
