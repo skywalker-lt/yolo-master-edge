@@ -20,11 +20,20 @@ Engine built + benchmarked with `trtexec` (synthetic input, batch 1):
 
 | Precision | GPU compute | Throughput | Latency (e2e) | Engine | Build time |
 |---|---|---|---|---|---|
-| **FP16** ¹ | **31.36 ms** | **31.6 FPS** | 32.0 ms (H2D 0.6 + compute 31.4 + D2H 0.05) | 5.2 MB | 648 s @ OPT=2 |
-| INT8 (calibrated QDQ) | *pending* | *pending* | | | |
+| **FP16** ¹ | **31.36 ms** | **31.6 FPS** | 32.0 ms | 5.2 MB | 648 s @ OPT=2 |
+| INT8 backbone + **FP32** fallback ² | 45.43 ms | **21.7 FPS** | 46.1 ms | 10.5 MB | 393 s @ OPT=2 |
+| INT8 backbone + FP16 fallback | *pending (needs OPT=3 + swap)* | | | | |
 
-¹ Measured via the `--int8 --fp16` run, which **fell back to FP16** (no calibration data → activations
-can't be quantized → FP16 kernels). So this is the true FP16 speed. The pure-`--fp16` build failed — see §4.
+¹ Measured via the `--int8 --fp16` run on the plain ONNX, which **fell back to FP16** (no calibration data
+→ FP16 kernels). So this is the true FP16 speed. The pure-`--fp16` build failed — see §4.
+
+² Real QDQ INT8, but built with `--int8` only (no `--fp16`) to dodge the KTM bug at OPT=2 → the
+FP32-excluded layers (head/**attention**/router, §3.3) run **FP32**, not FP16. **Result: slower than pure
+FP16.** The A2C2f area-attention is compute-heavy; in FP32 it's ~2× slower than FP16 and dominates the
+frame (engine 10.5 MB — FP32 weights are back), outweighing the INT8 backbone's savings.
+**Deployment lesson: mixed-precision INT8 only wins if the excluded/fallback layers stay FP16, not FP32** —
+i.e. you need `--int8 --fp16` (which requires `OPT=3` + swap on the 4 GB Nano, §4). For a small MoE+attention
+model where attention can't be quantized, **pure FP16 (31.6 FPS) is the pragmatic deployment engine.**
 
 **Context (full benchmark, VisDrone val, per-frame):** x86 CPU (ORT) 40 ms / 25 FPS · **Orin Nano FP16 31.4 ms / 31.6 FPS** · H200 CUDA (C++) 7.8 ms / ~128 FPS. ~31 FPS on a 4 GB edge module is real-time for tiny-object aerial detection.
 
