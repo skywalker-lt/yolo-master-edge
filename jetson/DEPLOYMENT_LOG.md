@@ -20,12 +20,25 @@ Engine built + benchmarked with `trtexec` (synthetic input, batch 1):
 
 | Precision | GPU compute | Throughput | Latency (e2e) | Engine | Build time |
 |---|---|---|---|---|---|
-| **FP16** ¹ | **31.36 ms** | **31.6 FPS** | 32.0 ms | 5.2 MB | 648 s @ OPT=2 |
-| INT8 backbone + **FP32** fallback ² | 45.43 ms | **21.7 FPS** | 46.1 ms | 10.5 MB | 393 s @ OPT=2 |
-| INT8 backbone + FP16 fallback | *pending (needs OPT=3 + swap)* | | | | |
+| ~~"FP16"~~ (uncalibrated INT8) ¹ | 31.36 ms | 31.6 FPS | 32.0 ms | 5.2 MB | 648 s @ OPT=2 |
+| INT8 backbone + **FP32** fallback ² (QDQ) | 45.43 ms | **21.7 FPS** | 46.1 ms | 10.5 MB | 393 s @ OPT=2 |
+| clean FP16 | *pending (needs OPT=3 + swap)* | | | | |
 
-¹ Measured via the `--int8 --fp16` run on the plain ONNX, which **fell back to FP16** (no calibration data
-→ FP16 kernels). So this is the true FP16 speed. The pure-`--fp16` build failed — see §4.
+### On-device mAP (VisDrone val, 548 imgs — scored with `eval_map_standalone.py`)
+| Engine | mAP50 | mAP50-95 | vs FP32 (0.3504 / 0.2036) |
+|---|---|---|---|
+| ~~"FP16"~~ `esmoe_n_int8.engine` ¹ | **0.1281** | **0.0617** | **collapsed — do not use** |
+| `int8_qdq.engine` (real QDQ INT8) | 0.3202 | 0.1834 | −8.6% / −9.9% |
+| clean FP16 | *pending* | *pending* | expected ≈ −0.3% |
+
+**⚠️ The mAP caught a broken engine the speed benchmark hid** — see ¹.
+
+¹ **NOT actually FP16.** Built with `--int8 --fp16` on the plain FP32 ONNX (no calibration, no QDQ). We
+assumed TensorRT would fall back to FP16 — it didn't: it ran **uncalibrated INT8 with garbage dynamic
+ranges**, giving 31.6 FPS but a **collapsed 0.128 mAP50**. The throughput benchmark (synthetic input) could
+never see this; only the on-device mAP exposed it. **Lesson: `--int8` without calibration or QDQ nodes is
+not an FP16 fallback — it silently produces a broken engine. Always validate mAP, not just latency.**
+A clean FP16 engine needs pure `--fp16` (which hits the KTM bug → `OPT=3` + swap, §4).
 
 ² Real QDQ INT8, but built with `--int8` only (no `--fp16`) to dodge the KTM bug at OPT=2 → the
 FP32-excluded layers (head/**attention**/router, §3.3) run **FP32**, not FP16. **Result: slower than pure
