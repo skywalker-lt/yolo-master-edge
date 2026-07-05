@@ -80,6 +80,33 @@ device's `sm87` (Orin)**, tripping the assertion and producing an empty engine.
 ### Takeaway for the kit
 `OPT=2` is safe for the INT8/mixed path but **pure FP16 needs `OPT>=3` on Orin/TRT 10.16.2**.
 
+## 4b. GOTCHA (reproducible): QDQ INT8 parse fails on asymmetric zero-point
+
+### Reproduction
+An INT8 ONNX exported by `onnxruntime.quantization` (QDQ) → `trtexec --int8 --fp16`:
+```
+[E] [TRT] ModelImporter.cpp:149: ERROR: onnxOpImporters.cpp:1738 In function QuantDequantLinearHelper:
+    [6] Assertion failed: shiftIsAllZeros(zeroPoint): Non-zero zero point is not supported.
+    Please set kENABLE_UINT8_AND_ASYMMETRIC_QUANTIZATION_DLA to enable asymmetric quantization … on DLA.
+[E] Failed to parse onnx file
+```
+### Root cause
+TensorRT GPU INT8 requires **symmetric** quantization (`zero_point = 0`). ONNXRuntime's static
+quantization defaults to **asymmetric activations** (non-zero zero point) to maximize dynamic-range use,
+which TensorRT's ONNX parser rejects at import.
+
+### Fix
+Re-quantize with symmetric activations + weights. In `onnxruntime.quantization.quantize_static`:
+```python
+extra_options={"ActivationSymmetric": True, "WeightSymmetric": True}
+```
+(exposed as `scripts/quantize_int8.py --symmetric`). Symmetric may cost a hair of accuracy vs asymmetric,
+but it's mandatory for the GPU INT8 path.
+
+### Note
+The **QOperator** INT8 model used for the CPU/ORT accuracy check (−0.84% mAP) is a *different* format and
+does not go through this parser; only the **QDQ-for-TensorRT** export needs `--symmetric`.
+
 ## 5. `--builderOptimizationLevel` tradeoff
 
 Controls how hard TensorRT searches for the fastest per-layer kernel **at build time**. Higher = profiles
