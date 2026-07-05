@@ -7,6 +7,17 @@
 # Needs a Jetson ONNXRuntime build that INCLUDES the TensorRT EP (CUDA + TRT), matched to your
 # JetPack CUDA/TRT. Point ORT_ROOT at it (headers in $ORT_ROOT/include, libonnxruntime.so in lib):
 #   ORT_ROOT=/path/to/onnxruntime-jetson bash 22_build_ort_trt.sh
+#
+# Getting that ORT (the provisioning, not this script, is the gate):
+#   * Standard JetPack (jp6 / CUDA 12.x): NVIDIA ships prebuilt onnxruntime-gpu WITH the CUDA+TRT EPs
+#     via the Jetson index, e.g.
+#       pip install onnxruntime-gpu --index-url https://pypi.jetson-ai-lab.dev/jp6/cu126
+#     Note: PyPI's onnxruntime-gpu is x86_64-only (no aarch64 wheel) — you must use the Jetson index.
+#     The C++ runner also needs headers: pair the wheel's libonnxruntime.so with the matching-version
+#     headers from the onnxruntime GitHub release (arch-independent) under $ORT_ROOT/{lib,include}.
+#   * Bleeding-edge CUDA (e.g. 13.x, no prebuilt wheel yet): build ORT from source with --use_tensorrt,
+#     OR just use the native TRT backend (jetson/21_build_trt_runner.sh) — same TensorRT under the hood,
+#     needs only JetPack, and is the validated path (35.7 FPS / 0.3488 mAP50, see DEPLOYMENT_LOG.md).
 set -e
 cd "$(dirname "$0")"; ROOT="$(cd .. && pwd)"
 : "${ORT_ROOT:?set ORT_ROOT to a Jetson ONNXRuntime with the TensorRT EP (see README)}"
