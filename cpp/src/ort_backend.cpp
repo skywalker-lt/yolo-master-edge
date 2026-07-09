@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <unordered_map>
 
 namespace yolomaster {
 
@@ -55,6 +56,22 @@ OrtBackend::OrtBackend(const std::string& model_path, int threads, const std::st
             active_ep = "CUDA";
         } catch (const std::exception& e) {
             std::cerr << "[ort] CUDA EP unavailable (" << e.what() << "); using CPU\n";
+            active_ep = "CPU";
+        }
+    } else if (device == "coreml") {
+        // Apple CoreML EP (macOS): ORT partitions the graph, runs supported subgraphs on ANE/GPU
+        // and the rest on CPU. MLComputeUnits=CPUAndGPU because the GPU tolerates the graph
+        // fragmentation of this MoE+attention model far better than the ANE. Falls back to CPU.
+        try {
+            std::unordered_map<std::string, std::string> co = {
+                {"MLComputeUnits", "CPUAndGPU"},
+                {"ModelFormat", "MLProgram"},
+                {"RequireStaticInputShapes", "1"},
+            };
+            opts_.AppendExecutionProvider("CoreML", co);
+            active_ep = "CoreML";
+        } catch (const std::exception& e) {
+            std::cerr << "[ort] CoreML EP unavailable (" << e.what() << "); using CPU\n";
             active_ep = "CPU";
         }
     }

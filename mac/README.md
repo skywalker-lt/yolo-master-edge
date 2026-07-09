@@ -7,6 +7,25 @@ Apple Silicon ANE/GPU, and decodes with multi-label + per-class NMS. Target: M-s
 > The same `.mlpackage` + decode also run on iOS; an iPhone target (Vision/`VNCoreMLRequest`, camera
 > capture) is a separate future sibling to this command-line Mac runner.
 
+> **Status:** direct CoreML conversion of EsMoE-N is currently **blocked** — coremltools can't lower an
+> in-place op in the custom MoE/attention backbone (ONNX and TensorRT both handle it). Until that's
+> resolved, the **working Mac path is ONNX Runtime + the CoreML Execution Provider** (below), which runs
+> our already-validated `.onnx` directly and lets ORT offload supported subgraphs to the ANE/GPU. The
+> Swift/`MLModel` runner here is correct the day the `.mlpackage` converts.
+
+## Working path today — C++ + ONNX Runtime (CPU + CoreML EP)
+```bash
+bash mac/build_ort_macos.sh      # Homebrew OpenCV + ORT osx-arm64 (CoreML EP built in), builds the runner
+# then A/B on a folder of images:
+cpp/build_mac/yolomaster_edge --model esmoe_n_visdrone_sim.onnx --source <dir> --device cpu    --no-save --quiet
+cpp/build_mac/yolomaster_edge --model esmoe_n_visdrone_sim.onnx --source <dir> --device coreml --no-save --quiet
+```
+`--device coreml` appends ORT's CoreML EP (`MLComputeUnits=CPUAndGPU` — the GPU handles this model's graph
+fragmentation better than the ANE). Compare the `[summary] model-FPS`. Expect CPU to already be near
+real-time on an M-series chip; the CoreML EP may or may not beat it depending on how the graph partitions
+(this MoE+attention model fragments, so it's an empirical call — measure, don't assume).
+
+
 ## 1. Export the model (once, in the training env)
 ```bash
 pip install coremltools           # + ultralytics already installed
