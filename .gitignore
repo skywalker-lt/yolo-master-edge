@@ -28,3 +28,8 @@ scripts/make_release.sh
 
 # model binaries -> shipped as GitHub Release assets, not tracked
 models/
+
+# Apple/Swift build artifacts
+apple/.build/
+apple/*.mlpackage
+apple/*.mlmodelc
