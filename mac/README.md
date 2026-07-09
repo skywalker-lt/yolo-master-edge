@@ -1,8 +1,11 @@
-# YOLO-Master-EsMoE-N — Apple Silicon (Core ML) runner
+# YOLO-Master-EsMoE-N — Mac (Core ML) runner
 
-A first Swift runner for **YOLO-Master-EsMoE-N** on Apple Silicon via **Core ML**. It loads a
+A first Swift runner for **YOLO-Master-EsMoE-N** on the **Mac** via **Core ML**. It loads a
 `.mlpackage`, letterboxes an image exactly as the C++/ONNX pipeline does, runs inference on the
-ANE/GPU, and decodes with multi-label + per-class NMS. Tested target: M-series Mac, macOS 14+.
+Apple Silicon ANE/GPU, and decodes with multi-label + per-class NMS. Target: M-series Mac, macOS 14+.
+
+> The same `.mlpackage` + decode also run on iOS; an iPhone target (Vision/`VNCoreMLRequest`, camera
+> capture) is a separate future sibling to this command-line Mac runner.
 
 ## 1. Export the model (once, in the training env)
 ```bash
