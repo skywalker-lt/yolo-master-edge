@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
     app.add_option("-m,--model", model, "model: .onnx file, or ncnn dir / .param")->required();
     app.add_option("-s,--source", source, "image / directory / video / dataset.yaml")->required();
     app.add_option("-b,--backend", backend, "auto|onnx|ncnn")->default_str("auto");
-    app.add_option("-d,--device", device, "cpu|cuda|trt (onnx backend; trt=ONNXRuntime TensorRT EP, engine cached)")->default_str("cpu");
+    app.add_option("-d,--device", device, "cpu|cuda|trt|coreml (onnx backend; trt=TensorRT EP, coreml=Apple CoreML EP)")->default_str("cpu");
     app.add_option("--classes", classes_opt, "auto|visdrone|sku (auto = from model metadata)")->default_str("auto");
     app.add_option("--imgsz", imgsz, "inference size (0 = from model / 640)");
     app.add_option("--conf", conf, "confidence threshold")->capture_default_str();
