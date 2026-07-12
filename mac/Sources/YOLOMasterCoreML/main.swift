@@ -201,8 +201,10 @@ func drawAndSave(_ image: CGImage, _ dets: [Det], _ path: String) {
         ctx.setStrokeColor(color); ctx.stroke(box)
         // label chip "name 0.83" at the box top edge (clamped inside if it would run off the image top)
         let label = "\(names[d.cls]) \(String(format: "%.2f", d.score))"
+        // Core Text attribute keys (this CLI links CoreText, not AppKit/UIKit — so no .font/.foregroundColor)
         let attr = NSAttributedString(string: label, attributes: [
-            .font: font, .foregroundColor: CGColor(gray: 0, alpha: 1)])
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1)])
         let line = CTLineCreateWithAttributedString(attr)
         let tw = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
         let chipH = fontSize + 4
