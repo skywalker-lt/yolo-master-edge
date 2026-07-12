@@ -45,6 +45,8 @@ let benchmark = hasFlag("--benchmark")
 let noSave = hasFlag("--no-save")
 let iters = Int(argValue("--iters", "200")!) ?? 200
 let resize = Int(argValue("--resize", "0")!) ?? 0   // resize source so long side = N px (0 = keep original)
+let boxStyle = (argValue("--style", "hud")!).lowercased()    // hud (corner brackets) | solid | neon
+let labelMode = (argValue("--label", "full")!).lowercased()  // full ("name 0.83") | min (name only) | off
 func mlUnits(_ s: String) -> MLComputeUnits {
     switch s { case "all": return .all; case "cpu", "cpuonly": return .cpuOnly; default: return .cpuAndGPU }
 }
@@ -199,24 +201,42 @@ func annotate(_ image: CGImage, _ dets: [Det]) -> CGImage? {
     ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))  // no flip; boxes convert y = h - topY
     ctx.setLineJoin(.round); ctx.setLineCap(.round)
     let lw = max(CGFloat(2), CGFloat(w) / 640)
-    let fontSize = max(CGFloat(12), CGFloat(w) / 95)
-    let font = CTFontCreateWithName("HelveticaNeue-Bold" as CFString, fontSize, nil)
+    let baseFont = max(CGFloat(12), CGFloat(w) / 95)
     for d in dets {
         let color = palette[d.cls % palette.count]
         let box = CGRect(x: d.rect.minX, y: CGFloat(h) - d.rect.maxY, width: d.rect.width, height: d.rect.height)
-        ctx.addRect(box); ctx.setFillColor(color.copy(alpha: 0.08) ?? color); ctx.fillPath()
-        ctx.addRect(box); ctx.setStrokeColor(color.copy(alpha: 0.35) ?? color); ctx.setLineWidth(lw * 0.6); ctx.strokePath()
-        let arm = min(min(box.width, box.height) * 0.28, lw * 22)
-        ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.4)
-        for (cx, cy, sx, sy) in [(box.minX, box.minY, 1.0, 1.0), (box.maxX, box.minY, -1.0, 1.0),
-                                 (box.minX, box.maxY, 1.0, -1.0), (box.maxX, box.maxY, -1.0, -1.0)] {
-            ctx.move(to: CGPoint(x: cx + arm * CGFloat(sx), y: cy))
-            ctx.addLine(to: CGPoint(x: cx, y: cy))
-            ctx.addLine(to: CGPoint(x: cx, y: cy + arm * CGFloat(sy)))
+        let r = min(min(box.width, box.height) * 0.14, lw * 5)
+        let rpath = CGPath(roundedRect: box, cornerWidth: r, cornerHeight: r, transform: nil)
+        // ---- box template ----
+        switch boxStyle {
+        case "solid":                                   // clean rounded rectangle
+            ctx.addPath(rpath); ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.2); ctx.strokePath()
+        case "neon":                                    // glowing rounded rectangle
+            ctx.saveGState()
+            ctx.setShadow(offset: .zero, blur: lw * 5, color: color.copy(alpha: 0.95) ?? color)
+            ctx.addPath(rpath); ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.3); ctx.strokePath()
+            ctx.addPath(rpath); ctx.strokePath()        // second pass = denser glow
+            ctx.restoreGState()
+        default:                                        // hud: faint fill + thin outline + corner brackets
+            ctx.addRect(box); ctx.setFillColor(color.copy(alpha: 0.08) ?? color); ctx.fillPath()
+            ctx.addRect(box); ctx.setStrokeColor(color.copy(alpha: 0.35) ?? color); ctx.setLineWidth(lw * 0.6); ctx.strokePath()
+            let arm = min(min(box.width, box.height) * 0.28, lw * 22)
+            ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.4)
+            for (cx, cy, sx, sy) in [(box.minX, box.minY, 1.0, 1.0), (box.maxX, box.minY, -1.0, 1.0),
+                                     (box.minX, box.maxY, 1.0, -1.0), (box.maxX, box.maxY, -1.0, -1.0)] {
+                ctx.move(to: CGPoint(x: cx + arm * CGFloat(sx), y: cy))
+                ctx.addLine(to: CGPoint(x: cx, y: cy))
+                ctx.addLine(to: CGPoint(x: cx, y: cy + arm * CGFloat(sy)))
+            }
+            ctx.strokePath()
         }
-        ctx.strokePath()
-        let label = "\(names[d.cls])  \(String(format: "%.2f", d.score))"
-        let attr = NSAttributedString(string: label, attributes: [
+        // ---- label (full | min | off) ----
+        if labelMode == "off" { continue }
+        let minMode = labelMode == "min"
+        let text = minMode ? names[d.cls] : "\(names[d.cls])  \(String(format: "%.2f", d.score))"
+        let fontSize = minMode ? baseFont * 0.85 : baseFont
+        let font = CTFontCreateWithName("HelveticaNeue-Bold" as CFString, fontSize, nil)
+        let attr = NSAttributedString(string: text, attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): labelTextColor(on: color)])
         let line = CTLineCreateWithAttributedString(attr)
@@ -226,7 +246,7 @@ func annotate(_ image: CGImage, _ dets: [Det]) -> CGImage? {
         if chipY + chipH > CGFloat(h) { chipY = box.maxY - chipH }
         let chip = CGRect(x: box.minX - lw / 2, y: chipY, width: chipW, height: chipH)
         let chipPath = CGPath(roundedRect: chip, cornerWidth: chipH * 0.28, cornerHeight: chipH * 0.28, transform: nil)
-        ctx.addPath(chipPath); ctx.setFillColor(color.copy(alpha: 0.72) ?? color); ctx.fillPath()
+        ctx.addPath(chipPath); ctx.setFillColor(color.copy(alpha: minMode ? 0.55 : 0.72) ?? color); ctx.fillPath()
         ctx.textPosition = CGPoint(x: chip.minX + padX, y: chipY + (chipH - fontSize) / 2 + fontSize * 0.2)
         CTLineDraw(line, ctx)
     }
