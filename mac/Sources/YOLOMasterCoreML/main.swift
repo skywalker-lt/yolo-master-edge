@@ -67,7 +67,14 @@ let meta = model.modelDescription.metadata[.creatorDefinedKey] as? [String: Stri
 let names = meta["names"]?.split(separator: ",").map(String.init)
     ?? ["pedestrian", "people", "bicycle", "car", "van", "truck", "tricycle", "awning-tricycle", "bus", "motor"]
 let outputName = meta["output"] ?? model.modelDescription.outputDescriptionsByName.keys.sorted().first ?? "output0"
-let nc = names.count
+// class count from the model's output shape [1, 4+nc, anchors] (authoritative for ANY model); fall back
+// to the metadata names count. Use the metadata names only if their count matches; else generic labels.
+let nc: Int = {
+    if let sh = model.modelDescription.outputDescriptionsByName[outputName]?.multiArrayConstraint?.shape,
+       sh.count >= 2, sh[1].intValue > 4 { return sh[1].intValue - 4 }
+    return names.count
+}()
+let classNames: [String] = names.count == nc ? names : (0..<nc).map { "class\($0)" }
 // Input resolution is FIXED at export time — read it from the model ([1,3,H,W]) so preprocessing always
 // matches the .mlpackage. To use a different resolution, re-export: `export_coreml.py --imgsz N`.
 let imgsz: Int = {
@@ -233,7 +240,7 @@ func annotate(_ image: CGImage, _ dets: [Det]) -> CGImage? {
         // ---- label (full | min | off) ----
         if labelMode == "off" { continue }
         let minMode = labelMode == "min"
-        let text = minMode ? names[d.cls] : "\(names[d.cls])  \(String(format: "%.2f", d.score))"
+        let text = minMode ? classNames[d.cls] : "\(classNames[d.cls])  \(String(format: "%.2f", d.score))"
         let fontSize = minMode ? baseFont * 0.85 : baseFont
         let font = CTFontCreateWithName("HelveticaNeue-Bold" as CFString, fontSize, nil)
         let attr = NSAttributedString(string: text, attributes: [

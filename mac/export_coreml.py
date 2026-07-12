@@ -19,10 +19,6 @@ import torch
 import coremltools as ct
 from ultralytics import YOLO
 
-VISDRONE = ["pedestrian", "people", "bicycle", "car", "van", "truck",
-            "tricycle", "awning-tricycle", "bus", "motor"]
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--weights", default="EsMoE-N_VisDrone.pt")
@@ -30,7 +26,10 @@ def main():
     ap.add_argument("--out", default="EsMoE-N.mlpackage")
     a = ap.parse_args()
 
-    model = YOLO(a.weights).model.eval()
+    ym = YOLO(a.weights)
+    model = ym.model.eval()
+    # the model's OWN class names (works for any dataset: VisDrone, COCO, custom, ...)
+    names = [ym.names[i] for i in sorted(ym.names)] if getattr(ym, "names", None) else []
     # Detect head -> export mode: emit the single concatenated [1, 4+nc, anchors] tensor
     for m in model.modules():
         if hasattr(m, "export"):
@@ -63,13 +62,14 @@ def main():
     )
 
     out_name = mlmodel.get_spec().description.output[0].name
-    mlmodel.user_defined_metadata["names"] = ",".join(VISDRONE)
+    if names:
+        mlmodel.user_defined_metadata["names"] = ",".join(names)
     mlmodel.user_defined_metadata["imgsz"] = str(a.imgsz)
     mlmodel.user_defined_metadata["output"] = out_name
     mlmodel.save(a.out)
     print(f"saved {a.out}")
     print(f"  input : images  [1,3,{a.imgsz},{a.imgsz}]  (feed 0-1 RGB, NCHW)")
-    print(f"  output: {out_name}  [1,{4+len(VISDRONE)},anchors]")
+    print(f"  output: {out_name}  [1,{4 + len(names)},anchors]  ({len(names)} classes: {','.join(names[:6])}{'…' if len(names) > 6 else ''})")
 
 
 if __name__ == "__main__":
