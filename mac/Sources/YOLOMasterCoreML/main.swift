@@ -44,6 +44,7 @@ let computeArg = (argValue("--compute", "cpuAndGPU")!).lowercased()
 let benchmark = hasFlag("--benchmark")
 let noSave = hasFlag("--no-save")
 let iters = Int(argValue("--iters", "200")!) ?? 200
+let resize = Int(argValue("--resize", "0")!) ?? 0   // resize source so long side = N px (0 = keep original)
 func mlUnits(_ s: String) -> MLComputeUnits {
     switch s { case "all": return .all; case "cpu", "cpuonly": return .cpuOnly; default: return .cpuAndGPU }
 }
@@ -94,6 +95,25 @@ func letterbox(_ image: CGImage, _ size: Int) -> (px: [UInt8], scale: CGFloat, p
         ctx.draw(image, in: CGRect(x: padX, y: padY, width: CGFloat(nw), height: CGFloat(nh)))  // no flip -> top-down
     }
     return (px, scale, padX, padY)
+}
+// Resize the SOURCE (independent of the model's fixed inference size) — for smaller/faster output.
+func resizeExact(_ image: CGImage, _ w: Int, _ h: Int) -> CGImage {
+    guard w > 0, h > 0, (w != image.width || h != image.height),
+          let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
+    ctx.interpolationQuality = .high
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))   // no flip -> upright
+    return ctx.makeImage() ?? image
+}
+func fitLongSide(_ w: Int, _ h: Int, _ longSide: Int) -> (Int, Int) {
+    if longSide <= 0 || max(w, h) == 0 { return (w, h) }
+    let s = Double(longSide) / Double(max(w, h))
+    return (max(1, Int((Double(w) * s).rounded())), max(1, Int((Double(h) * s).rounded())))
+}
+func resizeLong(_ image: CGImage, _ longSide: Int) -> CGImage {
+    let (nw, nh) = fitLongSide(image.width, image.height, longSide)
+    return resizeExact(image, nw, nh)
 }
 func fillInput(_ raster: [UInt8]) -> MLDictionaryFeatureProvider? {
     guard let arr = try? MLMultiArray(shape: [1, 3, NSNumber(value: imgsz), NSNumber(value: imgsz)], dataType: .float32)
@@ -222,7 +242,8 @@ func saveCGImage(_ img: CGImage, _ path: String) {
 
 // ---------- per-image pipeline; returns model-inference ms (or -1 on skip/fail) ----------
 func process(_ srcPath: String, _ outPath: String) -> Double {
-    guard let cg = loadCGImage(srcPath) else { logErr("skip (unreadable): \(srcPath)"); return -1 }
+    guard var cg = loadCGImage(srcPath) else { logErr("skip (unreadable): \(srcPath)"); return -1 }
+    if resize > 0 { cg = resizeLong(cg, resize) }              // output-resolution knob (not the model's)
     let (raster, scale, padX, padY) = letterbox(cg, imgsz)
     guard let input = fillInput(raster) else { return -1 }
     let t0 = Date()
@@ -270,7 +291,8 @@ func processVideo(_ srcPath: String, _ outPath: String) {
     let fps = track.nominalFrameRate > 0 ? track.nominalFrameRate : 30
     let transform = track.preferredTransform
     let disp = track.naturalSize.applying(transform)
-    let outW = Int(abs(disp.width).rounded()), outH = Int(abs(disp.height).rounded())
+    let natW = Int(abs(disp.width).rounded()), natH = Int(abs(disp.height).rounded())
+    let (outW, outH) = resize > 0 ? fitLongSide(natW, natH, resize) : (natW, natH)   // output-resolution knob
 
     guard let reader = try? AVAssetReader(asset: asset) else { die("reader init failed", 5) }
     let rout = AVAssetReaderTrackOutput(track: track, outputSettings: [
@@ -302,8 +324,9 @@ func processVideo(_ srcPath: String, _ outPath: String) {
             ci = ci.transformed(by: transform)
             ci = ci.transformed(by: CGAffineTransform(translationX: -ci.extent.origin.x, y: -ci.extent.origin.y))
         }
-        guard let cg = cictx.createCGImage(ci, from: CGRect(x: 0, y: 0, width: CGFloat(outW), height: CGFloat(outH)))
+        guard var cg = cictx.createCGImage(ci, from: CGRect(x: 0, y: 0, width: CGFloat(natW), height: CGFloat(natH)))
         else { continue }
+        if resize > 0 { cg = resizeExact(cg, outW, outH) }
         let (raster, scale, padX, padY) = letterbox(cg, imgsz)
         guard let input = fillInput(raster) else { continue }
         let ts = Date()
