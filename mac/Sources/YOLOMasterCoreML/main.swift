@@ -12,6 +12,7 @@
 import Foundation
 import CoreML
 import CoreGraphics
+import CoreText
 import ImageIO
 import UniformTypeIdentifiers
 
@@ -78,7 +79,10 @@ func letterbox(_ image: CGImage, _ size: Int) -> (px: [UInt8], scale: CGFloat, p
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
         ctx.interpolationQuality = .high
-        ctx.translateBy(x: 0, y: CGFloat(size)); ctx.scaleBy(x: 1, y: -1)   // row 0 = top
+        // NO flip: CGContextDrawImage into a bitmap context yields TOP-DOWN pixels (row 0 = top), which
+        // is what the fill loop and the model expect — matches the C++/OpenCV pipeline (imread is top-down,
+        // letterbox does no vertical flip). The earlier translate/scale flip fed the model an upside-down
+        // image (that Swift path was never testable until the .mlpackage converted).
         ctx.draw(image, in: CGRect(x: padX, y: padY, width: CGFloat(nw), height: CGFloat(nh)))
     }
     return (px, scale, padX, padY)
@@ -184,12 +188,30 @@ func drawAndSave(_ image: CGImage, _ dets: [Det], _ path: String) {
     guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                               space: CGColorSpaceCreateDeviceRGB(),
                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
-    ctx.translateBy(x: 0, y: CGFloat(h)); ctx.scaleBy(x: 1, y: -1)   // top-down: box coords match
+    // No flip (upright save, standard CGImage<->pixels). The context is bottom-up while detections are
+    // TOP-DOWN px, so convert each box's y: ctxY = h - topDownY. Text draws upright in a bottom-up ctx.
     ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-    ctx.setLineWidth(max(2, CGFloat(w) / 320))
+    let lw = max(CGFloat(1.5), CGFloat(w) / 700)
+    let fontSize = max(CGFloat(12), CGFloat(w) / 90)
+    let font = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
+    ctx.setLineWidth(lw)
     for d in dets {
-        ctx.setStrokeColor(palette[d.cls % palette.count])
-        ctx.stroke(d.rect)
+        let color = palette[d.cls % palette.count]
+        let box = CGRect(x: d.rect.minX, y: CGFloat(h) - d.rect.maxY, width: d.rect.width, height: d.rect.height)
+        ctx.setStrokeColor(color); ctx.stroke(box)
+        // label chip "name 0.83" at the box top edge (clamped inside if it would run off the image top)
+        let label = "\(names[d.cls]) \(String(format: "%.2f", d.score))"
+        let attr = NSAttributedString(string: label, attributes: [
+            .font: font, .foregroundColor: CGColor(gray: 0, alpha: 1)])
+        let line = CTLineCreateWithAttributedString(attr)
+        let tw = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        let chipH = fontSize + 4
+        var chipY = box.maxY                                          // sit above the box top
+        if chipY + chipH > CGFloat(h) { chipY = box.maxY - chipH }    // near image top -> inside
+        ctx.setFillColor(color)
+        ctx.fill(CGRect(x: box.minX, y: chipY, width: tw + 6, height: chipH))
+        ctx.textPosition = CGPoint(x: box.minX + 3, y: chipY + 3)
+        CTLineDraw(line, ctx)
     }
     guard let outImg = ctx.makeImage() else { return }
     let type: CFString = path.hasSuffix(".png") ? UTType.png.identifier as CFString
