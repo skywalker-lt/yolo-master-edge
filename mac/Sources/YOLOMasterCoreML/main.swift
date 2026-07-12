@@ -121,11 +121,10 @@ logErr("[infer] prediction ok in \(String(format: "%.1f", infMs))ms, shape=\(y.s
 // ---------- decode (multi-label: one det per class>conf per anchor) ----------
 struct Det { let cls: Int; let score: Float; let rect: CGRect }
 var dets: [Det] = []
-// withUnsafeBufferPointer is the SAFE accessor (raw .dataPointer can be invalid for a non-CPU/
-// non-contiguous output backing and segfault); strides keep it correct regardless of layout.
-y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
-    guard let yp = buf.baseAddress else { return }
-    @inline(__always) func at(_ c: Int, _ a: Int) -> Float32 { yp[c * s1 + a * s2] }
+// `at(c,a)` returns Float32; the mlprogram output is Float16 by default (Core ML fp16 compute), so
+// read the buffer at its real dtype and widen. withUnsafeBufferPointer is the SAFE accessor (raw
+// .dataPointer can be invalid for a non-CPU/non-contiguous backing); strides keep it layout-agnostic.
+func decodeAnchors(_ at: (Int, Int) -> Float32) {
     for a in 0..<na {
         let cx = CGFloat(at(0, a)), cy = CGFloat(at(1, a)), bw = CGFloat(at(2, a)), bh = CGFloat(at(3, a))
         for c in 0..<nc {
@@ -140,6 +139,17 @@ y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
                 dets.append(Det(cls: c, score: s, rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1)))
             }
         }
+    }
+}
+if y.dataType == .float16 {
+    y.withUnsafeBufferPointer(ofType: Float16.self) { buf in
+        guard let yp = buf.baseAddress else { return }
+        decodeAnchors { c, a in Float32(yp[c * s1 + a * s2]) }
+    }
+} else {
+    y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+        guard let yp = buf.baseAddress else { return }
+        decodeAnchors { c, a in yp[c * s1 + a * s2] }
     }
 }
 
