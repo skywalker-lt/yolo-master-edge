@@ -178,10 +178,16 @@ for d in keep.prefix(50) {
 }
 
 // ---------- draw boxes + save ----------
-let palette: [CGColor] = (0..<nc).map { i in
-    let hue = CGFloat(i) / CGFloat(max(nc, 1))
-    return CGColor(red: 0.5 + 0.5 * cos(6.28 * hue), green: 0.5 + 0.5 * cos(6.28 * hue + 2.09),
-                   blue: 0.5 + 0.5 * cos(6.28 * hue + 4.19), alpha: 1)
+// vivid, distinct palette (cycles for >10 classes)
+let palette: [CGColor] = [
+    (0.98, 0.26, 0.30), (0.20, 0.71, 0.98), (0.16, 0.85, 0.52), (0.99, 0.79, 0.12),
+    (0.72, 0.40, 0.98), (0.99, 0.55, 0.18), (0.10, 0.83, 0.80), (0.98, 0.36, 0.66),
+    (0.55, 0.82, 0.28), (0.40, 0.52, 0.98),
+].map { CGColor(red: CGFloat($0.0), green: CGFloat($0.1), blue: CGFloat($0.2), alpha: 1) }
+func labelTextColor(on bg: CGColor) -> CGColor {   // black on light fills, white on dark — readable on any hue
+    let c = bg.components ?? [0, 0, 0]
+    let lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+    return lum > 0.62 ? CGColor(gray: 0.05, alpha: 1) : CGColor(gray: 1, alpha: 1)
 }
 func drawAndSave(_ image: CGImage, _ dets: [Det], _ path: String) {
     let w = image.width, h = image.height
@@ -191,28 +197,32 @@ func drawAndSave(_ image: CGImage, _ dets: [Det], _ path: String) {
     // No flip (upright save, standard CGImage<->pixels). The context is bottom-up while detections are
     // TOP-DOWN px, so convert each box's y: ctxY = h - topDownY. Text draws upright in a bottom-up ctx.
     ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-    let lw = max(CGFloat(1.5), CGFloat(w) / 700)
-    let fontSize = max(CGFloat(12), CGFloat(w) / 90)
-    let font = CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
-    ctx.setLineWidth(lw)
+    ctx.setLineJoin(.round)
+    let lw = max(CGFloat(2), CGFloat(w) / 640)
+    let fontSize = max(CGFloat(12), CGFloat(w) / 95)
+    let font = CTFontCreateWithName("HelveticaNeue-Bold" as CFString, fontSize, nil)
     for d in dets {
         let color = palette[d.cls % palette.count]
         let box = CGRect(x: d.rect.minX, y: CGFloat(h) - d.rect.maxY, width: d.rect.width, height: d.rect.height)
-        ctx.setStrokeColor(color); ctx.stroke(box)
-        // label chip "name 0.83" at the box top edge (clamped inside if it would run off the image top)
-        let label = "\(names[d.cls]) \(String(format: "%.2f", d.score))"
-        // Core Text attribute keys (this CLI links CoreText, not AppKit/UIKit — so no .font/.foregroundColor)
+        // rounded box: subtle inner tint + crisp stroke
+        let radius = min(min(box.width, box.height) * 0.18, lw * 4)
+        let boxPath = CGPath(roundedRect: box, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        ctx.addPath(boxPath); ctx.setFillColor(color.copy(alpha: 0.12) ?? color); ctx.fillPath()
+        ctx.addPath(boxPath); ctx.setStrokeColor(color); ctx.setLineWidth(lw); ctx.strokePath()
+        // rounded label pill "name 0.83" flush on the box top-left, contrast-aware text
+        let label = "\(names[d.cls])  \(String(format: "%.2f", d.score))"
         let attr = NSAttributedString(string: label, attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1)])
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): labelTextColor(on: color)])
         let line = CTLineCreateWithAttributedString(attr)
         let tw = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-        let chipH = fontSize + 4
-        var chipY = box.maxY                                          // sit above the box top
-        if chipY + chipH > CGFloat(h) { chipY = box.maxY - chipH }    // near image top -> inside
-        ctx.setFillColor(color)
-        ctx.fill(CGRect(x: box.minX, y: chipY, width: tw + 6, height: chipH))
-        ctx.textPosition = CGPoint(x: box.minX + 3, y: chipY + 3)
+        let padX = fontSize * 0.5, chipH = fontSize + 6, chipW = tw + padX * 2
+        var chipY = box.maxY - lw / 2                                 // flush on the box top edge
+        if chipY + chipH > CGFloat(h) { chipY = box.maxY - chipH }    // near image top -> put inside
+        let chip = CGRect(x: box.minX - lw / 2, y: chipY, width: chipW, height: chipH)
+        let chipPath = CGPath(roundedRect: chip, cornerWidth: chipH * 0.28, cornerHeight: chipH * 0.28, transform: nil)
+        ctx.addPath(chipPath); ctx.setFillColor(color); ctx.fillPath()
+        ctx.textPosition = CGPoint(x: chip.minX + padX, y: chipY + (chipH - fontSize) / 2 + fontSize * 0.2)
         CTLineDraw(line, ctx)
     }
     guard let outImg = ctx.makeImage() else { return }
