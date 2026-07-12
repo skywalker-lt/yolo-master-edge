@@ -38,9 +38,21 @@ def main():
         if hasattr(m, "format"):
             m.format = "coreml"
 
+    # Core ML fix: ES_MOE._compute_load_balancing_loss writes training telemetry buffers in-place
+    # (load_balancing_loss/expert_usage_counts .copy_(...)). Those aten::copy_ ops make coremltools'
+    # tensor-assignment pass fail ("No matching select or slice"); ONNX/TRT tolerate them. The value is
+    # training-only aux loss, unused at inference, so replace it with a no-op for the trace.
+    from ultralytics.nn.modules.moe.modules import ES_MOE
+    ES_MOE._compute_load_balancing_loss = (
+        lambda self, routing_weights, eps=1e-6: torch.zeros((), device=routing_weights.device)
+    )
+
     ex = torch.zeros(1, 3, a.imgsz, a.imgsz)
+    # check_trace=False: the Detect head caches its anchor grid on the first pass, so trace's
+    # double-run consistency check trips on a benign graph diff. The first-pass graph bakes the
+    # correct anchors for the fixed imgsz, which is what we want.
     with mock.patch("torch.onnx.is_in_onnx_export", return_value=True):
-        traced = torch.jit.trace(model, ex, strict=False)
+        traced = torch.jit.trace(model, ex, strict=False, check_trace=False)
 
     mlmodel = ct.convert(
         traced,

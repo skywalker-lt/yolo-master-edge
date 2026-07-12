@@ -7,11 +7,13 @@ Apple Silicon ANE/GPU, and decodes with multi-label + per-class NMS. Target: M-s
 > The same `.mlpackage` + decode also run on iOS; an iPhone target (Vision/`VNCoreMLRequest`, camera
 > capture) is a separate future sibling to this command-line Mac runner.
 
-> **Status:** direct CoreML conversion of EsMoE-N is currently **blocked** — coremltools can't lower an
-> in-place op in the custom MoE/attention backbone (ONNX and TensorRT both handle it). Until that's
-> resolved, the **working Mac path is ONNX Runtime + the CoreML Execution Provider** (below), which runs
-> our already-validated `.onnx` directly and lets ORT offload supported subgraphs to the ANE/GPU. The
-> Swift/`MLModel` runner here is correct the day the `.mlpackage` converts.
+> **Status:** direct CoreML conversion now **works** (coremltools 9.0, `mlprogram`, macOS15). The blocker
+> was `ES_MOE._compute_load_balancing_loss` writing training-telemetry buffers in-place (`aten::copy_`),
+> which coremltools' tensor-assignment pass can't lower ("No matching select or slice"); ONNX/TRT tolerate
+> it. `export_coreml.py` no-ops that (training-only aux loss, unused at inference — verified max|Δ|=0 on
+> the model output), and the trace matches eager exactly. The `.mlpackage` + Swift/`MLModel` runner are
+> ready to run on-device; **on-device numerics/FPS still need validating on the Mac** (coremltools can't
+> run predictions on Linux). ONNX Runtime + the CoreML EP (below) remains a validated alternative.
 
 ## Working path today — C++ + ONNX Runtime (CPU + CoreML EP)
 ```bash
