@@ -31,11 +31,18 @@ let conf = Float(argValue("--conf", "0.25")!) ?? 0.25
 let iouT = CGFloat(Float(argValue("--iou", "0.5")!) ?? 0.5)
 let outPath = argValue("--out", "out.jpg")!
 let imgsz = 640
+// The ANE can HARD-CRASH on this MoE+attention graph (heavy fragmentation), and that crash is native —
+// try? can't catch it. Default to CPU+GPU; use --compute all to opt back into the ANE, cpu for CPU-only.
+let computeArg = (argValue("--compute", "cpuAndGPU")!).lowercased()
+func mlUnits(_ s: String) -> MLComputeUnits {
+    switch s { case "all": return .all; case "cpu", "cpuonly": return .cpuOnly; default: return .cpuAndGPU }
+}
+func logErr(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
 
 // ---------- load + compile model ----------
 func loadModel(_ path: String) throws -> MLModel {
     let url = URL(fileURLWithPath: path)
-    let cfg = MLModelConfiguration(); cfg.computeUnits = .all
+    let cfg = MLModelConfiguration(); cfg.computeUnits = mlUnits(computeArg)
     if path.hasSuffix(".mlmodelc") { return try MLModel(contentsOf: url, configuration: cfg) }
     let compiled = try MLModel.compileModel(at: url)      // .mlpackage/.mlmodel -> compiled .mlmodelc
     return try MLModel(contentsOf: compiled, configuration: cfg)
@@ -49,7 +56,7 @@ let names = meta["names"]?.split(separator: ",").map(String.init)
     ?? ["pedestrian", "people", "bicycle", "car", "van", "truck", "tricycle", "awning-tricycle", "bus", "motor"]
 let outputName = meta["output"] ?? model.modelDescription.outputDescriptionsByName.keys.sorted().first ?? "output0"
 let nc = names.count
-print("[model] input=\(inputName) output=\(outputName) classes=\(nc) computeUnits=all")
+print("[model] input=\(inputName) output=\(outputName) classes=\(nc) compute=\(computeArg)")
 
 // ---------- image -> letterboxed raster (top-down RGBX, 114 pad) ----------
 func loadCGImage(_ path: String) -> CGImage? {
@@ -96,35 +103,42 @@ do {
 
 // ---------- predict ----------
 let input = try! MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: arr)])
+logErr("[infer] running prediction (compute=\(computeArg))…")
 let t0 = Date()
 guard let out = try? model.prediction(from: input) else { die("prediction failed", 5) }
 let infMs = Date().timeIntervalSince(t0) * 1000
 guard let y = out.featureValue(for: outputName)?.multiArrayValue else { die("no output '\(outputName)'", 5) }
 
-// output [1, 4+nc, anchors] — use strides so we don't assume contiguity
+// output [1, 4+nc, anchors]
+guard y.shape.count == 3 else { die("unexpected output rank \(y.shape.count) (want 3: [1,C,anchors])", 5) }
 let na = y.shape[2].intValue
 let s1 = y.strides[1].intValue, s2 = y.strides[2].intValue
-let yp = y.dataPointer.bindMemory(to: Float32.self, capacity: y.count)
-@inline(__always) func at(_ c: Int, _ a: Int) -> Float32 { yp[c * s1 + a * s2] }
 if y.shape[1].intValue != 4 + nc {
-    FileHandle.standardError.write("warn: output channels \(y.shape[1]) != 4+nc \(4 + nc)\n".data(using: .utf8)!)
+    logErr("warn: output channels \(y.shape[1]) != 4+nc \(4 + nc)")
 }
+logErr("[infer] prediction ok in \(String(format: "%.1f", infMs))ms, shape=\(y.shape.map { $0.intValue }); decoding…")
 
 // ---------- decode (multi-label: one det per class>conf per anchor) ----------
 struct Det { let cls: Int; let score: Float; let rect: CGRect }
 var dets: [Det] = []
-for a in 0..<na {
-    let cx = CGFloat(at(0, a)), cy = CGFloat(at(1, a)), bw = CGFloat(at(2, a)), bh = CGFloat(at(3, a))
-    for c in 0..<nc {
-        let s = at(4 + c, a)
-        if s <= conf { continue }
-        // letterbox px -> original px
-        var x1 = (cx - bw / 2 - padX) / scale, y1 = (cy - bh / 2 - padY) / scale
-        var x2 = (cx + bw / 2 - padX) / scale, y2 = (cy + bh / 2 - padY) / scale
-        x1 = max(0, min(CGFloat(origW), x1)); x2 = max(0, min(CGFloat(origW), x2))
-        y1 = max(0, min(CGFloat(origH), y1)); y2 = max(0, min(CGFloat(origH), y2))
-        if x2 > x1 && y2 > y1 {
-            dets.append(Det(cls: c, score: s, rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1)))
+// withUnsafeBufferPointer is the SAFE accessor (raw .dataPointer can be invalid for a non-CPU/
+// non-contiguous output backing and segfault); strides keep it correct regardless of layout.
+y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+    guard let yp = buf.baseAddress else { return }
+    @inline(__always) func at(_ c: Int, _ a: Int) -> Float32 { yp[c * s1 + a * s2] }
+    for a in 0..<na {
+        let cx = CGFloat(at(0, a)), cy = CGFloat(at(1, a)), bw = CGFloat(at(2, a)), bh = CGFloat(at(3, a))
+        for c in 0..<nc {
+            let s = at(4 + c, a)
+            if s <= conf { continue }
+            // letterbox px -> original px
+            var x1 = (cx - bw / 2 - padX) / scale, y1 = (cy - bh / 2 - padY) / scale
+            var x2 = (cx + bw / 2 - padX) / scale, y2 = (cy + bh / 2 - padY) / scale
+            x1 = max(0, min(CGFloat(origW), x1)); x2 = max(0, min(CGFloat(origW), x2))
+            y1 = max(0, min(CGFloat(origH), y1)); y2 = max(0, min(CGFloat(origH), y2))
+            if x2 > x1 && y2 > y1 {
+                dets.append(Det(cls: c, score: s, rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1)))
+            }
         }
     }
 }
