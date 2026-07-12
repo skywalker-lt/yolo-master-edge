@@ -204,11 +204,19 @@ func drawAndSave(_ image: CGImage, _ dets: [Det], _ path: String) {
     for d in dets {
         let color = palette[d.cls % palette.count]
         let box = CGRect(x: d.rect.minX, y: CGFloat(h) - d.rect.maxY, width: d.rect.width, height: d.rect.height)
-        // rounded box: subtle inner tint + crisp stroke
-        let radius = min(min(box.width, box.height) * 0.18, lw * 4)
-        let boxPath = CGPath(roundedRect: box, cornerWidth: radius, cornerHeight: radius, transform: nil)
-        ctx.addPath(boxPath); ctx.setFillColor(color.copy(alpha: 0.12) ?? color); ctx.fillPath()
-        ctx.addPath(boxPath); ctx.setStrokeColor(color); ctx.setLineWidth(lw); ctx.strokePath()
+        // HUD look: faint inner fill + thin full outline + bold rounded corner brackets
+        ctx.setLineCap(.round)
+        ctx.addRect(box); ctx.setFillColor(color.copy(alpha: 0.08) ?? color); ctx.fillPath()
+        ctx.addRect(box); ctx.setStrokeColor(color.copy(alpha: 0.35) ?? color); ctx.setLineWidth(lw * 0.6); ctx.strokePath()
+        let arm = min(min(box.width, box.height) * 0.28, lw * 22)
+        ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.4)
+        for (cx, cy, sx, sy) in [(box.minX, box.minY, 1.0, 1.0), (box.maxX, box.minY, -1.0, 1.0),
+                                 (box.minX, box.maxY, 1.0, -1.0), (box.maxX, box.maxY, -1.0, -1.0)] {
+            ctx.move(to: CGPoint(x: cx + arm * CGFloat(sx), y: cy))
+            ctx.addLine(to: CGPoint(x: cx, y: cy))
+            ctx.addLine(to: CGPoint(x: cx, y: cy + arm * CGFloat(sy)))
+        }
+        ctx.strokePath()
         // rounded label pill "name 0.83" flush on the box top-left, contrast-aware text
         let label = "\(names[d.cls])  \(String(format: "%.2f", d.score))"
         let attr = NSAttributedString(string: label, attributes: [
@@ -221,7 +229,7 @@ func drawAndSave(_ image: CGImage, _ dets: [Det], _ path: String) {
         if chipY + chipH > CGFloat(h) { chipY = box.maxY - chipH }    // near image top -> put inside
         let chip = CGRect(x: box.minX - lw / 2, y: chipY, width: chipW, height: chipH)
         let chipPath = CGPath(roundedRect: chip, cornerWidth: chipH * 0.28, cornerHeight: chipH * 0.28, transform: nil)
-        ctx.addPath(chipPath); ctx.setFillColor(color); ctx.fillPath()
+        ctx.addPath(chipPath); ctx.setFillColor(color.copy(alpha: 0.72) ?? color); ctx.fillPath()
         ctx.textPosition = CGPoint(x: chip.minX + padX, y: chipY + (chipH - fontSize) / 2 + fontSize * 0.2)
         CTLineDraw(line, ctx)
     }
