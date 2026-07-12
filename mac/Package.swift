@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "YOLOMasterCoreML",
-    platforms: [.macOS(.v15)],   // Float16 MLMultiArray access + the model's macOS15 deployment target
+    platforms: [.macOS("15.0")],   // 15.0 deployment target (Float16 MLMultiArray access); string form keeps tools 5.9
     targets: [
         .executableTarget(name: "YOLOMasterCoreML", path: "Sources/YOLOMasterCoreML")
     ]
