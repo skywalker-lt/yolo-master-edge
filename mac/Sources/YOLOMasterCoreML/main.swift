@@ -40,7 +40,6 @@ guard let modelPath = argValue("--model"), let srcPath = argValue("--source") el
 let conf = Float(argValue("--conf", "0.25")!) ?? 0.25
 let iouT = CGFloat(Float(argValue("--iou", "0.5")!) ?? 0.5)
 let outArg = argValue("--out")
-let imgsz = 640
 let computeArg = (argValue("--compute", "cpuAndGPU")!).lowercased()
 let benchmark = hasFlag("--benchmark")
 let noSave = hasFlag("--no-save")
@@ -66,7 +65,15 @@ let names = meta["names"]?.split(separator: ",").map(String.init)
     ?? ["pedestrian", "people", "bicycle", "car", "van", "truck", "tricycle", "awning-tricycle", "bus", "motor"]
 let outputName = meta["output"] ?? model.modelDescription.outputDescriptionsByName.keys.sorted().first ?? "output0"
 let nc = names.count
-print("[model] input=\(inputName) output=\(outputName) classes=\(nc) compute=\(computeArg)")
+// Input resolution is FIXED at export time — read it from the model ([1,3,H,W]) so preprocessing always
+// matches the .mlpackage. To use a different resolution, re-export: `export_coreml.py --imgsz N`.
+let imgsz: Int = {
+    if let shape = model.modelDescription.inputDescriptionsByName[inputName]?.multiArrayConstraint?.shape,
+       shape.count >= 4, shape[2].intValue > 0 { return shape[2].intValue }
+    if let s = meta["imgsz"], let v = Int(s), v > 0 { return v }
+    return 640
+}()
+print("[model] input=\(inputName) [\(imgsz)x\(imgsz)] output=\(outputName) classes=\(nc) compute=\(computeArg)")
 
 // ---------- preprocess ----------
 func loadCGImage(_ path: String) -> CGImage? {
