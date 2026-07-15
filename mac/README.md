@@ -48,8 +48,28 @@ swift build -c release           # or: open Package.swift in Xcode
 .build/release/YOLOMasterCoreML --model EsMoE-N.mlpackage --source img.jpg \
     --conf 0.25 --iou 0.5 --out out.jpg
 ```
-Prints per-detection lines (`class conf [x1 y1 x2 y2]`) and writes an annotated `out.jpg`.
-Core ML dispatches across ANE/GPU/CPU automatically (`computeUnits = .all`).
+Prints per-detection lines and writes an annotated `out.jpg`. Compute defaults to `cpuAndGPU`
+(the ANE can crash on this fragmented MoE+attention graph); override with `--compute all|cpu`.
+
+## 4. GUI app (SwiftUI) — compile, run, redistribute
+
+The inference backend now lives in a shared library, **`YOLOMasterKit`** (letterbox → Core ML →
+decode `[1,4+nc,anchors]` → per-class NMS → annotate). Both frontends use it — no duplicated
+inference path:
+
+- **`YOLOMasterCoreML`** — the command-line runner (image / folder / video / `--benchmark`).
+- **`YOLOMasterApp`** — a SwiftUI desktop app: pick a `.mlpackage` + an image, tune
+  conf / iou / box-style / label / compute, and view + save the annotated result on-device.
+
+```bash
+swift build -c release                 # builds Kit + CLI + app
+swift run   -c release YOLOMasterApp   # launch the GUI
+bash mac/make_app.sh                    # -> mac/dist/YOLOMaster.app (double-clickable)
+```
+
+`make_app.sh` assembles a real `.app` bundle (Info.plist, ad-hoc signed so it launches locally).
+To distribute widely, re-sign with a **Developer ID** and notarize; otherwise recipients
+right-click → **Open** on first launch to clear Gatekeeper.
 
 ## Notes
 - **Preprocessing parity:** aspect-preserving letterbox to 640, 114 gray pad, RGB, `/255`, NCHW —
