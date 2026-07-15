@@ -11,8 +11,20 @@ import UniformTypeIdentifiers
 import CoreGraphics
 import YOLOMasterKit
 
+// An unbundled `swift run` executable launches as an accessory process (activation
+// policy .prohibited) — SwiftUI makes the window but macOS never shows/focuses it.
+// Force a regular, foreground GUI app so both `swift run` and the bundled .app work.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ note: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
 @main
 struct YOLOMasterApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     var body: some Scene {
         WindowGroup("YOLO-Master · Core ML") {
             ContentView()
