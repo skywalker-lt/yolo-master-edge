@@ -111,10 +111,16 @@ struct ContentView: View {
     @State private var style: BoxStyle = .hud
     @State private var label: LabelMode = .full
     @State private var compute: ComputeMode = .cpuAndGPU
-    @State private var showModelPicker = false
-    @State private var showImagePicker = false
+    @State private var showPicker = false
+    @State private var pickTarget: PickTarget = .model
 
+    private enum PickTarget { case model, image }
     private var canRun: Bool { modelURL != nil && imageURL != nil && !engine.busy }
+    private var pickerTypes: [UTType] {
+        pickTarget == .model
+            ? [UTType(filenameExtension: "mlpackage") ?? .package, UTType(filenameExtension: "mlmodelc") ?? .package, .folder]
+            : [.image]
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -125,13 +131,12 @@ struct ContentView: View {
             preview
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .fileImporter(isPresented: $showModelPicker,
-                      allowedContentTypes: [UTType(filenameExtension: "mlpackage") ?? .package,
-                                            UTType(filenameExtension: "mlmodelc") ?? .package, .folder]) { res in
-            if case .success(let url) = res { modelURL = url }
-        }
-        .fileImporter(isPresented: $showImagePicker, allowedContentTypes: [.image]) { res in
-            if case .success(let url) = res { imageURL = url }
+        .fileImporter(isPresented: $showPicker, allowedContentTypes: pickerTypes) { result in
+            guard case .success(let url) = result else { return }
+            switch pickTarget {
+            case .model: modelURL = url
+            case .image: imageURL = url
+            }
         }
     }
 
@@ -140,9 +145,9 @@ struct ContentView: View {
             Text("YOLO-Master · Core ML").font(.title3).bold()
 
             picker(title: "Model", value: modelURL?.lastPathComponent ?? "none",
-                   button: "Choose .mlpackage…") { showModelPicker = true }
+                   button: "Choose .mlpackage…") { pickTarget = .model; DispatchQueue.main.async { showPicker = true } }
             picker(title: "Image", value: imageURL?.lastPathComponent ?? "none",
-                   button: "Choose image…") { showImagePicker = true }
+                   button: "Choose image…") { pickTarget = .image; DispatchQueue.main.async { showPicker = true } }
 
             slider(title: "conf", value: $conf, range: 0.01...0.95)
             slider(title: "iou",  value: $iou,  range: 0.10...0.90)
