@@ -33,24 +33,26 @@ def match_predictions(pred_cls, true_cls, iou):
 def load_gt(path, w, h):
     b, c = [], []
     if os.path.exists(path):
-        for ln in open(path):
-            p = ln.split()
-            if len(p) < 5:
-                continue
-            c.append(int(float(p[0])))
-            cx, cy, bw, bh = map(float, p[1:5])
-            b.append([(cx - bw / 2) * w, (cy - bh / 2) * h, (cx + bw / 2) * w, (cy + bh / 2) * h])
+        with open(path) as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 5:
+                    continue
+                c.append(int(float(p[0])))
+                cx, cy, bw, bh = map(float, p[1:5])
+                b.append([(cx - bw / 2) * w, (cy - bh / 2) * h, (cx + bw / 2) * w, (cy + bh / 2) * h])
     return torch.tensor(b, dtype=torch.float32).reshape(-1, 4), torch.tensor(c, dtype=torch.int64)
 
 
 def load_pred(path):
     b, s, c = [], [], []
     if os.path.exists(path):
-        for ln in open(path):
-            p = ln.split()
-            if len(p) < 6:
-                continue
-            c.append(int(float(p[0]))); s.append(float(p[1])); b.append([float(x) for x in p[2:6]])
+        with open(path) as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 6:
+                    continue
+                c.append(int(float(p[0]))); s.append(float(p[1])); b.append([float(x) for x in p[2:6]])
     return (torch.tensor(b, dtype=torch.float32).reshape(-1, 4),
             torch.tensor(s, dtype=torch.float32), torch.tensor(c, dtype=torch.int64))
 
@@ -65,6 +67,8 @@ def main():
     metrics = DetMetrics()
     metrics.names = NAMES
     imgs = sorted(glob.glob(os.path.join(args.images, "*.jpg")))
+    if not imgs:
+        raise SystemExit(f"no *.jpg images found under {args.images}")
     for img in imgs:
         stem = Path(img).stem
         w, h = Image.open(img).size
