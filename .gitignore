@@ -13,6 +13,9 @@ __pycache__/
 models/*.prep.onnx
 models/esmoe_n_visdrone.onnx
 models/*int8*.onnx
+# INT8 calibration data (regenerated locally from val images, not tracked)
+calib/
+calib_mnn/
 # stray training run dirs
 v0.1-N-*/
 
