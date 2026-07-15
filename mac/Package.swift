@@ -2,9 +2,27 @@
 import PackageDescription
 
 let package = Package(
-    name: "YOLOMasterCoreML",
+    name: "YOLOMaster",
     platforms: [.macOS("15.0")],   // 15.0 deployment target (Float16 MLMultiArray access); string form keeps tools 5.9
+    products: [
+        .library(name: "YOLOMasterKit", targets: ["YOLOMasterKit"]),
+        .executable(name: "yolomaster-coreml", targets: ["YOLOMasterCoreML"]),   // CLI runner
+        .executable(name: "YOLOMasterApp", targets: ["YOLOMasterApp"]),          // SwiftUI GUI
+    ],
     targets: [
-        .executableTarget(name: "YOLOMasterCoreML", path: "Sources/YOLOMasterCoreML")
+        // Shared Core ML inference backend (letterbox -> predict -> decode -> NMS -> annotate).
+        .target(name: "YOLOMasterKit", path: "Sources/YOLOMasterKit"),
+        // Command-line frontend.
+        .executableTarget(
+            name: "YOLOMasterCoreML",
+            dependencies: ["YOLOMasterKit"],
+            path: "Sources/YOLOMasterCoreML"
+        ),
+        // SwiftUI app frontend (same backend).
+        .executableTarget(
+            name: "YOLOMasterApp",
+            dependencies: ["YOLOMasterKit"],
+            path: "Sources/YOLOMasterApp"
+        ),
     ]
 )
