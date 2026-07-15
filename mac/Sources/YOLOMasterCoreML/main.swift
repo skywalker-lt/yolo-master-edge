@@ -106,12 +106,16 @@ func runBenchmark(_ paths: [String]) {
 }
 
 // ---------- video: decode -> detect -> annotate -> encode ----------
-func processVideo(_ srcPath: String, _ outPath: String) {
+func processVideo(_ srcPath: String, _ outPath: String) async {
     let asset = AVURLAsset(url: URL(fileURLWithPath: srcPath))
-    guard let track = asset.tracks(withMediaType: .video).first else { die("no video track: \(srcPath)", 4) }
-    let fps = track.nominalFrameRate > 0 ? track.nominalFrameRate : 30
-    let transform = track.preferredTransform
-    let disp = track.naturalSize.applying(transform)
+    guard let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first else {
+        die("no video track: \(srcPath)", 4)
+    }
+    let nominalFps = (try? await track.load(.nominalFrameRate)) ?? 0
+    let fps = nominalFps > 0 ? nominalFps : 30
+    let transform = (try? await track.load(.preferredTransform)) ?? .identity
+    let naturalSize = (try? await track.load(.naturalSize)) ?? .zero
+    let disp = naturalSize.applying(transform)
     let natW = Int(abs(disp.width).rounded()), natH = Int(abs(disp.height).rounded())
     let (outW, outH) = resize > 0 ? fitLongSide(natW, natH, resize) : (natW, natH)   // output-resolution knob
 
@@ -200,7 +204,7 @@ if benchmark {
     if paths.isEmpty { die("benchmark: no images in \(srcPath)", 4) }
     runBenchmark(paths)
 } else if !isDir.boolValue && vidExts.contains(ext) {
-    processVideo(srcPath, outArg ?? "out.mp4")
+    await processVideo(srcPath, outArg ?? "out.mp4")
 } else if isDir.boolValue {
     let outDir = outArg ?? "preds"
     try? fm.createDirectory(atPath: outDir, withIntermediateDirectories: true)
