@@ -46,9 +46,14 @@ final class InferenceEngine: ObservableObject {
     // touched only on `queue` (serial) -> no data race
     private var detector: Detector?
     private var key = ""
+    private var rawOutput: Detector.RawOutput?     // cached forward pass
+    private var sourceCG: CGImage?
+    private var lastInferMs = 0.0
     private var lastAnnotated: CGImage?
     private let queue = DispatchQueue(label: "com.yolomaster.inference")
 
+    /// Expensive path: (re)load the model if needed, run the forward pass ONCE, cache the raw
+    /// output + source image, then render with the current params. Call on model/image/compute change.
     func run(model: URL, image: URL, conf: Double, iou: Double,
              style: BoxStyle, label: LabelMode, compute: ComputeMode) {
         busy = true
@@ -67,21 +72,42 @@ final class InferenceEngine: ObservableObject {
                 guard let cg = loadCGImage(image) else {
                     self.publish(error: "Could not read image."); return
                 }
-                let res = try det.detect(cg, conf: Float(conf), iou: CGFloat(iou))
-                let annotated = annotate(cg, res.detections, names: det.classNames, style: style, label: label) ?? cg
-                self.lastAnnotated = annotated
-                let ns = NSImage(cgImage: annotated, size: NSSize(width: cg.width, height: cg.height))
-                DispatchQueue.main.async {
-                    self.resultImage = ns
-                    self.detCount = res.detections.count
-                    self.inferMs = res.inferMs
-                    self.modelSummary = det.summary
-                    self.status = "\(res.detections.count) detections · \(String(format: "%.1f", res.inferMs)) ms"
-                    self.busy = false
-                }
+                let raw = try det.forward(cg)
+                self.rawOutput = raw; self.sourceCG = cg; self.lastInferMs = raw.inferMs
+                let summary = det.summary
+                DispatchQueue.main.async { self.modelSummary = summary; self.inferMs = raw.inferMs }
+                self.render(conf: conf, iou: iou, style: style, label: label)
             } catch {
                 self.publish(error: "Failed: \(error.localizedDescription)")
             }
+        }
+    }
+
+    private var pendingRestyle: DispatchWorkItem?
+    /// Cheap path: re-decode (conf/iou) + re-annotate (style/label) from the cached forward
+    /// pass — NO model call. Drives real-time control changes; no-op until a forward has run.
+    /// Coalesces rapid slider drags (cancels the superseded queued render).
+    func restyle(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        pendingRestyle?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.render(conf: conf, iou: iou, style: style, label: label) }
+        pendingRestyle = item
+        queue.async(execute: item)
+    }
+
+    private func render(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        guard let det = detector, let raw = rawOutput, let cg = sourceCG else {
+            DispatchQueue.main.async { self.busy = false }; return
+        }
+        let dets = det.decode(raw, conf: Float(conf), iou: CGFloat(iou))
+        let annotated = annotate(cg, dets, names: det.classNames, style: style, label: label) ?? cg
+        self.lastAnnotated = annotated
+        let ns = NSImage(cgImage: annotated, size: NSSize(width: cg.width, height: cg.height))
+        let ms = self.lastInferMs
+        DispatchQueue.main.async {
+            self.resultImage = ns
+            self.detCount = dets.count
+            self.status = "\(dets.count) detections · \(String(format: "%.1f", ms)) ms"
+            self.busy = false
         }
     }
 
@@ -150,6 +176,11 @@ struct ContentView: View {
             }
             return true
         }
+        // conf/iou/style/label are frontend post-processing -> live update, no re-inference.
+        .onChange(of: conf) { rerender() }
+        .onChange(of: iou) { rerender() }
+        .onChange(of: style) { rerender() }
+        .onChange(of: label) { rerender() }
     }
 
     /// Route a picked/dropped URL to model vs image by extension.
@@ -225,6 +256,10 @@ struct ContentView: View {
     private func runInference() {
         guard let m = modelURL, let i = imageURL else { return }
         engine.run(model: m, image: i, conf: conf, iou: iou, style: style, label: label, compute: compute)
+    }
+    /// conf/iou/style/label are post-processing — re-render from the cached forward pass, no inference.
+    private func rerender() {
+        engine.restyle(conf: conf, iou: iou, style: style, label: label)
     }
 
     // ---- small view builders ----

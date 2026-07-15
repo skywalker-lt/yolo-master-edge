@@ -188,8 +188,23 @@ public final class Detector {
     // ---------- public inference ----------
     public struct Result: Sendable { public let detections: [Detection]; public let inferMs: Double }
 
-    /// Full pipeline: letterbox → Core ML → decode → NMS. `inferMs` is model-only latency.
-    public func detect(_ image: CGImage, conf: Float = 0.25, iou iouT: CGFloat = 0.5) throws -> Result {
+    /// Cached forward-pass output + letterbox geometry. Hold onto this and re-decode with
+    /// different conf/iou via `decode(_:conf:iou:)` — no second model call. Post-processing
+    /// (conf/iou threshold, NMS) is a frontend concern, not an inference one.
+    public final class RawOutput {
+        fileprivate let y: MLMultiArray
+        fileprivate let scale, padX, padY: CGFloat
+        public let origW, origH: Int
+        public let inferMs: Double
+        fileprivate init(y: MLMultiArray, scale: CGFloat, padX: CGFloat, padY: CGFloat,
+                         origW: Int, origH: Int, inferMs: Double) {
+            self.y = y; self.scale = scale; self.padX = padX; self.padY = padY
+            self.origW = origW; self.origH = origH; self.inferMs = inferMs
+        }
+    }
+
+    /// Core ML forward pass only (letterbox → predict). Cache the result and re-`decode`.
+    public func forward(_ image: CGImage) throws -> RawOutput {
         let lb = letterbox(image)
         guard let input = fillInput(lb.px) else { throw DetectorError.inputBuildFailed }
         let t0 = Date()
@@ -198,8 +213,19 @@ public final class Detector {
         guard let y = out.featureValue(for: outputName)?.multiArrayValue, y.shape.count == 3 else {
             throw DetectorError.badOutput
         }
-        let dets = decodeAndNMS(y, image.width, image.height, lb.scale, lb.padX, lb.padY, conf: conf, iouT: iouT)
-        return Result(detections: dets, inferMs: infMs)
+        return RawOutput(y: y, scale: lb.scale, padX: lb.padX, padY: lb.padY,
+                         origW: image.width, origH: image.height, inferMs: infMs)
+    }
+
+    /// Decode + per-class NMS from a cached forward pass. Cheap — no model call.
+    public func decode(_ raw: RawOutput, conf: Float, iou iouT: CGFloat) -> [Detection] {
+        decodeAndNMS(raw.y, raw.origW, raw.origH, raw.scale, raw.padX, raw.padY, conf: conf, iouT: iouT)
+    }
+
+    /// Convenience: forward + decode in one call (used by the CLI). `inferMs` is model-only latency.
+    public func detect(_ image: CGImage, conf: Float = 0.25, iou iouT: CGFloat = 0.5) throws -> Result {
+        let raw = try forward(image)
+        return Result(detections: decode(raw, conf: conf, iou: iouT), inferMs: raw.inferMs)
     }
 
     /// Model-only forward (no decode/draw) — for latency benchmarking. Returns ms.
