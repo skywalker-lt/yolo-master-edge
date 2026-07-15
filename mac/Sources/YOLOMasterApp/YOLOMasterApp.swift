@@ -40,7 +40,7 @@ final class InferenceEngine: ObservableObject {
     @Published var detCount = 0
     @Published var inferMs = 0.0
     @Published var modelSummary = ""
-    @Published var status = "Choose a model and an image."
+    @Published var status = "Choose or drag a model (.mlpackage) + an image."
     @Published var busy = false
 
     // touched only on `queue` (serial) -> no data race
@@ -117,9 +117,14 @@ struct ContentView: View {
     private enum PickTarget { case model, image }
     private var canRun: Bool { modelURL != nil && imageURL != nil && !engine.busy }
     private var pickerTypes: [UTType] {
-        pickTarget == .model
-            ? [UTType(filenameExtension: "mlpackage") ?? .package, UTType(filenameExtension: "mlmodelc") ?? .package, .folder]
-            : [.image]
+        if pickTarget == .image { return [.image] }
+        // .mlpackage/.mlmodelc are package bundles — need their concrete Core ML UTTypes
+        // to be selectable (the generic .package / .folder don't enable them).
+        let byId = ["com.apple.coreml.mlpackage", "com.apple.coreml.mlmodelc", "com.apple.coreml.model"]
+            .compactMap { UTType($0) }
+        let byExt = ["mlpackage", "mlmodelc", "mlmodel"].compactMap { UTType(filenameExtension: $0) }
+        let all = byId + byExt + [.package]
+        return all.isEmpty ? [.item] : all
     }
 
     var body: some View {
@@ -133,10 +138,25 @@ struct ContentView: View {
         }
         .fileImporter(isPresented: $showPicker, allowedContentTypes: pickerTypes) { result in
             guard case .success(let url) = result else { return }
-            switch pickTarget {
-            case .model: modelURL = url
-            case .image: imageURL = url
+            assign(url)
+        }
+        // Bulletproof fallback: drag a .mlpackage or image onto the window.
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            for p in providers {
+                _ = p.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    DispatchQueue.main.async { assign(url) }
+                }
             }
+            return true
+        }
+    }
+
+    /// Route a picked/dropped URL to model vs image by extension.
+    private func assign(_ url: URL) {
+        switch url.pathExtension.lowercased() {
+        case "mlpackage", "mlmodelc", "mlmodel": modelURL = url
+        default: imageURL = url
         }
     }
 
