@@ -160,9 +160,16 @@ final class CameraPreviewNSView: NSView {
     var mirrored = true { didSet { applyMirror() } }
     override func makeBackingLayer() -> CALayer { previewLayer.videoGravity = .resizeAspect; return previewLayer }
     override func layout() { super.layout(); applyMirror() }
-    private func applyMirror() {
+    // The preview connection is nil right after the session is attached (it only appears once the
+    // session's video input goes live, which happens async on the capture queue). Applying mirroring
+    // once in layout() therefore raced and randomly left the connection at its default mirroring, so the
+    // preview and the overlay could disagree. Retry until the connection exists so it reliably matches.
+    func applyMirror(retries: Int = 15) {
         if let c = previewLayer.connection, c.isVideoMirroringSupported {
-            c.automaticallyAdjustsVideoMirroring = false; c.isVideoMirrored = mirrored
+            c.automaticallyAdjustsVideoMirroring = false
+            c.isVideoMirrored = mirrored
+        } else if retries > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in self?.applyMirror(retries: retries - 1) }
         }
     }
 }
