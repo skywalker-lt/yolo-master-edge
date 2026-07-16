@@ -17,7 +17,9 @@ import YOLOMasterKit
 // ---------- capture + inference driver ----------
 final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     let session = AVCaptureSession()
-    @Published var candidates: [Detection] = []   // pre-NMS, camera-pixel coords; overlay applies conf/iou
+    @Published var dets: [Detection] = []           // post-NMS, camera-pixel coords (ready to draw)
+    @Published var maskImg: CGImage?                // seg mask overlay for the current frame (nil = none)
+    @Published var drawBoxes = true                 // false in segmentation masks-only mode
     @Published var frameSize: CGSize = .zero        // camera frame pixel dims (for overlay mapping)
     @Published var latencyMs: Double = 0            // per-frame compute latency (EMA)
     @Published var fps: Double = 0                  // achieved throughput (EMA)
@@ -30,6 +32,14 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     private var detector: Detector?                 // touched only on camQueue
     private var configured = false
     private var lastT = 0.0, latEMA = 0.0, fpsEMA = 0.0
+    // tuning params (read on camQueue; NMS + masks are done here so the main thread stays light)
+    private var confV = 0.25, iouV = 0.5
+    private var overlayV: SegOverlay = .both
+
+    /// Update conf/iou/overlay live. Applied on the next frame (imperceptible at streaming rates).
+    func setParams(conf: Double, iou: Double, overlay: SegOverlay) {
+        camQueue.async { [weak self] in self?.confV = conf; self?.iouV = iou; self?.overlayV = overlay }
+    }
 
     /// Begin streaming with `det`. Requests camera permission + configures the session on first use.
     func start(detector det: Detector) {
@@ -56,7 +66,7 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             guard let self else { return }
             if self.session.isRunning { self.session.stopRunning() }
             self.lastT = 0; self.latEMA = 0; self.fpsEMA = 0
-            DispatchQueue.main.async { self.running = false; self.candidates = []; self.latencyMs = 0; self.fps = 0 }
+            DispatchQueue.main.async { self.running = false; self.dets = []; self.maskImg = nil; self.latencyMs = 0; self.fps = 0 }
         }
     }
 
@@ -107,13 +117,18 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
         lastT = t0
         do {
             let raw = try det.forward(pb)
-            let cands = det.candidates(raw, confFloor: 0.05)
+            let cands = det.candidates(raw, confFloor: Float(confV))
+            let out = Detector.nms(cands, conf: Float(confV), iou: CGFloat(iouV))
+            // segmentation masks (computed here on the background queue, not on main)
+            let wantMasks = det.isSegment && overlayV != .boxes
+            let mask: CGImage? = wantMasks ? det.maskOverlay(out, raw) : nil
+            let boxes = !(det.isSegment && overlayV == .masks)
             let compute = (CACurrentMediaTime() - t0) * 1000
             latEMA = latEMA == 0 ? compute : latEMA * 0.8 + compute * 0.2
             if dt > 0 { let f = 1.0 / dt; fpsEMA = fpsEMA == 0 ? f : fpsEMA * 0.8 + f * 0.2 }
             let w = raw.origW, h = raw.origH, lat = latEMA, f = fpsEMA
             DispatchQueue.main.async {
-                self.candidates = cands
+                self.dets = out; self.maskImg = mask; self.drawBoxes = boxes
                 self.frameSize = CGSize(width: w, height: h)
                 self.latencyMs = lat; self.fps = f
             }
@@ -150,13 +165,17 @@ struct LiveCameraView: View {
     let compute: ComputeMode
     let preprocess: Detector.PreprocessMode
     let conf: Double, iou: Double
+    let overlay: SegOverlay
     let style: BoxStyle, label: LabelMode
     @StateObject private var cam = CameraController()
 
     var body: some View {
-        CameraStage(cam: cam, conf: conf, iou: iou, style: style, label: label)
-            .onAppear { rebuild { cam.start(detector: $0) } }
+        CameraStage(cam: cam, style: style, label: label)
+            .onAppear { cam.setParams(conf: conf, iou: iou, overlay: overlay); rebuild { cam.start(detector: $0) } }
             .onDisappear { cam.stop() }
+            .onChange(of: conf) { cam.setParams(conf: conf, iou: iou, overlay: overlay) }
+            .onChange(of: iou) { cam.setParams(conf: conf, iou: iou, overlay: overlay) }
+            .onChange(of: overlay) { cam.setParams(conf: conf, iou: iou, overlay: overlay) }
             .onChange(of: modelURL) { rebuild { cam.updateDetector($0) } }       // hot-swap model
             .onChange(of: compute) { rebuild { cam.updateDetector($0) } }        // hot-swap compute unit
             .onChange(of: preprocess) { rebuild { cam.updateDetector($0) } }     // hot-swap letterbox/stretch
@@ -178,10 +197,10 @@ struct LiveCameraView: View {
 // ---------- camera stage: live preview + box overlay + real-time FPS/latency HUD ----------
 struct CameraStage: View {
     @ObservedObject var cam: CameraController
-    let conf: Double, iou: Double
     let style: BoxStyle, label: LabelMode
     var body: some View {
-        let dets = Detector.nms(cam.candidates, conf: Float(conf), iou: CGFloat(iou))
+        let dets = cam.dets                     // already NMS'd on the camera queue
+        let drawBoxes = cam.drawBoxes
         return ZStack(alignment: .topLeading) {
             CameraPreviewView(session: cam.session)
             Canvas { ctx, size in
@@ -191,6 +210,11 @@ struct CameraStage: View {
                 let dw = vid.width * scale
                 let ox = (size.width - dw) / 2, oy = (size.height - vid.height * scale) / 2
                 let lw = Swift.max(1.5, dw / 640 * 1.5)
+                if let mask = cam.maskImg {       // segmentation overlay, scaled to the video rect
+                    ctx.draw(Image(decorative: mask, scale: 1),
+                             in: CGRect(x: ox, y: oy, width: dw, height: vid.height * scale))
+                }
+                if !drawBoxes { return }
                 for d in dets {
                     let color = overlayPalette[((d.cls % overlayPalette.count) + overlayPalette.count) % overlayPalette.count]
                     let r = CGRect(x: ox + d.rect.minX * scale, y: oy + d.rect.minY * scale,

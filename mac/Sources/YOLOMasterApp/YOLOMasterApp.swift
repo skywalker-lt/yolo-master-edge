@@ -103,6 +103,9 @@ final class InferenceEngine: ObservableObject {
     private var folderCache: [FolderItem] = []
     private var folderInput: URL?
     private var videoCache: [[Detection]] = []
+    private var videoRaws: [Detector.RawOutput?] = []   // per-frame proto (seg only) for on-demand masks
+    private var videoDet: Detector?                       // the seg detector, to compute mask overlays
+    @Published var videoMaskImg: CGImage?                 // mask overlay for the shown video frame
     @Published private(set) var videoFps: Double = 30
     @Published private(set) var videoURL: URL?
     @Published private(set) var videoSize: CGSize = .zero
@@ -112,6 +115,7 @@ final class InferenceEngine: ObservableObject {
     func resetResults() {
         hasResults = false; folderCache = []; folderInput = nil; videoCache = []; videoInput = nil; videoURL = nil; videoSize = .zero; outputURL = nil
         resultImage = nil; detCount = 0; currentCG = nil; currentCands = []; currentRaw = nil
+        videoRaws = []; videoDet = nil; videoMaskImg = nil
         infer = nil; classCounts = []
         status = "Ready — press Run."
     }
@@ -234,7 +238,7 @@ final class InferenceEngine: ObservableObject {
         }
     }
     // ---- video: infer ALL frames once (progress), cache candidates ----
-    func runVideo(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, preprocess: Detector.PreprocessMode) {
+    func runVideo(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, preprocess: Detector.PreprocessMode, overlay: SegOverlay) {
         busy = true; exporting = false; hasResults = false; progress = 0; outputURL = nil; status = "Inferring video…"
         Task { [weak self] in
             guard let self else { return }
@@ -242,7 +246,7 @@ final class InferenceEngine: ObservableObject {
                 let det = try Detector(modelURL: model, compute: compute)
                 det.preprocess = preprocess
                 self.detNames = det.classNames
-                let (frames, summary, fps, size) = try await inferVideo(det, input: input, confFloor: 0.05) { done, est in
+                let (frames, raws, summary, fps, size) = try await inferVideo(det, input: input, confFloor: 0.05) { done, est in
                     DispatchQueue.main.async {
                         self.progress = est > 0 ? min(1, Double(done) / Double(est)) : nil
                         self.status = "Inferring frame \(done)…"
@@ -250,11 +254,13 @@ final class InferenceEngine: ObservableObject {
                 }
                 let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
                 DispatchQueue.main.async {
-                    self.videoCache = frames; self.videoFps = fps; self.videoInput = input; self.videoURL = input; self.videoSize = size
+                    self.videoCache = frames; self.videoRaws = raws; self.videoDet = det.isSegment ? det : nil
+                    self.videoFps = fps; self.videoInput = input; self.videoURL = input; self.videoSize = size; self.videoMaskImg = nil
                     self.modelInfo = info; self.infer = summary; self.hasResults = !frames.isEmpty
                     self.busy = false; self.progress = nil
                     self.status = "Inferred \(frames.count) frames — play / scrub & tune, then Export"
                     self.setVideoFrameStats(time: 0, conf: conf, iou: iou)
+                    self.updateVideoMask(time: 0, conf: conf, iou: iou, overlay: overlay)
                 }
             } catch { DispatchQueue.main.async { self.status = "Inference failed: \(error.localizedDescription)"; self.busy = false; self.progress = nil } }
         }
@@ -262,10 +268,29 @@ final class InferenceEngine: ObservableObject {
 
     // ---- video overlay data: AVPlayer displays frames; we draw boxes from cached candidates at time ----
     var names: [String] { detNames }
+    var videoIsSegment: Bool { videoDet != nil }
+    private func videoFrameIndex(_ time: Double) -> Int {
+        min(max(0, Int((time * videoFps).rounded())), max(0, videoCache.count - 1))
+    }
     func detsAt(time: Double, conf: Double, iou: Double) -> [Detection] {
         guard !videoCache.isEmpty else { return [] }
-        let idx = min(max(0, Int((time * videoFps).rounded())), videoCache.count - 1)
-        return Detector.nms(videoCache[idx], conf: Float(conf), iou: CGFloat(iou))
+        return Detector.nms(videoCache[videoFrameIndex(time)], conf: Float(conf), iou: CGFloat(iou))
+    }
+    /// Compute the seg mask overlay for the frame at `time` (background) and publish it. No-op for
+    /// detection models or masks-off. Recomputed as the shown frame / conf / iou / overlay change.
+    func updateVideoMask(time: Double, conf: Double, iou: Double, overlay: SegOverlay) {
+        guard let det = videoDet, overlay != .boxes, !videoCache.isEmpty else {
+            if videoMaskImg != nil { videoMaskImg = nil }
+            return
+        }
+        let idx = videoFrameIndex(time)
+        guard videoRaws.indices.contains(idx), let raw = videoRaws[idx] else { return }
+        let cands = videoCache[idx]
+        queue.async { [weak self] in
+            let dets = Detector.nms(cands, conf: Float(conf), iou: CGFloat(iou))
+            let img = det.maskOverlay(dets, raw)
+            DispatchQueue.main.async { self?.videoMaskImg = img }
+        }
     }
     /// Update the 'this frame' summary stats for the video frame at `time`.
     func setVideoFrameStats(time: Double, conf: Double, iou: Double) {
@@ -278,15 +303,15 @@ final class InferenceEngine: ObservableObject {
     }
 
     // ---- export video from cached candidates (NO inference) ----
-    func exportVideo(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+    func exportVideo(conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
         guard let input = videoInput, !videoCache.isEmpty else { return }
         busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting video…"
         let out = input.deletingLastPathComponent().appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_annotated.mp4")
-        let frames = videoCache, names = detNames
+        let frames = videoCache, names = detNames, rw = videoRaws, det = videoDet
         Task { [weak self] in
             guard let self else { return }
             do {
-                let stats = try await exportVideoCached(input: input, output: out, framesCands: frames, names: names, conf: Float(conf), iou: CGFloat(iou), style: style, label: label) { done, total in
+                let stats = try await exportVideoCached(input: input, output: out, framesCands: frames, names: names, conf: Float(conf), iou: CGFloat(iou), style: style, label: label, raws: rw, detector: det, overlay: overlay) { done, total in
                     DispatchQueue.main.async { self.progress = total > 0 ? Double(done) / Double(total) : nil; self.status = "Exporting \(done)/\(total)…" }
                 }
                 DispatchQueue.main.async {
@@ -428,6 +453,7 @@ struct VideoStage: View {
     @ObservedObject var engine: InferenceEngine
     @ObservedObject var pc: PlayerController
     let conf: Double, iou: Double
+    let overlay: SegOverlay
     let style: BoxStyle, label: LabelMode
     var body: some View {
         ZStack {
@@ -436,9 +462,13 @@ struct VideoStage: View {
                 let vid = engine.videoSize
                 guard vid.width > 0, vid.height > 0 else { return }
                 let scale = Swift.min(size.width / vid.width, size.height / vid.height)
-                let dw = vid.width * scale
-                let ox = (size.width - dw) / 2, oy = (size.height - vid.height * scale) / 2
+                let dw = vid.width * scale, dh = vid.height * scale
+                let ox = (size.width - dw) / 2, oy = (size.height - dh) / 2
                 let lw = Swift.max(1.5, dw / 640 * 1.5)
+                if let mask = engine.videoMaskImg {   // segmentation overlay, scaled to the video rect
+                    ctx.draw(Image(decorative: mask, scale: 1), in: CGRect(x: ox, y: oy, width: dw, height: dh))
+                }
+                if engine.videoIsSegment && overlay == .masks { return }   // masks-only: no boxes/labels
                 for d in engine.detsAt(time: pc.displayTime, conf: conf, iou: iou) {   // displayTime -> boxes match the shown frame
                     let color = overlayPalette[d.cls % overlayPalette.count]
                     let r = CGRect(x: ox + d.rect.minX * scale, y: oy + d.rect.minY * scale, width: d.rect.width * scale, height: d.rect.height * scale)
@@ -550,7 +580,12 @@ struct ContentView: View {
         .onChange(of: sourceURL) { setupSource() }
         .onChange(of: scrubTime) { if scrubbing { pc.seek(scrubTime) } }   // seek while dragging
         .onChange(of: pc.currentTime) { if pc.isPlaying && !scrubbing { scrubTime = pc.currentTime } }   // slider follows playback
-        .onChange(of: pc.displayTime) { if sourceKind == .video && engine.hasResults { engine.setVideoFrameStats(time: pc.displayTime, conf: conf, iou: iou) } }
+        .onChange(of: pc.displayTime) {
+            if sourceKind == .video && engine.hasResults {
+                engine.setVideoFrameStats(time: pc.displayTime, conf: conf, iou: iou)
+                engine.updateVideoMask(time: pc.displayTime, conf: conf, iou: iou, overlay: overlay)
+            }
+        }
         .focusable().focused($kbFocused).onAppear { DispatchQueue.main.async { kbFocused = true } }
         .onKeyPress(.leftArrow)  { step(-1, vertical: false); return .handled }
         .onKeyPress(.rightArrow) { step(1,  vertical: false); return .handled }
@@ -581,7 +616,7 @@ struct ContentView: View {
         switch sourceKind {
         case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess)
         case .folder: engine.runFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess)
-        case .video:  engine.runVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, preprocess: preprocess)
+        case .video:  engine.runVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, preprocess: preprocess, overlay: overlay)
         default: break
         }
     }
@@ -597,7 +632,10 @@ struct ContentView: View {
     private func rerender() {
         if cameraOn { return }   // camera overlay reads conf/iou/style/label live — no engine re-render
         if sourceKind == .video {
-            if engine.hasResults { engine.setVideoFrameStats(time: pc.currentTime, conf: conf, iou: iou) }  // overlay redraws on conf/iou/label automatically
+            if engine.hasResults {
+                engine.setVideoFrameStats(time: pc.displayTime, conf: conf, iou: iou)   // overlay redraws on conf/iou/label automatically
+                engine.updateVideoMask(time: pc.displayTime, conf: conf, iou: iou, overlay: overlay)
+            }
         } else {
             engine.restyle(conf: conf, iou: iou, style: style, label: label, overlay: overlay)
         }
@@ -725,7 +763,7 @@ struct ContentView: View {
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
                     .disabled(sourceURL == nil || engine.busy)
                 HStack(spacing: 8) {
-                    secondaryButton("Export", "square.and.arrow.up") { engine.exportVideo(conf: conf, iou: iou, style: style, label: label) }
+                    secondaryButton("Export", "square.and.arrow.up") { engine.exportVideo(conf: conf, iou: iou, style: style, label: label, overlay: overlay) }
                         .disabled(!engine.hasResults || engine.busy)
                     if engine.outputURL != nil { revealButton }
                 }
@@ -758,9 +796,9 @@ struct ContentView: View {
             Color(nsColor: .underPageBackgroundColor)
             if cameraOn {
                 LiveCameraView(modelURL: modelURL, compute: compute, preprocess: preprocess,
-                               conf: conf, iou: iou, style: style, label: label).padding(12)
+                               conf: conf, iou: iou, overlay: overlay, style: style, label: label).padding(12)
             } else if sourceKind == .video && engine.hasResults {
-                VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, style: style, label: label).padding(12)
+                VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, overlay: overlay, style: style, label: label).padding(12)
             } else if let img = engine.resultImage {
                 Image(nsImage: img).resizable().scaledToFit().padding(12)
             } else if (sourceKind == .folder || sourceKind == .video) && !engine.hasResults && !engine.busy {

@@ -260,7 +260,7 @@ public func exportFolderCached(_ items: [FolderItem], output: URL, names: [Strin
 
 /// Phase 1: stream + forward every frame once, caching per-frame candidates + timing.
 public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
-                       progress: ((_ done: Int, _ estTotal: Int) -> Void)? = nil) async throws -> (frames: [[Detection]], summary: InferSummary, fps: Double, size: CGSize) {
+                       progress: ((_ done: Int, _ estTotal: Int) -> Void)? = nil) async throws -> (frames: [[Detection]], raws: [Detector.RawOutput?], summary: InferSummary, fps: Double, size: CGSize) {
     let asset = AVURLAsset(url: input)
     guard let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first else { throw PipelineError.noVideoTrack }
     let nominalFps = (try? await track.load(.nominalFrameRate)) ?? 0
@@ -275,7 +275,8 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
     let rout = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
     rout.alwaysCopiesSampleData = false; reader.add(rout); reader.startReading()
     let cictx = CIContext()
-    var frames: [[Detection]] = [], times: [Double] = [], n = 0
+    var frames: [[Detection]] = [], raws: [Detector.RawOutput?] = [], times: [Double] = [], n = 0
+    let seg = det.isSegment   // only seg needs the proto tensor cached (for masks); else keep memory flat
     let t0 = Date()
     while reader.status == .reading {
         guard let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { break }
@@ -287,18 +288,21 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
         if let cg = cictx.createCGImage(ci, from: CGRect(x: 0, y: 0, width: CGFloat(natW), height: CGFloat(natH))),
            let raw = try? det.forward(cg) {
             frames.append(det.candidates(raw, confFloor: confFloor)); times.append(raw.inferMs)
-        } else { frames.append([]) }
+            raws.append(seg ? raw : nil)
+        } else { frames.append([]); raws.append(nil) }
         n += 1
         if n % 4 == 0 { progress?(n, estTotal) }
     }
-    return (frames, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000), Double(fps), CGSize(width: natW, height: natH))
+    return (frames, raws, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000), Double(fps), CGSize(width: natW, height: natH))
 }
 
 /// Phase 3: re-stream frames in order, apply cached candidates[i] + tuned params, encode. NO inference.
 @discardableResult
 public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]], names: [String],
                               conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode, resize: Int = 0,
+                              raws: [Detector.RawOutput?] = [], detector: Detector? = nil, overlay: SegOverlay = .both,
                               progress: ((_ done: Int, _ total: Int) -> Void)? = nil) async throws -> VideoStats {
+    let seg = detector?.isSegment == true && overlay != .boxes
     let asset = AVURLAsset(url: input)
     guard let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first else { throw PipelineError.noVideoTrack }
     let nominalFps = (try? await track.load(.nominalFrameRate)) ?? 0
@@ -331,7 +335,11 @@ public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]
         guard var cg = cictx.createCGImage(ci, from: CGRect(x: 0, y: 0, width: CGFloat(natW), height: CGFloat(natH))) else { n += 1; continue }
         if resize > 0 { cg = resizeExact(cg, outW, outH) }
         let dets = Detector.nms(n < framesCands.count ? framesCands[n] : [], conf: conf, iou: iou)
-        guard let annotated = annotate(cg, dets, names: names, style: style, label: label), let pool = adaptor.pixelBufferPool else { n += 1; continue }
+        var masks: [MaskBitmap] = []
+        if seg, let det = detector, n < raws.count, let raw = raws[n] { masks = dets.compactMap { det.maskImage($0, raw) } }
+        let drawBoxes = !(detector?.isSegment == true && overlay == .masks)
+        guard let annotated = annotate(cg, dets, names: names, style: style, label: label, masks: masks, drawBoxes: drawBoxes),
+              let pool = adaptor.pixelBufferPool else { n += 1; continue }
         var opb: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(nil, pool, &opb)
         guard let dst = opb else { n += 1; continue }
