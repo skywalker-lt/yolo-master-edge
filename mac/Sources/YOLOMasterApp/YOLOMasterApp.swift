@@ -16,7 +16,7 @@ import ImageIO
 import AVFoundation
 @preconcurrency import YOLOMasterKit   // Detector/RawOutput aren't Sendable; we hop them to main safely
 
-let brandColor = Color(red: 0.0, green: 131.0 / 255.0, blue: 127.0 / 255.0)   // #00837F — app accent
+let brandColor = Color(red: 86.0 / 255.0, green: 199.0 / 255.0, blue: 187.0 / 255.0)   // #56C7BB — app accent
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -603,6 +603,10 @@ struct ContentView: View {
         .onKeyPress(.rightArrow) { step(1,  vertical: false); return .handled }
         .onKeyPress(.upArrow)    { step(-1, vertical: true);  return .handled }
         .onKeyPress(.downArrow)  { step(1,  vertical: true);  return .handled }
+        .onKeyPress(.space) {   // space toggles play/pause of the inferred video
+            guard sourceKind == .video, engine.hasResults, !cameraOn else { return .ignored }
+            pc.togglePlay(); return .handled
+        }
         .tint(brandColor)   // teal accent for buttons/controls (Live Camera keeps its own pink tint)
     }
 
