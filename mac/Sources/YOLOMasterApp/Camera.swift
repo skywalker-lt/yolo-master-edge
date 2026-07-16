@@ -167,6 +167,7 @@ struct LiveCameraView: View {
     let conf: Double, iou: Double
     let overlay: SegOverlay
     let style: BoxStyle, label: LabelMode
+    @Binding var isSegment: Bool                    // reported up so the sidebar can show the Overlay control
     @StateObject private var cam = CameraController()
 
     var body: some View {
@@ -186,7 +187,7 @@ struct LiveCameraView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let d = try Detector(modelURL: m, compute: comp); d.preprocess = pp
-                DispatchQueue.main.async { apply(d) }
+                DispatchQueue.main.async { isSegment = d.isSegment; apply(d) }
             } catch {
                 DispatchQueue.main.async { cam.errorMsg = "Could not load model: \(error.localizedDescription)" }
             }
