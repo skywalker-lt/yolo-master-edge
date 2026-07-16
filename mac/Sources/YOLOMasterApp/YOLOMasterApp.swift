@@ -500,6 +500,7 @@ struct ContentView: View {
     @State private var scrubbing = false
     @State private var wasPlaying = false
     @StateObject private var pc = PlayerController()
+    @State private var cameraOn = false   // live-camera mode; the session lives in LiveCameraView (isolated observation)
     @FocusState private var kbFocused: Bool
 
     private enum PickTarget { case model, source }
@@ -519,15 +520,15 @@ struct ContentView: View {
         HStack(spacing: 0) {
             controls.frame(width: 300).padding(16)
             Divider()
-            if sourceKind == .folder && engine.hasResults && !engine.exporting {
+            if !cameraOn && sourceKind == .folder && engine.hasResults && !engine.exporting {
                 FinderView(images: folderImages, selected: $selectedIndex, mode: $finderMode, iconSize: $iconSize) { selectAndShow($0) }
                     .frame(width: 380)
                 Divider()
             }
             VStack(spacing: 0) {
                 preview.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay(alignment: .bottom) { if engine.busy { progressBar } }
-                if sourceKind == .video && engine.hasResults && !engine.exporting { scrubberBar }
+                    .overlay(alignment: .bottom) { if engine.busy && !cameraOn { progressBar } }
+                if !cameraOn && sourceKind == .video && engine.hasResults && !engine.exporting { scrubberBar }
             }
         }
         .fileImporter(isPresented: $showPicker, allowedContentTypes: pickerTypes) { if case .success(let u) = $0 { assign(u) } }
@@ -541,6 +542,7 @@ struct ContentView: View {
         .onChange(of: label) { rerender() }
         .onChange(of: overlay) { rerender() }
         .onChange(of: preprocess) {   // preprocessing changes the forward pass -> re-infer (not a cheap re-render)
+            if cameraOn { return }    // LiveCameraView hot-swaps the detector itself
             guard !engine.busy, engine.hasResults || engine.resultImage != nil else { return }
             runInfer()
         }
@@ -583,12 +585,17 @@ struct ContentView: View {
         default: break
         }
     }
+    // ---- live camera (session lifecycle + detector build handled inside LiveCameraView) ----
+    private func startCamera() { guard modelURL != nil else { return }; pc.pause(); cameraOn = true }
+    private func stopCamera() { cameraOn = false }
+
     private func selectAndShow(_ i: Int) {
         guard folderImages.indices.contains(i) else { return }
         selectedIndex = i
         engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label, overlay: overlay)
     }
     private func rerender() {
+        if cameraOn { return }   // camera overlay reads conf/iou/style/label live — no engine re-render
         if sourceKind == .video {
             if engine.hasResults { engine.setVideoFrameStats(time: pc.currentTime, conf: conf, iou: iou) }  // overlay redraws on conf/iou/label automatically
         } else {
@@ -682,6 +689,18 @@ struct ContentView: View {
 
     @ViewBuilder private var actionRow: some View {
         VStack(spacing: 8) {
+            if cameraOn {
+                primaryButton("Stop Camera", "stop.fill") { stopCamera() }
+            } else {
+                sourceActions
+                secondaryButton("Live Camera", "camera.fill") { startCamera() }
+                    .disabled(modelURL == nil)
+            }
+        }
+    }
+
+    @ViewBuilder private var sourceActions: some View {
+        VStack(spacing: 8) {
             switch sourceKind {
             case .image:
                 primaryButton("Run", "play.fill") { runInfer() }.disabled(sourceURL == nil || engine.busy)
@@ -729,7 +748,10 @@ struct ContentView: View {
     private var preview: some View {
         ZStack {
             Color(nsColor: .underPageBackgroundColor)
-            if sourceKind == .video && engine.hasResults {
+            if cameraOn {
+                LiveCameraView(modelURL: modelURL, compute: compute, preprocess: preprocess,
+                               conf: conf, iou: iou, style: style, label: label).padding(12)
+            } else if sourceKind == .video && engine.hasResults {
                 VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, style: style, label: label).padding(12)
             } else if let img = engine.resultImage {
                 Image(nsImage: img).resizable().scaledToFit().padding(12)

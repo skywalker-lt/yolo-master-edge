@@ -31,6 +31,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleVersion</key>           <string>${VERSION}</string>
   <key>LSMinimumSystemVersion</key>    <string>14.0</string>
+  <key>NSCameraUsageDescription</key>  <string>Live real-time object detection runs the selected Core ML model on the camera feed. Frames are processed on-device and never leave your Mac.</string>
   <key>NSHighResolutionCapable</key>   <true/>
   <key>LSApplicationCategoryType</key> <string>public.app-category.developer-tools</string>
 </dict>
