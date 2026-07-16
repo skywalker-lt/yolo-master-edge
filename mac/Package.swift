@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "YOLOMaster",
-    platforms: [.macOS("15.0")],   // 15.0 deployment target (Float16 MLMultiArray access); string form keeps tools 5.9
+    platforms: [.macOS("14.0")],   // Sonoma+. Floor is onKeyPress + zero-param onChange (SwiftUI 14); every other API used is 12–13 (Canvas/AV-async 13, Float16 MLMultiArray 12).
     products: [
         .library(name: "YOLOMasterKit", targets: ["YOLOMasterKit"]),
         .executable(name: "yolomaster-coreml", targets: ["YOLOMasterCoreML"]),   // CLI runner
