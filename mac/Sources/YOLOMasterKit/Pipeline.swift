@@ -233,13 +233,20 @@ public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
 @discardableResult
 public func exportFolderCached(_ items: [FolderItem], output: URL, names: [String],
                                conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode,
+                               detector: Detector? = nil, overlay: SegOverlay = .both,
                                progress: ((_ done: Int, _ total: Int) -> Void)? = nil) -> Int {
     try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    let seg = detector?.isSegment == true
     var written = 0
     for (i, item) in items.enumerated() {
         if let cg = loadCGImage(item.url) {
             let dets = Detector.nms(item.candidates, conf: conf, iou: iou)
-            if let a = annotate(cg, dets, names: names, style: style, label: label) {
+            var masks: [MaskBitmap] = [], drawBoxes = true
+            if seg, overlay != .boxes, let det = detector, let raw = try? det.forward(cg) {
+                masks = dets.compactMap { det.maskImage($0, raw) }
+                drawBoxes = overlay != .masks
+            }
+            if let a = annotate(cg, dets, names: names, style: style, label: label, masks: masks, drawBoxes: drawBoxes) {
                 saveCGImage(a, to: output.appendingPathComponent(item.url.deletingPathExtension().lastPathComponent + ".jpg"))
                 written += 1
             }

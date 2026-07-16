@@ -8,13 +8,23 @@ import CoreML
 import CoreGraphics
 
 /// A single detection in ORIGINAL-image pixel coordinates (top-left origin).
+/// `maskCoeffs` is non-empty only for segmentation models (nm mask-prototype coefficients).
 public struct Detection: Sendable {
     public let cls: Int
     public let score: Float
     public let rect: CGRect
-    public init(cls: Int, score: Float, rect: CGRect) {
-        self.cls = cls; self.score = score; self.rect = rect
+    public let maskCoeffs: [Float]
+    public init(cls: Int, score: Float, rect: CGRect, maskCoeffs: [Float] = []) {
+        self.cls = cls; self.score = score; self.rect = rect; self.maskCoeffs = maskCoeffs
     }
+}
+
+/// A rendered instance mask (segmentation): a proto-resolution tinted RGBA image, the unit
+/// sub-rect of the proto grid mapping to the full original image, and the box to clip it to.
+public struct MaskBitmap: @unchecked Sendable {
+    public let image: CGImage
+    public let protoCrop: CGRect   // unit coords of the proto grid (top-left origin) = full original image
+    public let clip: CGRect        // detection box, original-image pixels (top-left origin)
 }
 
 /// Core ML compute unit selection. Default cpuAndGPU: the ANE can crash on this
@@ -63,9 +73,13 @@ public final class Detector {
     public let classNames: [String]
     public let computeMode: ComputeMode
 
+    public let isSegment: Bool
+    public let nm: Int   // mask-coeff count (segmentation); 0 for detection
+
     private let model: MLModel
     private let inputName: String
     private let outputName: String
+    private let protoName: String
 
     public init(modelURL: URL, compute: ComputeMode = .cpuAndGPU) throws {
         self.computeMode = compute
@@ -101,10 +115,17 @@ public final class Detector {
             return 640
         }()
 
+        // segmentation: detection tensor is [1, 4+nc+nm, anchors] -> nc from names, plus a proto output
+        let segTask = (meta["task"] ?? "detect") == "segment"
+        let ncFinal = segTask ? metaNames.count : ncResolved
+
         self.inputName = inName
         self.outputName = outName
-        self.nc = ncResolved
-        self.classNames = metaNames.count == ncResolved ? metaNames : (0..<ncResolved).map { "class\($0)" }
+        self.protoName = meta["proto"] ?? ""
+        self.isSegment = segTask
+        self.nm = Int(meta["nm"] ?? "0") ?? 0
+        self.nc = ncFinal
+        self.classNames = metaNames.count == ncFinal ? metaNames : (0..<ncFinal).map { "class\($0)" }
         self.imgsz = szResolved
     }
 
@@ -172,7 +193,14 @@ public final class Detector {
                     x1 = max(0, min(CGFloat(origW), x1)); x2 = max(0, min(CGFloat(origW), x2))
                     y1 = max(0, min(CGFloat(origH), y1)); y2 = max(0, min(CGFloat(origH), y2))
                     if x2 > x1 && y2 > y1 {
-                        dets.append(Detection(cls: c, score: s, rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1)))
+                        var coeffs: [Float] = []
+                        if nm > 0 {
+                            coeffs.reserveCapacity(nm)
+                            for k in 0..<nm { coeffs.append(Float(at(4 + nc + k, a))) }
+                        }
+                        dets.append(Detection(cls: c, score: s,
+                                              rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1),
+                                              maskCoeffs: coeffs))
                     }
                 }
             }
@@ -210,12 +238,13 @@ public final class Detector {
     /// (conf/iou threshold, NMS) is a frontend concern, not an inference one.
     public final class RawOutput {
         fileprivate let y: MLMultiArray
+        fileprivate let proto: MLMultiArray?   // segmentation prototypes [1, nm, mh, mw]
         fileprivate let scale, padX, padY: CGFloat
         public let origW, origH: Int
         public let inferMs: Double
-        fileprivate init(y: MLMultiArray, scale: CGFloat, padX: CGFloat, padY: CGFloat,
+        fileprivate init(y: MLMultiArray, proto: MLMultiArray?, scale: CGFloat, padX: CGFloat, padY: CGFloat,
                          origW: Int, origH: Int, inferMs: Double) {
-            self.y = y; self.scale = scale; self.padX = padX; self.padY = padY
+            self.y = y; self.proto = proto; self.scale = scale; self.padX = padX; self.padY = padY
             self.origW = origW; self.origH = origH; self.inferMs = inferMs
         }
     }
@@ -230,7 +259,8 @@ public final class Detector {
         guard let y = out.featureValue(for: outputName)?.multiArrayValue, y.shape.count == 3 else {
             throw DetectorError.badOutput
         }
-        return RawOutput(y: y, scale: lb.scale, padX: lb.padX, padY: lb.padY,
+        let proto = isSegment ? out.featureValue(for: protoName)?.multiArrayValue : nil
+        return RawOutput(y: y, proto: proto, scale: lb.scale, padX: lb.padX, padY: lb.padY,
                          origW: image.width, origH: image.height, inferMs: infMs)
     }
 
@@ -243,6 +273,58 @@ public final class Detector {
     public func detect(_ image: CGImage, conf: Float = 0.25, iou iouT: CGFloat = 0.5) throws -> Result {
         let raw = try forward(image)
         return Result(detections: decode(raw, conf: conf, iou: iouT), inferMs: raw.inferMs)
+    }
+
+    // ---------- segmentation masks ----------
+    /// Instance mask for one detection: threshold(sigmoid(coeffs · protos)), tinted by class color,
+    /// as a proto-resolution RGBA image plus the unit sub-rect of the proto grid that maps to the full
+    /// original image (`protoCrop`) and the box to clip it to (`clip`, original-image pixels). nil if
+    /// the model isn't segmentation or there's no proto tensor.
+    public func maskImage(_ det: Detection, _ raw: RawOutput, threshold: Float = 0.5, alpha: UInt8 = 165) -> MaskBitmap? {
+        guard let proto = raw.proto, proto.shape.count == 4, !det.maskCoeffs.isEmpty else { return nil }
+        let cm = proto.shape[1].intValue, mh = proto.shape[2].intValue, mw = proto.shape[3].intValue
+        let nmv = min(cm, det.maskCoeffs.count)
+        let s1 = proto.strides[1].intValue, s2 = proto.strides[2].intValue, s3 = proto.strides[3].intValue
+        let coeffs = det.maskCoeffs
+        // premultiplied (context uses premultipliedLast) tint from the class palette
+        let comps = classColor(det.cls).components ?? [1, 0.25, 0.25, 1]
+        let a = Float(alpha)
+        let tr = UInt8(max(0, min(255, Float(comps[0]) * a))), tg = UInt8(max(0, min(255, Float(comps[1]) * a)))
+        let tb = UInt8(max(0, min(255, Float(comps[2]) * a)))
+        var px = [UInt8](repeating: 0, count: mw * mh * 4)
+        func fill(_ at: (Int, Int, Int) -> Float32) {
+            for i in 0..<mh {
+                for j in 0..<mw {
+                    var acc: Float = 0
+                    for k in 0..<nmv { acc += coeffs[k] * Float(at(k, i, j)) }
+                    if 1 / (1 + expf(-acc)) > threshold {
+                        let o = (i * mw + j) * 4
+                        px[o] = tr; px[o + 1] = tg; px[o + 2] = tb; px[o + 3] = alpha
+                    }
+                }
+            }
+        }
+        if proto.dataType == .float16 {
+            proto.withUnsafeBufferPointer(ofType: Float16.self) { buf in
+                guard let pp = buf.baseAddress else { return }
+                fill { k, i, j in Float32(pp[k * s1 + i * s2 + j * s3]) }
+            }
+        } else {
+            proto.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+                guard let pp = buf.baseAddress else { return }
+                fill { k, i, j in pp[k * s1 + i * s2 + j * s3] }
+            }
+        }
+        let bmp = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let ctx = CGContext(data: &px, width: mw, height: mh, bitsPerComponent: 8, bytesPerRow: mw * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: bmp),
+              let img = ctx.makeImage() else { return nil }
+        // proto grid covers the letterboxed imgsz×imgsz input; the original image occupies
+        // [pad, pad + orig*scale]. Express that as a unit crop of the proto grid (top-left origin).
+        let sz = CGFloat(imgsz)
+        let crop = CGRect(x: raw.padX / sz, y: raw.padY / sz,
+                          width: CGFloat(raw.origW) * raw.scale / sz, height: CGFloat(raw.origH) * raw.scale / sz)
+        return MaskBitmap(image: img, protoCrop: crop, clip: det.rect)
     }
 
     /// Model-only forward (no decode/draw) — for latency benchmarking. Returns ms.

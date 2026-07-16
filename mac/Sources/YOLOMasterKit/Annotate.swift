@@ -6,12 +6,17 @@ import CoreText
 
 public enum BoxStyle: String, CaseIterable, Sendable { case hud, solid, neon }
 public enum LabelMode: String, CaseIterable, Sendable { case full, min, off }
+/// Segmentation display: masks only (boxes removed), boxes only, or both. Ignored for detectors.
+public enum SegOverlay: String, CaseIterable, Sendable { case masks, boxes, both }
 
 private let palette: [CGColor] = [
     (0.98, 0.26, 0.30), (0.20, 0.71, 0.98), (0.16, 0.85, 0.52), (0.99, 0.79, 0.12),
     (0.72, 0.40, 0.98), (0.99, 0.55, 0.18), (0.10, 0.83, 0.80), (0.98, 0.36, 0.66),
     (0.55, 0.82, 0.28), (0.40, 0.52, 0.98),
 ].map { CGColor(red: CGFloat($0.0), green: CGFloat($0.1), blue: CGFloat($0.2), alpha: 1) }
+
+/// Stable per-class color (shared by boxes and segmentation masks).
+public func classColor(_ cls: Int) -> CGColor { palette[((cls % palette.count) + palette.count) % palette.count] }
 
 private func labelTextColor(on bg: CGColor) -> CGColor {
     let c = bg.components ?? [0, 0, 0]
@@ -20,13 +25,27 @@ private func labelTextColor(on bg: CGColor) -> CGColor {
 }
 
 /// Draw detections onto `image`, returning a new annotated CGImage.
+/// `masks` (segmentation) are composited under the boxes; pass `drawBoxes: false` to render masks only.
 public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
-                     style: BoxStyle = .hud, label: LabelMode = .full) -> CGImage? {
+                     style: BoxStyle = .hud, label: LabelMode = .full,
+                     masks: [MaskBitmap] = [], drawBoxes: Bool = true) -> CGImage? {
     let w = image.width, h = image.height
     guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                               space: CGColorSpaceCreateDeviceRGB(),
                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
     ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))  // no flip; boxes convert y = h - topY
+    // ---- segmentation masks (under the boxes) ----
+    for m in masks {
+        let pc = m.protoCrop, iw = CGFloat(m.image.width), ih = CGFloat(m.image.height)
+        let sub = CGRect(x: pc.minX * iw, y: pc.minY * ih, width: pc.width * iw, height: pc.height * ih)
+        guard sub.width > 0, sub.height > 0, let cropped = m.image.cropping(to: sub) else { continue }
+        ctx.saveGState()
+        // clip to this instance's box (context is bottom-left origin -> flip y)
+        ctx.clip(to: CGRect(x: m.clip.minX, y: CGFloat(h) - m.clip.maxY, width: m.clip.width, height: m.clip.height))
+        ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))  // proto crop stretched to full image, upright
+        ctx.restoreGState()
+    }
+    if !drawBoxes { return ctx.makeImage() }
     ctx.setLineJoin(.round); ctx.setLineCap(.round)
     let lw = max(CGFloat(2), CGFloat(w) / 640)
     let baseFont = max(CGFloat(12), CGFloat(w) / 95)
