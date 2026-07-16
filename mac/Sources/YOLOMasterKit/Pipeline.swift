@@ -225,3 +225,98 @@ public func exportFolderCached(_ items: [FolderItem], output: URL, names: [Strin
     }
     return written
 }
+
+// ---- two-phase video flow: infer every frame once (cache candidates) -> scrub/tune -> export ----
+
+/// Phase 1: stream + forward every frame once, caching per-frame candidates + timing.
+public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
+                       progress: ((_ done: Int, _ estTotal: Int) -> Void)? = nil) async throws -> (frames: [[Detection]], summary: InferSummary, fps: Double) {
+    let asset = AVURLAsset(url: input)
+    guard let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first else { throw PipelineError.noVideoTrack }
+    let nominalFps = (try? await track.load(.nominalFrameRate)) ?? 0
+    let fps = nominalFps > 0 ? nominalFps : 30
+    let transform = (try? await track.load(.preferredTransform)) ?? .identity
+    let naturalSize = (try? await track.load(.naturalSize)) ?? .zero
+    let dur = (try? await asset.load(.duration))?.seconds ?? 0
+    let estTotal = Int((dur * Double(fps)).rounded())
+    let disp = naturalSize.applying(transform)
+    let natW = Int(abs(disp.width).rounded()), natH = Int(abs(disp.height).rounded())
+    guard let reader = try? AVAssetReader(asset: asset) else { throw PipelineError.readerInit }
+    let rout = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+    rout.alwaysCopiesSampleData = false; reader.add(rout); reader.startReading()
+    let cictx = CIContext()
+    var frames: [[Detection]] = [], times: [Double] = [], n = 0
+    while reader.status == .reading {
+        guard let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { break }
+        var ci = CIImage(cvPixelBuffer: pb)
+        if !transform.isIdentity {
+            ci = ci.transformed(by: transform)
+            ci = ci.transformed(by: CGAffineTransform(translationX: -ci.extent.origin.x, y: -ci.extent.origin.y))
+        }
+        if let cg = cictx.createCGImage(ci, from: CGRect(x: 0, y: 0, width: CGFloat(natW), height: CGFloat(natH))),
+           let raw = try? det.forward(cg) {
+            frames.append(det.candidates(raw, confFloor: confFloor)); times.append(raw.inferMs)
+        } else { frames.append([]) }
+        n += 1
+        if n % 4 == 0 { progress?(n, estTotal) }
+    }
+    return (frames, InferSummary(times), Double(fps))
+}
+
+/// Phase 3: re-stream frames in order, apply cached candidates[i] + tuned params, encode. NO inference.
+@discardableResult
+public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]], names: [String],
+                              conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode, resize: Int = 0,
+                              progress: ((_ done: Int, _ total: Int) -> Void)? = nil) async throws -> VideoStats {
+    let asset = AVURLAsset(url: input)
+    guard let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first else { throw PipelineError.noVideoTrack }
+    let nominalFps = (try? await track.load(.nominalFrameRate)) ?? 0
+    let fps = nominalFps > 0 ? nominalFps : 30
+    let transform = (try? await track.load(.preferredTransform)) ?? .identity
+    let naturalSize = (try? await track.load(.naturalSize)) ?? .zero
+    let disp = naturalSize.applying(transform)
+    let natW = Int(abs(disp.width).rounded()), natH = Int(abs(disp.height).rounded())
+    let (outW, outH) = resize > 0 ? fitLongSide(natW, natH, resize) : (natW, natH)
+    guard let reader = try? AVAssetReader(asset: asset) else { throw PipelineError.readerInit }
+    let rout = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+    rout.alwaysCopiesSampleData = false; reader.add(rout)
+    try? FileManager.default.removeItem(at: output)
+    let ftype: AVFileType = output.pathExtension.lowercased() == "mov" ? .mov : .mp4
+    guard let writer = try? AVAssetWriter(outputURL: output, fileType: ftype) else { throw PipelineError.writerInit }
+    let winput = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: outW, AVVideoHeightKey: outH])
+    winput.expectsMediaDataInRealTime = false
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: winput, sourcePixelBufferAttributes: [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA, kCVPixelBufferWidthKey as String: outW, kCVPixelBufferHeightKey as String: outH])
+    writer.add(winput); reader.startReading(); writer.startWriting(); writer.startSession(atSourceTime: .zero)
+    let cictx = CIContext(); var n = 0; let total = framesCands.count
+    while reader.status == .reading {
+        guard let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { break }
+        let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+        var ci = CIImage(cvPixelBuffer: pb)
+        if !transform.isIdentity {
+            ci = ci.transformed(by: transform)
+            ci = ci.transformed(by: CGAffineTransform(translationX: -ci.extent.origin.x, y: -ci.extent.origin.y))
+        }
+        guard var cg = cictx.createCGImage(ci, from: CGRect(x: 0, y: 0, width: CGFloat(natW), height: CGFloat(natH))) else { n += 1; continue }
+        if resize > 0 { cg = resizeExact(cg, outW, outH) }
+        let dets = Detector.nms(n < framesCands.count ? framesCands[n] : [], conf: conf, iou: iou)
+        guard let annotated = annotate(cg, dets, names: names, style: style, label: label), let pool = adaptor.pixelBufferPool else { n += 1; continue }
+        var opb: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &opb)
+        guard let dst = opb else { n += 1; continue }
+        CVPixelBufferLockBaseAddress(dst, [])
+        if let base = CVPixelBufferGetBaseAddress(dst),
+           let c = CGContext(data: base, width: outW, height: outH, bitsPerComponent: 8,
+                             bytesPerRow: CVPixelBufferGetBytesPerRow(dst), space: CGColorSpaceCreateDeviceRGB(),
+                             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
+            c.draw(annotated, in: CGRect(x: 0, y: 0, width: outW, height: outH))
+        }
+        CVPixelBufferUnlockBaseAddress(dst, [])
+        while !winput.isReadyForMoreMediaData { usleep(2000) }
+        adaptor.append(dst, withPresentationTime: pts)
+        n += 1
+        if n % 10 == 0 { progress?(n, total) }
+    }
+    winput.markAsFinished(); await writer.finishWriting()
+    return VideoStats(frames: n, meanMs: 0, outW: outW, outH: outH, fps: Int(fps.rounded()))
+}

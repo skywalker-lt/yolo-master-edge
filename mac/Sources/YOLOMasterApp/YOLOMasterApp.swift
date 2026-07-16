@@ -99,10 +99,13 @@ final class InferenceEngine: ObservableObject {
     private var lastAnnotated: CGImage?
     private var folderCache: [FolderItem] = []
     private var folderInput: URL?
+    private var videoCache: [[Detection]] = []
+    private var videoFps: Double = 30
+    private var videoInput: URL?
     private let queue = DispatchQueue(label: "com.yolomaster.inference")
 
     func resetResults() {
-        hasResults = false; folderCache = []; folderInput = nil; outputURL = nil
+        hasResults = false; folderCache = []; folderInput = nil; videoCache = []; videoInput = nil; outputURL = nil
         resultImage = nil; detCount = 0; currentCG = nil; currentCands = []
         infer = nil; classCounts = []
         status = "Ready — press Run."
@@ -215,21 +218,65 @@ final class InferenceEngine: ObservableObject {
             }
         }
     }
-    func exportVideo(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
-        busy = true; exporting = true; progress = nil; outputURL = nil; status = "Exporting video…"
-        let out = input.deletingLastPathComponent().appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_annotated.mp4")
+    // ---- video: infer ALL frames once (progress), cache candidates ----
+    func runVideo(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        busy = true; exporting = false; hasResults = false; progress = 0; outputURL = nil; status = "Inferring video…"
         Task { [weak self] in
             guard let self else { return }
             do {
                 let det = try Detector(modelURL: model, compute: compute)
-                let stats = try await runVideo(det, input: input, output: out, conf: Float(conf), iou: CGFloat(iou), style: style, label: label) { frames, last in
+                self.detNames = det.classNames
+                let (frames, summary, fps) = try await inferVideo(det, input: input, confFloor: 0.05) { done, est in
                     DispatchQueue.main.async {
-                        if let last { self.resultImage = NSImage(cgImage: last, size: NSSize(width: last.width, height: last.height)) }
-                        self.status = "Exporting \(frames) frames…"
+                        self.progress = est > 0 ? min(1, Double(done) / Double(est)) : nil
+                        self.status = "Inferring frame \(done)…"
                     }
                 }
+                let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
+                let firstCG = await extractFrame(input, atSeconds: 0)
                 DispatchQueue.main.async {
-                    self.outputURL = out; self.busy = false; self.exporting = false
+                    self.videoCache = frames; self.videoFps = fps; self.videoInput = input
+                    self.modelInfo = info; self.infer = summary; self.hasResults = !frames.isEmpty
+                    self.busy = false; self.progress = nil
+                    self.status = "Inferred \(frames.count) frames — scrub & tune, then Export"
+                }
+                if let cg = firstCG {
+                    self.queue.async {
+                        self.currentCG = cg; self.currentCands = frames.first ?? []; self.currentMs = 0
+                        self.render(conf: conf, iou: iou, style: style, label: label)
+                    }
+                }
+            } catch { DispatchQueue.main.async { self.status = "Inference failed: \(error.localizedDescription)"; self.busy = false; self.progress = nil } }
+        }
+    }
+
+    // ---- scrub: show a cached video frame at `time` (instant; no inference) ----
+    func showVideoFrame(time: Double, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        guard let input = videoInput, !videoCache.isEmpty else { return }
+        let idx = min(max(0, Int((time * videoFps).rounded())), videoCache.count - 1)
+        let cands = videoCache[idx]
+        Task { [weak self] in
+            guard let self else { return }
+            if let cg = await extractFrame(input, atSeconds: time) {
+                self.queue.async { self.currentCG = cg; self.currentCands = cands; self.currentMs = 0; self.render(conf: conf, iou: iou, style: style, label: label) }
+            }
+        }
+    }
+
+    // ---- export video from cached candidates (NO inference) ----
+    func exportVideo(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        guard let input = videoInput, !videoCache.isEmpty else { return }
+        busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting video…"
+        let out = input.deletingLastPathComponent().appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_annotated.mp4")
+        let frames = videoCache, names = detNames
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let stats = try await exportVideoCached(input: input, output: out, framesCands: frames, names: names, conf: Float(conf), iou: CGFloat(iou), style: style, label: label) { done, total in
+                    DispatchQueue.main.async { self.progress = total > 0 ? Double(done) / Double(total) : nil; self.status = "Exporting \(done)/\(total)…" }
+                }
+                DispatchQueue.main.async {
+                    self.outputURL = out; self.busy = false; self.exporting = false; self.progress = nil
                     self.status = "Exported \(stats.frames) frames @\(stats.fps)fps"
                 }
             } catch { DispatchQueue.main.async { self.status = "Export failed: \(error.localizedDescription)"; self.busy = false; self.exporting = false } }
@@ -352,7 +399,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 preview.frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(alignment: .bottom) { if engine.busy { progressBar } }
-                if sourceKind == .video && !engine.exporting { scrubberBar }
+                if sourceKind == .video && engine.hasResults && !engine.exporting { scrubberBar }
             }
         }
         .fileImporter(isPresented: $showPicker, allowedContentTypes: pickerTypes) { if case .success(let u) = $0 { assign(u) } }
@@ -385,13 +432,7 @@ struct ContentView: View {
         switch classifySource(s) {
         case .folder: folderImages = listImages(s); selectedIndex = 0
         case .video:
-            Task {
-                let dur = await videoDuration(s)
-                await MainActor.run { videoDur = dur; scrubTime = 0 }
-                if let m = modelURL, let cg = await extractFrame(s, atSeconds: 0) {
-                    await MainActor.run { engine.preview(model: m, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label) }
-                }
-            }
+            Task { let dur = await videoDuration(s); await MainActor.run { videoDur = dur; scrubTime = 0 } }
         default: break
         }
     }
@@ -400,6 +441,7 @@ struct ContentView: View {
         switch sourceKind {
         case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
         case .folder: engine.runFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
+        case .video:  engine.runVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
         default: break
         }
     }
@@ -412,11 +454,7 @@ struct ContentView: View {
     private func scrubFrame() {
         scrubWork?.cancel()
         let t = scrubTime
-        let work = DispatchWorkItem {
-            guard let m = modelURL, let s = sourceURL else { return }
-            Task { if let cg = await extractFrame(s, atSeconds: t) {
-                await MainActor.run { engine.preview(model: m, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label) } } }
-        }
+        let work = DispatchWorkItem { engine.showVideoFrame(time: t, conf: conf, iou: iou, style: style, label: label) }
         scrubWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
     }
@@ -426,7 +464,7 @@ struct ContentView: View {
         case .folder where engine.hasResults && !folderImages.isEmpty:
             let stride = (vertical && finderMode == .icons) ? gridColumns : 1
             selectAndShow(min(max(0, selectedIndex + dir * stride), folderImages.count - 1))
-        case .video:
+        case .video where engine.hasResults:
             scrubTime = min(max(0, scrubTime + Double(dir) * (vertical ? 1.0 : 0.2)), max(videoDur, 0.0)); scrubFrame()
         default: break
         }
@@ -498,10 +536,13 @@ struct ContentView: View {
                     if engine.outputURL != nil { revealButton }
                 }
             case .video:
-                primaryButton("Export video", "square.and.arrow.up") {
-                    if let m = modelURL, let s = sourceURL { engine.exportVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label) }
-                }.disabled(sourceURL == nil || engine.busy)
-                if engine.outputURL != nil { revealButton }
+                primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
+                    .disabled(sourceURL == nil || engine.busy)
+                HStack(spacing: 8) {
+                    secondaryButton("Export", "square.and.arrow.up") { engine.exportVideo(conf: conf, iou: iou, style: style, label: label) }
+                        .disabled(!engine.hasResults || engine.busy)
+                    if engine.outputURL != nil { revealButton }
+                }
             case .unknown:
                 EmptyView()
             }
@@ -531,10 +572,11 @@ struct ContentView: View {
             Color(nsColor: .underPageBackgroundColor)
             if let img = engine.resultImage {
                 Image(nsImage: img).resizable().scaledToFit().padding(12)
-            } else if sourceKind == .folder && !engine.hasResults && !engine.busy {
+            } else if (sourceKind == .folder || sourceKind == .video) && !engine.hasResults && !engine.busy {
                 VStack(spacing: 8) {
-                    Image(systemName: "folder").font(.system(size: 48)).foregroundStyle(.tertiary)
-                    Text("\(folderImages.count) images — press Run to infer").foregroundStyle(.secondary)
+                    Image(systemName: sourceKind == .video ? "film" : "folder").font(.system(size: 48)).foregroundStyle(.tertiary)
+                    Text(sourceKind == .video ? "Press Run to infer the video"
+                                              : "\(folderImages.count) images — press Run to infer").foregroundStyle(.secondary)
                 }
             } else {
                 VStack(spacing: 8) {
@@ -599,9 +641,9 @@ struct ContentView: View {
                 statRow("Compute", info.compute)
             }
             Divider()
-            statRow(s.count > 1 ? "Images" : "Frame", "\(s.count)")
-            statRow("Avg speed", String(format: "%.1f ms/img", s.meanMs))
-            statRow("Throughput", String(format: "%.0f img/s", s.fps))
+            statRow(sourceKind == .video ? "Frames" : (s.count > 1 ? "Images" : "Frame"), "\(s.count)")
+            statRow("Avg speed", String(format: "%.1f", s.meanMs) + (sourceKind == .video ? " ms/frame" : " ms/img"))
+            statRow(sourceKind == .video ? "FPS" : "Throughput", String(format: "%.1f", s.fps) + (sourceKind == .video ? " fps" : " img/s"))
             if s.count > 1 {
                 statRow("Fastest", String(format: "%.1f ms", s.minMs))
                 statRow("Slowest", String(format: "%.1f ms", s.maxMs))
