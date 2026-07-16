@@ -35,6 +35,7 @@ public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
     ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))  // no flip; boxes convert y = h - topY
     // ---- segmentation masks (under the boxes) ----
+    ctx.interpolationQuality = .high   // bilinear upscale proto->full res -> smooth (non-serrated) mask edges
     for m in masks {
         let pc = m.protoCrop, iw = CGFloat(m.image.width), ih = CGFloat(m.image.height)
         let sub = CGRect(x: pc.minX * iw, y: pc.minY * ih, width: pc.width * iw, height: pc.height * ih)
