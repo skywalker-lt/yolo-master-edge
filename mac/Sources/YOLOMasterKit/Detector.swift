@@ -8,11 +8,10 @@ import CoreML
 import CoreGraphics
 import CoreVideo
 
-/// IEEE half bits (UInt16) -> Float32, done by hand. On x86_64 the `Float16` *instance* API
-/// (conversions, `.bitPattern`) is unavailable with the current SDK (arm64 has native Float16); the
-/// MLMultiArray buffer must still be typed as Float16 (only MLShapedArrayScalar types are allowed),
-/// so each element is bit-reinterpreted to UInt16 via unsafeBitCast and converted here. Keeps the
-/// universal (arm64 + x86_64) build compiling with identical numerics on both slices.
+/// IEEE half bits (UInt16) -> Float32, done by hand. `Float16` is entirely UNAVAILABLE in macOS on
+/// x86_64 (arm64-only type), so it can't be named at all — half-precision Core ML tensors are read
+/// as raw UInt16 straight from `dataPointer` (`load(fromByteOffset:as:)`) and converted here. Keeps
+/// the universal (arm64 + x86_64) build compiling with identical numerics on both slices.
 @inline(__always) func halfToFloat(_ h: UInt16) -> Float32 {
     let sign = UInt32(h & 0x8000) << 16
     let exp  = UInt32(h & 0x7C00) >> 10
@@ -247,10 +246,8 @@ public final class Detector {
             }
         }
         if y.dataType == .float16 {
-            y.withUnsafeBufferPointer(ofType: Float16.self) { buf in
-                guard let yp = buf.baseAddress else { return }
-                decodeAnchors { c, a in halfToFloat(unsafeBitCast(yp[c * s1 + a * s2], to: UInt16.self)) }
-            }
+            let raw = y.dataPointer   // Float16 is unnameable on x86_64; read raw half bytes as UInt16
+            decodeAnchors { c, a in halfToFloat(raw.load(fromByteOffset: (c * s1 + a * s2) * 2, as: UInt16.self)) }
         } else {
             y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
                 guard let yp = buf.baseAddress else { return }
@@ -371,10 +368,8 @@ public final class Detector {
             }
         }
         if proto.dataType == .float16 {
-            proto.withUnsafeBufferPointer(ofType: Float16.self) { buf in
-                guard let pp = buf.baseAddress else { return }
-                fill { k, i, j in halfToFloat(unsafeBitCast(pp[k * s1 + i * s2 + j * s3], to: UInt16.self)) }
-            }
+            let raw = proto.dataPointer   // Float16 is unnameable on x86_64; read raw half bytes as UInt16
+            fill { k, i, j in halfToFloat(raw.load(fromByteOffset: (k * s1 + i * s2 + j * s3) * 2, as: UInt16.self)) }
         } else {
             proto.withUnsafeBufferPointer(ofType: Float32.self) { buf in
                 guard let pp = buf.baseAddress else { return }
