@@ -34,7 +34,22 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     private var detector: Detector?                 // inference — touched only on camQueue
     private var maskDet: Detector?                  // same model, used for main-thread mask compositing (read-only math)
     private var configured = false
+    private var mirrored = true                     // selfie mirror (applied to the data-output connection)
     private var lastT = 0.0, latEMA = 0.0, fpsEMA = 0.0
+
+    /// Toggle selfie mirroring live. Mirrors the delivered frames (so inference/overlay follow) to match
+    /// the preview layer's mirroring, which the view updates in lockstep.
+    func setMirrored(_ on: Bool) {
+        camQueue.async { [weak self] in
+            guard let self else { return }
+            self.mirrored = on
+            guard let conn = self.output.connection(with: .video), conn.isVideoMirroringSupported else { return }
+            self.session.beginConfiguration()
+            conn.automaticallyAdjustsVideoMirroring = false
+            conn.isVideoMirrored = on
+            self.session.commitConfiguration()
+        }
+    }
 
     /// Compose the seg mask overlay for `dets` from the latest frame's proto. Called on main from the
     /// view (read-only proto math on an immutable RawOutput snapshot — no model call, safe off camQueue).
@@ -93,7 +108,7 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             // mirrored coordinates, matching the mirrored preview layer — so the overlay stays aligned.
             if let conn = self.output.connection(with: .video), conn.isVideoMirroringSupported {
                 conn.automaticallyAdjustsVideoMirroring = false
-                conn.isVideoMirrored = true
+                conn.isVideoMirrored = self.mirrored
             }
             self.session.commitConfiguration()
             self.configured = true
@@ -142,20 +157,22 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
 // ---------- live preview layer (un-mirrored so boxes align with the un-mirrored data output) ----------
 final class CameraPreviewNSView: NSView {
     let previewLayer = AVCaptureVideoPreviewLayer()
+    var mirrored = true { didSet { applyMirror() } }
     override func makeBackingLayer() -> CALayer { previewLayer.videoGravity = .resizeAspect; return previewLayer }
-    override func layout() {
-        super.layout()
+    override func layout() { super.layout(); applyMirror() }
+    private func applyMirror() {
         if let c = previewLayer.connection, c.isVideoMirroringSupported {
-            c.automaticallyAdjustsVideoMirroring = false; c.isVideoMirrored = true   // selfie mirror, matches the mirrored data output
+            c.automaticallyAdjustsVideoMirroring = false; c.isVideoMirrored = mirrored
         }
     }
 }
 struct CameraPreviewView: NSViewRepresentable {
     let session: AVCaptureSession
+    var mirrored: Bool
     func makeNSView(context: Context) -> CameraPreviewNSView {
-        let v = CameraPreviewNSView(); v.wantsLayer = true; v.previewLayer.session = session; return v
+        let v = CameraPreviewNSView(); v.wantsLayer = true; v.previewLayer.session = session; v.mirrored = mirrored; return v
     }
-    func updateNSView(_ v: CameraPreviewNSView, context: Context) { v.previewLayer.session = session }
+    func updateNSView(_ v: CameraPreviewNSView, context: Context) { v.previewLayer.session = session; v.mirrored = mirrored }
 }
 
 // ---------- lifecycle owner: builds the detector, starts/stops the session, isolates observation ----------
@@ -169,12 +186,14 @@ struct LiveCameraView: View {
     let overlay: SegOverlay
     let style: BoxStyle, label: LabelMode
     @Binding var isSegment: Bool                    // reported up so the sidebar can show the Overlay control
+    @Binding var mirror: Bool                        // selfie mirror, toggled live from the stage
     @StateObject private var cam = CameraController()
 
     var body: some View {
         // conf/iou/overlay are plain props of CameraStage -> tuning is instantly reactive (no side channel)
-        CameraStage(cam: cam, conf: conf, iou: iou, overlay: overlay, style: style, label: label)
-            .onAppear { rebuild { cam.start(detector: $0) } }
+        CameraStage(cam: cam, conf: conf, iou: iou, overlay: overlay, style: style, label: label, mirror: $mirror)
+            .onAppear { cam.setMirrored(mirror); rebuild { cam.start(detector: $0) } }
+            .onChange(of: mirror) { cam.setMirrored(mirror) }
             .onDisappear { cam.stop() }
             .onChange(of: modelURL) { rebuild { cam.updateDetector($0) } }       // hot-swap model
             .onChange(of: compute) { rebuild { cam.updateDetector($0) } }        // hot-swap compute unit
@@ -200,13 +219,14 @@ struct CameraStage: View {
     let conf: Double, iou: Double
     let overlay: SegOverlay
     let style: BoxStyle, label: LabelMode
+    @Binding var mirror: Bool
     var body: some View {
         let dets = Detector.nms(cam.candidates, conf: Float(conf), iou: CGFloat(iou))   // live conf/iou
         let masksOnly = cam.isSegment && overlay == .masks
         let drawBoxes = !masksOnly
         let mask: CGImage? = (cam.isSegment && overlay != .boxes) ? cam.makeMask(dets) : nil
         return ZStack(alignment: .topLeading) {
-            CameraPreviewView(session: cam.session)
+            CameraPreviewView(session: cam.session, mirrored: mirror)
             Canvas { ctx, size in
                 let vid = cam.frameSize
                 guard vid.width > 0, vid.height > 0 else { return }
@@ -255,6 +275,7 @@ struct CameraStage: View {
                 }
             }
             hud(objects: dets.count)
+            mirrorButton
             if !cam.running, let e = cam.errorMsg {
                 VStack(spacing: 8) {
                     Image(systemName: "video.slash").font(.system(size: 40)).foregroundStyle(.tertiary)
@@ -265,6 +286,19 @@ struct CameraStage: View {
                 ProgressView("Starting camera…").frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    private var mirrorButton: some View {
+        Button { mirror.toggle() } label: {
+            Label(mirror ? "Mirrored" : "Mirror", systemImage: "arrow.left.and.right")
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 11).padding(.vertical, 7)
+                .background(.black.opacity(mirror ? 0.6 : 0.35), in: Capsule())
+                .foregroundStyle(mirror ? .white : .white.opacity(0.75))
+        }
+        .buttonStyle(.plain)
+        .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 
     private func hud(objects: Int) -> some View {
