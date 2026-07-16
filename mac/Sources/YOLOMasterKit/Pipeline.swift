@@ -173,6 +173,23 @@ public func extractFrame(_ url: URL, atSeconds t: Double) async -> CGImage? {
     return try? await gen.image(at: time).image
 }
 
+/// Reusable frame grabber for fast scrubbing/playback: one AVAssetImageGenerator with a
+/// ~1-frame time tolerance (much faster than exact-frame decode), full-res (candidates are
+/// in original coords, so the preview must not be downscaled).
+public final class FrameGrabber {
+    private let gen: AVAssetImageGenerator
+    public init(url: URL) {
+        gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        gen.appliesPreferredTrackTransform = true
+        let tol = CMTime(seconds: 0.033, preferredTimescale: 600)
+        gen.requestedTimeToleranceBefore = tol
+        gen.requestedTimeToleranceAfter = tol
+    }
+    public func frame(atSeconds t: Double) async -> CGImage? {
+        try? await gen.image(at: CMTime(seconds: max(0, t), preferredTimescale: 600)).image
+    }
+}
+
 // ---- two-phase folder flow: infer-all-once (cache candidates) -> tune -> export ----
 public struct FolderItem: Sendable { public let url: URL; public let candidates: [Detection] }
 
