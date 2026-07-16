@@ -751,6 +751,7 @@ struct ContentView: View {
             .disabled(engine.busy)   // lock every control during image/folder/video inference; tune after it finishes (camera isn't engine.busy)
 
             actionRow
+            Text("© 2026 Thomas Li").font(.system(size: 9)).foregroundStyle(.tertiary)
         }
     }
 
