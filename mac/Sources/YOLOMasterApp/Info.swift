@@ -33,6 +33,7 @@ func ackLogo(_ name: String, _ ext: String) -> NSImage? {
 
 struct InfoView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var licenseExpanded = false   // license is collapsed by default
     private var version: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0" }
 
     var body: some View {
@@ -69,6 +70,12 @@ struct InfoView: View {
                             }
                             Spacer(minLength: 0)
                         }
+                        if let src = URL(string: "https://github.com/skywalker-lt/yolo-master-edge") {
+                            Link(destination: src) {
+                                Label("Source code · github.com/skywalker-lt/yolo-master-edge",
+                                      systemImage: "chevron.left.forwardslash.chevron.right").font(.caption)
+                            }.padding(.top, 2)
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 14) {
@@ -96,8 +103,7 @@ struct InfoView: View {
 
                     Divider()
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("License").font(.headline)
+                    DisclosureGroup(isExpanded: $licenseExpanded) {
                         Text(acknowledgementLicense)
                             .font(.system(size: 11, design: .monospaced))
                             .textSelection(.enabled)
@@ -107,7 +113,11 @@ struct InfoView: View {
                                 .fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+                            .padding(.top, 8)
+                    } label: {
+                        Text("License").font(.headline)
                     }
+                    .tint(.secondary)
                 }
                 .padding(20)
             }
