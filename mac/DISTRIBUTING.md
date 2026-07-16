@@ -3,6 +3,16 @@
 `mac/make_app.sh` builds and packages a **universal** (Apple Silicon + Intel) macOS app
 into `mac/dist/YOLOMaster.app` and a redistributable `mac/dist/YOLOMaster-<version>.zip`.
 
+## App icon
+The Dock/Finder icon is `Resources/AppIcon.icns`, rendered from the Icon Composer source in
+`AppIcon.icon/` (white→pink gradient squircle + the YOLO-ML-Master glyph). `make_app.sh` copies it
+into the bundle and sets `CFBundleIconFile`. To change the artwork, edit `AppIcon.icon/` (in Xcode's
+Icon Composer, or replace `AppIcon.icon/Assets/icon829.png`) then regenerate:
+
+```bash
+cd mac && python3 scripts/make_icon.py     # needs Python + Pillow + numpy; rewrites Resources/AppIcon.{png,icns}
+```
+
 ## Requirements
 - **Build machine:** macOS with the Swift toolchain + Command Line Tools (`xcode-select --install`).
 - **Recipient machine:** any Mac on **macOS 14 (Sonoma) or later**, Apple Silicon *or* Intel. No
