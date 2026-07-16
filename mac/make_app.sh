@@ -55,6 +55,12 @@ for pkg in "$HERE"/Resources/*.mlpackage; do
   echo "  default model: $(basename "$pkg")"
 done
 
+# acknowledgement logos for the About page (optional; graceful fallback if absent)
+if [ -d "$HERE/Resources/ack" ]; then
+  cp -R "$HERE/Resources/ack" "$APP/Contents/Resources/ack"
+  echo "  ack logos: $(ls "$HERE/Resources/ack" 2>/dev/null | tr '\n' ' ')"
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
