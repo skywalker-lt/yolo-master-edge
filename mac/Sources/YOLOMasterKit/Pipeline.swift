@@ -194,15 +194,20 @@ public final class FrameGrabber {
 public struct FolderItem: Sendable { public let url: URL; public let candidates: [Detection] }
 
 /// Aggregate inference timing over a set of forward passes.
+/// `meanMs`/`fps` are MODEL-ONLY (forward pass). `wallMeanMs`/`wallFps` are OVERALL
+/// (wall-clock ÷ count — includes image/frame decode, candidate decode, I/O).
 public struct InferSummary: Sendable {
-    public let count: Int, meanMs: Double, minMs: Double, maxMs: Double, totalMs: Double
-    public var fps: Double { meanMs > 0 ? 1000 / meanMs : 0 }
-    public init(_ times: [Double]) {
+    public let count: Int, meanMs: Double, minMs: Double, maxMs: Double, totalMs: Double, wallMs: Double
+    public var fps: Double { meanMs > 0 ? 1000 / meanMs : 0 }                    // model-only
+    public var wallMeanMs: Double { count > 0 ? wallMs / Double(count) : 0 }      // overall per item
+    public var wallFps: Double { wallMeanMs > 0 ? 1000 / wallMeanMs : 0 }         // overall
+    public init(_ times: [Double], wallMs: Double) {
         count = times.count
         totalMs = times.reduce(0, +)
         meanMs = count > 0 ? totalMs / Double(count) : 0
         minMs = times.min() ?? 0
         maxMs = times.max() ?? 0
+        self.wallMs = wallMs
     }
 }
 
@@ -213,6 +218,7 @@ public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
     let files = listImages(input)
     var out: [FolderItem] = []; out.reserveCapacity(files.count)
     var times: [Double] = []
+    let t0 = Date()
     for (i, url) in files.enumerated() {
         if let cg = loadCGImage(url), let raw = try? det.forward(cg) {
             out.append(FolderItem(url: url, candidates: det.candidates(raw, confFloor: confFloor)))
@@ -220,7 +226,7 @@ public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
         }
         progress?(i + 1, files.count)
     }
-    return (out, InferSummary(times))
+    return (out, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000))
 }
 
 /// Phase 3: write annotated images from cached candidates + the tuned params — NO inference.
@@ -263,6 +269,7 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
     rout.alwaysCopiesSampleData = false; reader.add(rout); reader.startReading()
     let cictx = CIContext()
     var frames: [[Detection]] = [], times: [Double] = [], n = 0
+    let t0 = Date()
     while reader.status == .reading {
         guard let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { break }
         var ci = CIImage(cvPixelBuffer: pb)
@@ -277,7 +284,7 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
         n += 1
         if n % 4 == 0 { progress?(n, estTotal) }
     }
-    return (frames, InferSummary(times), Double(fps), CGSize(width: natW, height: natH))
+    return (frames, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000), Double(fps), CGSize(width: natW, height: natH))
 }
 
 /// Phase 3: re-stream frames in order, apply cached candidates[i] + tuned params, encode. NO inference.

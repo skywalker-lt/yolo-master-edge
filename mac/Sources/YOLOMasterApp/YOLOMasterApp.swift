@@ -130,7 +130,7 @@ final class InferenceEngine: ObservableObject {
                 self.currentCG = cg; self.currentCands = det.candidates(raw); self.currentMs = raw.inferMs
                 self.detNames = det.classNames
                 let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
-                let s = InferSummary([raw.inferMs])
+                let s = InferSummary([raw.inferMs], wallMs: raw.inferMs)
                 DispatchQueue.main.async { self.modelInfo = info; self.infer = s }
                 self.render(conf: conf, iou: iou, style: style, label: label)
             } catch { self.publish(error: "Inference failed: \(error.localizedDescription)") }
@@ -769,13 +769,12 @@ struct ContentView: View {
                 statRow("Compute", info.compute)
             }
             Divider()
-            statRow(sourceKind == .video ? "Frames" : (s.count > 1 ? "Images" : "Frame"), "\(s.count)")
-            statRow("Avg speed", String(format: "%.1f", s.meanMs) + (sourceKind == .video ? " ms/frame" : " ms/img"))
-            statRow(sourceKind == .video ? "FPS" : "Throughput", String(format: "%.1f", s.fps) + (sourceKind == .video ? " fps" : " img/s"))
+            statRow(isVideoSource ? "Frames" : (s.count > 1 ? "Images" : "Frame"), "\(s.count)")
+            statRow("Model-only", speedText(s.meanMs, s.fps))
+            statRow("Overall", speedText(s.wallMeanMs, s.wallFps))
             if s.count > 1 {
-                statRow("Fastest", String(format: "%.1f ms", s.minMs))
-                statRow("Slowest", String(format: "%.1f ms", s.maxMs))
-                statRow("Total infer", String(format: "%.2f s", s.totalMs / 1000))
+                statRow("Model min/max", String(format: "%.1f / %.1f ms", s.minMs, s.maxMs))
+                statRow("Total time", String(format: "%.2fs wall · %.2fs model", s.wallMs / 1000, s.totalMs / 1000))
             }
             Divider()
             statRow("Detections", "\(engine.detCount)  (this frame)")
@@ -796,6 +795,11 @@ struct ContentView: View {
         }
     }
 
+    private var isVideoSource: Bool { sourceKind == .video }
+    private func speedText(_ ms: Double, _ fps: Double) -> String {
+        String(format: "%.1f", ms) + (isVideoSource ? " ms/frame · " : " ms/img · ")
+            + String(format: "%.1f", fps) + (isVideoSource ? " fps" : " img/s")
+    }
     private func statRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label).font(.caption).foregroundStyle(.secondary)
