@@ -28,6 +28,14 @@ public enum ComputeMode: String, CaseIterable, Sendable {
         case .cpuAndGPU: return .cpuAndGPU
         }
     }
+    /// Human-readable label for the UI.
+    public var label: String {
+        switch self {
+        case .cpuAndGPU: return "CPU + GPU"
+        case .all: return "CPU + GPU + Neural Engine"
+        case .cpu: return "CPU only"
+        }
+    }
     public init(_ s: String) {
         switch s.lowercased() {
         case "all": self = .all

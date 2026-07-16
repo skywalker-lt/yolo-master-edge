@@ -236,7 +236,7 @@ final class InferenceEngine: ObservableObject {
 }
 
 // ---------- Finder (Icons / List / Gallery) ----------
-enum FinderMode: String, CaseIterable { case icons, list, gallery }
+enum FinderMode: String, CaseIterable { case icons, list }
 
 struct FinderView: View {
     let images: [URL]
@@ -251,14 +251,13 @@ struct FinderView: View {
                 Picker("", selection: $mode) {
                     Image(systemName: "square.grid.2x2").tag(FinderMode.icons)
                     Image(systemName: "list.bullet").tag(FinderMode.list)
-                    Image(systemName: "rectangle.grid.1x2").tag(FinderMode.gallery)
                 }.pickerStyle(.segmented).labelsHidden().fixedSize()
                 Spacer()
                 Text("\(images.count) images").font(.caption).foregroundStyle(.secondary)
                 if mode == .icons { Slider(value: $iconSize, in: 64...200).frame(width: 90) }
             }.padding(8)
             Divider()
-            switch mode { case .icons: icons; case .list: list; case .gallery: gallery }
+            switch mode { case .icons: icons; case .list: list }
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -291,24 +290,6 @@ struct FinderView: View {
                 }
             }
         }
-    }
-    private var gallery: some View {
-        VStack(spacing: 6) {
-            if images.indices.contains(selected) {
-                AsyncThumb(url: images[selected], max: 800, fit: true).frame(maxWidth: .infinity, maxHeight: .infinity)
-                Text(images[selected].lastPathComponent).font(.caption).lineLimit(1)
-            }
-            Divider()
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 4) {
-                    ForEach(images.indices, id: \.self) { i in
-                        AsyncThumb(url: images[i], max: 130).frame(width: 82, height: 58).clipped().cornerRadius(3)
-                            .overlay(RoundedRectangle(cornerRadius: 3).stroke(i == selected ? Color.accentColor : .clear, lineWidth: 2))
-                            .onTapGesture { onSelect(i) }
-                    }
-                }.padding(6)
-            }.frame(height: 76)
-        }.padding(8)
     }
 }
 
@@ -477,22 +458,13 @@ struct ContentView: View {
                         }
                     }
                     sectionBox("Compute", "cpu") {
-                        Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                        Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.label).tag($0) } }
                             .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
 
             actionRow
-
-            HStack(spacing: 7) {
-                Circle().fill(engine.busy ? Color.orange : (engine.resultImage != nil ? Color.green : Color.secondary))
-                    .frame(width: 7, height: 7)
-                Text(engine.status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                Spacer(minLength: 0)
-            }
-            .padding(9).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
         }
     }
 
@@ -568,7 +540,7 @@ struct ContentView: View {
 
     private func sectionBox<C: View>(_ title: String, _ icon: String, @ViewBuilder _ content: () -> C) -> some View {
         GroupBox {
-            VStack(alignment: .leading, spacing: 10) { content() }.frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 12) { content() }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 2)
         } label: {
             Label(title, systemImage: icon).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
         }
@@ -584,6 +556,7 @@ struct ContentView: View {
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
             }
+            .contentShape(Rectangle())   // whole row is the hit target, not just the text
         }.buttonStyle(.plain)
     }
     private func sliderRow(_ title: String, _ value: Binding<Double>, _ range: ClosedRange<Double>) -> some View {
