@@ -627,7 +627,7 @@ struct ContentView: View {
         }
     }
     // ---- live camera (session lifecycle + detector build handled inside LiveCameraView) ----
-    private func startCamera() { guard modelURL != nil else { return }; pc.pause(); cameraOn = true }
+    private func startCamera() { guard modelURL != nil, !engine.busy else { return }; pc.pause(); cameraOn = true }
     private func stopCamera() { cameraOn = false }
 
     private func selectAndShow(_ i: Int) {
@@ -747,9 +747,12 @@ struct ContentView: View {
                         Label("Live Camera", systemImage: "camera.fill").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent).tint(.pink).controlSize(.large)
-                    .disabled(modelURL == nil)
+                    .disabled(modelURL == nil || engine.busy)
                     if modelURL == nil {
                         Text("Load a model to enable the live camera").font(.caption2).foregroundStyle(.secondary)
+                    } else if engine.busy {
+                        Text("Finish or wait for the current inference before starting the camera.")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
