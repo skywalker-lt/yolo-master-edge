@@ -134,8 +134,8 @@ struct InfoView: View {
                 Circle().fill(.quaternary).overlay(Image(systemName: "person.fill").foregroundStyle(.secondary))
             }
         }
-        .frame(width: 54, height: 54)
-        .clipShape(Circle())
+        .frame(width: 42, height: 42)          // same side length as the organization logos
+        .clipShape(Circle())                    // full circle (corner radius = side/2) so it reads as a person
         .overlay(Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
     }
 
