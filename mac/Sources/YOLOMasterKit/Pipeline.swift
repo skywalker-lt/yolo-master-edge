@@ -156,3 +156,19 @@ public func runVideo(_ det: Detector, input: URL, output: URL,
     let mean = times.count > 1 ? times[1...].reduce(0, +) / Double(times.count - 1) : (times.first ?? 0)
     return VideoStats(frames: n, meanMs: mean, outW: outW, outH: outH, fps: Int(fps.rounded()))
 }
+
+/// Video duration in seconds (0 if unknown) — for a scrubber range.
+public func videoDuration(_ url: URL) async -> Double {
+    let d = (try? await AVURLAsset(url: url).load(.duration)) ?? .zero
+    return d.seconds.isFinite ? d.seconds : 0
+}
+
+/// Decode a single upright frame at `atSeconds` — for the in-app preview/tune finder.
+public func extractFrame(_ url: URL, atSeconds t: Double) async -> CGImage? {
+    let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+    gen.appliesPreferredTrackTransform = true
+    gen.requestedTimeToleranceBefore = .zero
+    gen.requestedTimeToleranceAfter = .zero
+    let time = CMTime(seconds: max(0, t), preferredTimescale: 600)
+    return try? await gen.image(at: time).image
+}

@@ -1,25 +1,25 @@
-// YOLOMasterApp — SwiftUI frontend for the Core ML runner.
+// YOLOMasterApp — SwiftUI frontend for the Core ML runner (YOLOMasterKit backend).
 //
-// Same backend as the CLI (YOLOMasterKit). Pick a .mlpackage + a source (image, folder,
-// or video), tune conf/iou/style/label/compute, run on-device Core ML.
-//   image  -> annotated preview; conf/iou/style/label update in real time (cached forward pass)
-//   folder -> batch-annotate all images -> <folder>_annotated/  (progress + live preview)
-//   video  -> annotate every frame -> <video>_annotated.mp4     (progress + live preview)
+// Pick a .mlpackage + a source (image / folder / video). A preview frame is loaded and you
+// tune conf/iou/style/label on it IN REAL TIME (cached forward pass — no re-inference). The
+// in-app finder lets you pick which frame to tune on:
+//   image  -> the image itself; Save the result
+//   folder -> thumbnail strip; tune -> Export folder -> <folder>_annotated/
+//   video  -> frame scrubber;  tune -> Export video  -> <video>_annotated.mp4
 //
-// Build & run:  swift run -c release --package-path mac YOLOMasterApp
-// Bundle .app:  mac/make_app.sh
+// Build & run:  swift run -c release --package-path mac YOLOMasterApp   |   Bundle: mac/make_app.sh
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import CoreGraphics
+import ImageIO
 import YOLOMasterKit
 
-// Unbundled `swift run` launches as an accessory process (.prohibited) — the SwiftUI window
-// never shows. Force a regular, foreground GUI app so both `swift run` and the .app work.
+// Unbundled `swift run` launches as an accessory process (.prohibited) — the window never
+// shows. Force a regular, foreground GUI app so both `swift run` and the .app work.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
@@ -29,54 +29,65 @@ struct YOLOMasterApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     var body: some Scene {
         WindowGroup("YOLO-Master · Core ML") {
-            ContentView().frame(minWidth: 940, minHeight: 620)
+            ContentView().frame(minWidth: 980, minHeight: 680)
         }
         .windowStyle(.titleBar)
     }
 }
 
-// ---------- inference engine: shared backend, off the main thread ----------
+/// Fast downsampled thumbnail (doesn't decode the full image).
+func makeThumbnail(_ url: URL, max: CGFloat = 130) -> NSImage? {
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+    let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                 kCGImageSourceThumbnailMaxPixelSize: max,
+                                 kCGImageSourceCreateThumbnailWithTransform: true]
+    guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+    return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+}
+
+// ---------- inference engine ----------
 final class InferenceEngine: ObservableObject {
     @Published var resultImage: NSImage?
     @Published var detCount = 0
     @Published var inferMs = 0.0
     @Published var modelSummary = ""
-    @Published var status = "Choose or drag a model (.mlpackage) + a source (image / folder / video)."
+    @Published var status = "Choose a model (.mlpackage) + a source (image / folder / video)."
     @Published var busy = false
-    @Published var progress: Double?        // nil while indeterminate (video)
-    @Published var outputURL: URL?          // folder/video result on disk
+    @Published var progress: Double?        // nil = indeterminate (video export)
+    @Published var outputURL: URL?          // folder/video export result
 
-    // touched only on `queue` (serial) -> no data race
     private var detector: Detector?
     private var key = ""
-    private var rawOutput: Detector.RawOutput?   // cached forward pass (image mode)
+    private var rawOutput: Detector.RawOutput?    // cached forward pass of the preview frame
     private var sourceCG: CGImage?
     private var lastInferMs = 0.0
     private var lastAnnotated: CGImage?
     private let queue = DispatchQueue(label: "com.yolomaster.inference")
 
-    // ===== image: forward once, then re-decode/annotate live =====
-    func run(model: URL, image: URL, conf: Double, iou: Double,
-             style: BoxStyle, label: LabelMode, compute: ComputeMode) {
-        busy = true; progress = nil; outputURL = nil; status = "Running…"
+    // ===== preview a single frame (image, folder pick, or video scrub) =====
+    func previewURL(model: URL, image: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        guard let cg = loadCGImage(image) else { publish(error: "Could not read image."); return }
+        preview(model: model, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label)
+    }
+
+    func preview(model: URL, cg: CGImage, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        busy = true; progress = nil; outputURL = nil; status = "Preview…"
         let k = model.path + "|" + compute.rawValue
         queue.async { [weak self] in
             guard let self else { return }
             do {
                 let det = try self.reuseDetector(model: model, compute: compute, key: k)
-                guard let cg = loadCGImage(image) else { self.publish(error: "Could not read image."); return }
                 let raw = try det.forward(cg)
                 self.rawOutput = raw; self.sourceCG = cg; self.lastInferMs = raw.inferMs
                 let summary = det.summary
                 DispatchQueue.main.async { self.modelSummary = summary; self.inferMs = raw.inferMs }
                 self.render(conf: conf, iou: iou, style: style, label: label)
-            } catch { self.publish(error: "Failed: \(error.localizedDescription)") }
+            } catch { self.publish(error: "Preview failed: \(error.localizedDescription)") }
         }
     }
 
     private var pendingRestyle: DispatchWorkItem?
-    /// Re-decode (conf/iou) + re-annotate (style/label) from the cached forward pass — NO model
-    /// call. Drives real-time control changes; no-op until a forward has run. Coalesces drags.
+    /// Re-decode (conf/iou) + re-annotate (style/label) from the cached preview frame — NO model call.
     func restyle(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
         pendingRestyle?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.render(conf: conf, iou: iou, style: style, label: label) }
@@ -95,72 +106,57 @@ final class InferenceEngine: ObservableObject {
         let ms = self.lastInferMs
         DispatchQueue.main.async {
             self.resultImage = ns; self.detCount = dets.count; self.busy = false
-            self.status = "\(dets.count) detections · \(String(format: "%.1f", ms)) ms"
+            self.status = "preview: \(dets.count) detections · \(String(format: "%.1f", ms)) ms"
         }
     }
 
-    // ===== folder: batch through the shared pipeline =====
-    func processFolder(model: URL, input: URL, compute: ComputeMode,
-                       conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
-        busy = true; progress = 0; outputURL = nil; status = "Processing folder…"
+    // ===== export: folder (batch) / video (per frame) with the tuned params =====
+    func exportFolder(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        busy = true; progress = 0; outputURL = nil; status = "Exporting folder…"
         let out = input.deletingLastPathComponent().appendingPathComponent(input.lastPathComponent + "_annotated")
         queue.async { [weak self] in
             guard let self else { return }
             do {
                 let det = try self.reuseDetector(model: model, compute: compute, key: model.path + "|" + compute.rawValue)
-                let stats = runFolder(det, input: input, output: out, conf: Float(conf), iou: CGFloat(iou),
-                                      style: style, label: label) { done, total, last in
+                let stats = runFolder(det, input: input, output: out, conf: Float(conf), iou: CGFloat(iou), style: style, label: label) { done, total, last in
                     DispatchQueue.main.async {
                         self.progress = total > 0 ? Double(done) / Double(total) : nil
                         if let last { self.resultImage = NSImage(cgImage: last, size: NSSize(width: last.width, height: last.height)) }
-                        self.status = "Folder \(done)/\(total)…"
+                        self.status = "Exporting \(done)/\(total)…"
                     }
                 }
                 DispatchQueue.main.async {
                     self.outputURL = out; self.busy = false; self.progress = nil
-                    self.status = "Folder done: \(stats.processed)/\(stats.total) · mean \(String(format: "%.1f", stats.meanMs)) ms"
+                    self.status = "Exported \(stats.processed)/\(stats.total) · mean \(String(format: "%.1f", stats.meanMs)) ms"
                 }
-            } catch { self.publish(error: "Folder failed: \(error.localizedDescription)") }
+            } catch { self.publish(error: "Export failed: \(error.localizedDescription)") }
         }
     }
 
-    // ===== video: annotate every frame through the shared pipeline =====
-    func processVideo(model: URL, input: URL, compute: ComputeMode,
-                      conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
-        busy = true; progress = nil; outputURL = nil; status = "Processing video…"
-        let out = input.deletingLastPathComponent()
-            .appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_annotated.mp4")
+    func exportVideo(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        busy = true; progress = nil; outputURL = nil; status = "Exporting video…"
+        let out = input.deletingLastPathComponent().appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_annotated.mp4")
         Task { [weak self] in
             guard let self else { return }
             do {
                 let det = try Detector(modelURL: model, compute: compute)
-                let stats = try await runVideo(det, input: input, output: out, conf: Float(conf), iou: CGFloat(iou),
-                                               style: style, label: label) { frames, last in
+                let stats = try await runVideo(det, input: input, output: out, conf: Float(conf), iou: CGFloat(iou), style: style, label: label) { frames, last in
                     DispatchQueue.main.async {
                         if let last { self.resultImage = NSImage(cgImage: last, size: NSSize(width: last.width, height: last.height)) }
-                        self.status = "Video \(frames) frames…"
+                        self.status = "Exporting \(frames) frames…"
                     }
                 }
                 DispatchQueue.main.async {
                     self.outputURL = out; self.busy = false
-                    self.status = "Video done: \(stats.frames) frames @\(stats.fps)fps · mean \(String(format: "%.1f", stats.meanMs)) ms"
+                    self.status = "Exported \(stats.frames) frames @\(stats.fps)fps · mean \(String(format: "%.1f", stats.meanMs)) ms"
                 }
-            } catch { DispatchQueue.main.async { self.status = "Video failed: \(error.localizedDescription)"; self.busy = false } }
+            } catch { DispatchQueue.main.async { self.status = "Export failed: \(error.localizedDescription)"; self.busy = false } }
         }
     }
 
-    /// Build or reuse the Detector for (model, compute). Call on `queue`.
     private func reuseDetector(model: URL, compute: ComputeMode, key k: String) throws -> Detector {
         if let d = detector, key == k { return d }
-        let d = try Detector(modelURL: model, compute: compute)
-        detector = d; key = k
-        return d
-    }
-
-    func clearCache() {
-        queue.async { self.rawOutput = nil; self.sourceCG = nil }
-        resultImage = nil; outputURL = nil; detCount = 0; progress = nil
-        status = "Ready — press Run."
+        let d = try Detector(modelURL: model, compute: compute); detector = d; key = k; return d
     }
 
     private func publish(error: String) {
@@ -170,11 +166,9 @@ final class InferenceEngine: ObservableObject {
     func save() {
         guard let cg = lastAnnotated else { return }
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.jpeg, .png]
-        panel.nameFieldStringValue = "annotated.jpg"
+        panel.allowedContentTypes = [.jpeg, .png]; panel.nameFieldStringValue = "annotated.jpg"
         if panel.runModal() == .OK, let url = panel.url { saveCGImage(cg, to: url) }
     }
-
     func reveal() { if let u = outputURL { NSWorkspace.shared.activateFileViewerSelecting([u]) } }
 }
 
@@ -191,16 +185,21 @@ struct ContentView: View {
     @State private var compute: ComputeMode = .cpuAndGPU
     @State private var showPicker = false
     @State private var pickTarget: PickTarget = .model
+    // finder state
+    @State private var folderImages: [URL] = []
+    @State private var selectedIndex = 0
+    @State private var videoDur = 0.0
+    @State private var scrubTime = 0.0
+    @State private var scrubWork: DispatchWorkItem?
 
     private enum PickTarget { case model, source }
     private var sourceKind: SourceKind { sourceURL.map(classifySource) ?? .unknown }
     private var kindLabel: String {
         switch sourceKind { case .image: "image"; case .folder: "folder"; case .video: "video"; case .unknown: "unsupported" }
     }
-    private var canRun: Bool { modelURL != nil && sourceURL != nil && sourceKind != .unknown && !engine.busy }
+    private var canExport: Bool { modelURL != nil && sourceURL != nil && !engine.busy }
     private var pickerTypes: [UTType] {
         if pickTarget == .source { return [.image, .movie, .mpeg4Movie, .folder] }
-        // .mlpackage/.mlmodelc are package bundles — need their concrete Core ML UTTypes.
         let byId = ["com.apple.coreml.mlpackage", "com.apple.coreml.mlmodelc", "com.apple.coreml.model"].compactMap { UTType($0) }
         let byExt = ["mlpackage", "mlmodelc", "mlmodel"].compactMap { UTType(filenameExtension: $0) }
         let all = byId + byExt + [.package]
@@ -211,13 +210,15 @@ struct ContentView: View {
         HStack(spacing: 0) {
             controls.frame(width: 300).padding(16)
             Divider()
-            preview.frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                preview.frame(maxWidth: .infinity, maxHeight: .infinity)
+                finder
+            }
         }
         .fileImporter(isPresented: $showPicker, allowedContentTypes: pickerTypes) { result in
-            guard case .success(let url) = result else { return }
-            assign(url)
+            if case .success(let url) = result { assign(url) }
         }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in       // drag a model or source onto the window
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for p in providers {
                 _ = p.loadObject(ofClass: URL.self) { url, _ in
                     guard let url else { return }
@@ -226,18 +227,67 @@ struct ContentView: View {
             }
             return true
         }
-        // conf/iou/style/label are frontend post-processing -> live update (image mode only).
         .onChange(of: conf) { rerender() }
         .onChange(of: iou) { rerender() }
         .onChange(of: style) { rerender() }
         .onChange(of: label) { rerender() }
+        .onChange(of: modelURL) { setupSource() }
+        .onChange(of: sourceURL) { setupSource() }
     }
 
-    /// Route a picked/dropped URL to model vs source by extension; a new source clears the cache.
     private func assign(_ url: URL) {
         switch url.pathExtension.lowercased() {
         case "mlpackage", "mlmodelc", "mlmodel": modelURL = url
-        default: sourceURL = url; engine.clearCache()
+        default: sourceURL = url
+        }
+    }
+
+    /// Load a preview frame for the chosen source and tune on it. Export writes the whole thing.
+    private func setupSource() {
+        guard let m = modelURL, let s = sourceURL else { return }
+        switch sourceKind {
+        case .image:
+            engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
+        case .folder:
+            folderImages = listImages(s); selectedIndex = 0
+            if let first = folderImages.first {
+                engine.previewURL(model: m, image: first, compute: compute, conf: conf, iou: iou, style: style, label: label)
+            }
+        case .video:
+            Task {
+                let dur = await videoDuration(s)
+                await MainActor.run { videoDur = dur; scrubTime = 0 }
+                if let cg = await extractFrame(s, atSeconds: 0) {
+                    await MainActor.run { engine.preview(model: m, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label) }
+                }
+            }
+        case .unknown: break
+        }
+    }
+
+    private func rerender() { engine.restyle(conf: conf, iou: iou, style: style, label: label) }
+
+    private func scrubFrame() {
+        scrubWork?.cancel()
+        let t = scrubTime
+        let work = DispatchWorkItem {
+            guard let m = modelURL, let s = sourceURL else { return }
+            Task {
+                if let cg = await extractFrame(s, atSeconds: t) {
+                    await MainActor.run { engine.preview(model: m, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label) }
+                }
+            }
+        }
+        scrubWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    private func export() {
+        guard let m = modelURL, let s = sourceURL else { return }
+        switch sourceKind {
+        case .folder: engine.exportFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
+        case .video:  engine.exportVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
+        default: break
         }
     }
 
@@ -252,7 +302,6 @@ struct ContentView: View {
 
             slider(title: "conf", value: $conf, range: 0.01...0.95)
             slider(title: "iou",  value: $iou,  range: 0.10...0.90)
-
             labeled("Box style") {
                 Picker("", selection: $style) { ForEach(BoxStyle.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
                     .pickerStyle(.segmented).labelsHidden()
@@ -266,21 +315,7 @@ struct ContentView: View {
                     .pickerStyle(.menu).labelsHidden()
             }
 
-            HStack {
-                Button(action: runInference) {
-                    HStack { if engine.busy { ProgressView().controlSize(.small) }; Text(runTitle) }
-                        .frame(maxWidth: .infinity)
-                }
-                .keyboardShortcut(.return, modifiers: [])
-                .disabled(!canRun)
-                .buttonStyle(.borderedProminent)
-
-                if engine.outputURL != nil {
-                    Button("Reveal") { engine.reveal() }
-                } else {
-                    Button("Save…") { engine.save() }.disabled(engine.resultImage == nil || sourceKind != .image)
-                }
-            }
+            actionRow
             if engine.busy {
                 if let p = engine.progress { ProgressView(value: p) } else { ProgressView() }
             }
@@ -293,8 +328,20 @@ struct ContentView: View {
         }
     }
 
-    private var runTitle: String {
-        switch sourceKind { case .folder: "Run folder"; case .video: "Run video"; default: "Run" }
+    @ViewBuilder private var actionRow: some View {
+        HStack {
+            switch sourceKind {
+            case .image:
+                Button("Save…") { engine.save() }
+                    .buttonStyle(.borderedProminent).disabled(engine.resultImage == nil)
+            case .folder, .video:
+                Button(sourceKind == .video ? "Export video →" : "Export folder →") { export() }
+                    .buttonStyle(.borderedProminent).disabled(!canExport)
+                if engine.outputURL != nil { Button("Reveal") { engine.reveal() } }
+            case .unknown:
+                Button("Run") {}.disabled(true)
+            }
+        }
     }
 
     private var preview: some View {
@@ -302,31 +349,59 @@ struct ContentView: View {
             Color(nsColor: .underPageBackgroundColor)
             if let img = engine.resultImage {
                 Image(nsImage: img).resizable().scaledToFit().padding(12)
-            } else if sourceKind == .image, let url = sourceURL, let ns = NSImage(contentsOf: url) {
-                Image(nsImage: ns).resizable().scaledToFit().padding(12).opacity(0.55)
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: sourceKind == .video ? "film" : sourceKind == .folder ? "folder" : "photo")
                         .font(.system(size: 48)).foregroundStyle(.tertiary)
-                    Text(sourceURL == nil ? "Choose a model + source, then Run"
-                                          : "Press Run to process the \(kindLabel)").foregroundStyle(.secondary)
+                    Text(sourceURL == nil ? "Choose a model + source" : "Loading preview…").foregroundStyle(.secondary)
                 }
             }
         }
     }
 
-    private func runInference() {
-        guard let m = modelURL, let s = sourceURL else { return }
+    // finder: thumbnail strip (folder) or frame scrubber (video)
+    @ViewBuilder private var finder: some View {
         switch sourceKind {
-        case .image:  engine.run(model: m, image: s, conf: conf, iou: iou, style: style, label: label, compute: compute)
-        case .folder: engine.processFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
-        case .video:  engine.processVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
-        case .unknown: engine.status = "Unsupported source."
+        case .folder where !folderImages.isEmpty:
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Preview frame — tune, then Export  (\(folderImages.count) images)")
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.top, 6)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 6) {
+                        ForEach(Array(folderImages.prefix(300).enumerated()), id: \.offset) { i, url in
+                            thumbCell(i, url)
+                        }
+                    }.padding(.horizontal, 12).padding(.bottom, 8)
+                }
+            }
+            .frame(height: 104)
+            .background(Color(nsColor: .windowBackgroundColor))
+        case .video:
+            VStack(spacing: 2) {
+                Slider(value: $scrubTime, in: 0...max(videoDur, 0.01)) { editing in if !editing { scrubFrame() } }
+                Text("preview frame @ \(String(format: "%.2f", scrubTime))s / \(String(format: "%.1f", videoDur))s")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Color(nsColor: .windowBackgroundColor))
+        default:
+            EmptyView()
         }
     }
-    /// Live post-processing only makes sense for a single cached image.
-    private func rerender() {
-        if sourceKind == .image { engine.restyle(conf: conf, iou: iou, style: style, label: label) }
+
+    private func thumbCell(_ i: Int, _ url: URL) -> some View {
+        Group {
+            if let ns = makeThumbnail(url) { Image(nsImage: ns).resizable().scaledToFill() }
+            else { Color.gray.opacity(0.2) }
+        }
+        .frame(width: 104, height: 72).clipped().cornerRadius(4)
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(i == selectedIndex ? Color.accentColor : .clear, lineWidth: 2))
+        .onTapGesture {
+            selectedIndex = i
+            if let m = modelURL {
+                engine.previewURL(model: m, image: url, compute: compute, conf: conf, iou: iou, style: style, label: label)
+            }
+        }
     }
 
     // ---- small view builders ----
