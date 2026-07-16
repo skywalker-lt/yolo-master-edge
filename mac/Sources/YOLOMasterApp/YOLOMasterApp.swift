@@ -202,9 +202,9 @@ enum FinderMode: String, CaseIterable { case icons, list, gallery }
 struct FinderView: View {
     let images: [URL]
     @Binding var selected: Int
+    @Binding var mode: FinderMode
+    @Binding var iconSize: Double
     let onSelect: (Int) -> Void
-    @State private var mode: FinderMode = .icons
-    @State private var iconSize: Double = 108
 
     var body: some View {
         VStack(spacing: 0) {
@@ -297,9 +297,12 @@ struct ContentView: View {
     @State private var pickTarget: PickTarget = .model
     @State private var folderImages: [URL] = []
     @State private var selectedIndex = 0
+    @State private var finderMode: FinderMode = .icons
+    @State private var iconSize: Double = 108
     @State private var videoDur = 0.0
     @State private var scrubTime = 0.0
     @State private var scrubWork: DispatchWorkItem?
+    @FocusState private var kbFocused: Bool
 
     private enum PickTarget { case model, source }
     private var sourceKind: SourceKind { sourceURL.map(classifySource) ?? .unknown }
@@ -320,11 +323,8 @@ struct ContentView: View {
             controls.frame(width: 300).padding(16)
             Divider()
             if sourceKind == .folder && !engine.exporting {
-                FinderView(images: folderImages, selected: $selectedIndex) { i in
-                    selectedIndex = i
-                    if let m = modelURL {
-                        engine.previewURL(model: m, image: folderImages[i], compute: compute, conf: conf, iou: iou, style: style, label: label)
-                    }
+                FinderView(images: folderImages, selected: $selectedIndex, mode: $finderMode, iconSize: $iconSize) { i in
+                    selectPreview(i)
                 }
                 .frame(width: 380)
                 Divider()
@@ -354,6 +354,41 @@ struct ContentView: View {
         .onChange(of: label) { rerender() }
         .onChange(of: modelURL) { setupSource() }
         .onChange(of: sourceURL) { setupSource() }
+        // arrow-key browsing (folder: move selection; video: scrub)
+        .focusable()
+        .focused($kbFocused)
+        .onAppear { DispatchQueue.main.async { kbFocused = true } }
+        .onKeyPress(.leftArrow)  { step(-1, vertical: false); return .handled }
+        .onKeyPress(.rightArrow) { step(1,  vertical: false); return .handled }
+        .onKeyPress(.upArrow)    { step(-1, vertical: true);  return .handled }
+        .onKeyPress(.downArrow)  { step(1,  vertical: true);  return .handled }
+    }
+
+    /// Select image `i` and preview+tune it.
+    private func selectPreview(_ i: Int) {
+        guard folderImages.indices.contains(i) else { return }
+        selectedIndex = i
+        if let m = modelURL {
+            engine.previewURL(model: m, image: folderImages[i], compute: compute, conf: conf, iou: iou, style: style, label: label)
+        }
+    }
+
+    /// Estimated grid columns for ↑/↓ row jumps (finder is 380 wide).
+    private var gridColumns: Int { max(1, Int((380.0 - 24) / (iconSize + 8))) }
+
+    /// Arrow-key navigation: folder moves selection (↑/↓ by a grid row in Icons view), video scrubs.
+    private func step(_ dir: Int, vertical: Bool) {
+        switch sourceKind {
+        case .folder:
+            guard !folderImages.isEmpty else { return }
+            let stride = (vertical && finderMode == .icons) ? gridColumns : 1
+            selectPreview(min(max(0, selectedIndex + dir * stride), folderImages.count - 1))
+        case .video:
+            let dt = Double(dir) * (vertical ? 1.0 : 0.2)
+            scrubTime = min(max(0, scrubTime + dt), max(videoDur, 0.0))
+            scrubFrame()
+        default: break
+        }
     }
 
     private func assign(_ url: URL) {
