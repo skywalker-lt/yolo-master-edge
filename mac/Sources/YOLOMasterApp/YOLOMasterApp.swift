@@ -229,7 +229,7 @@ final class InferenceEngine: ObservableObject {
             do {
                 let det = try Detector(modelURL: model, compute: compute)
                 self.detNames = det.classNames
-                let (frames, summary, fps) = try await inferVideo(det, input: input, confFloor: 0.05) { done, est in
+                let (frames, summary, fps, size) = try await inferVideo(det, input: input, confFloor: 0.05) { done, est in
                     DispatchQueue.main.async {
                         self.progress = est > 0 ? min(1, Double(done) / Double(est)) : nil
                         self.status = "Inferring frame \(done)…"
