@@ -83,12 +83,14 @@ ${ICON_KEY}
 PLIST
 
 echo "[3/4] codesign..."
+ENTITLEMENTS="$HERE/YOLOMaster.entitlements"   # camera entitlement (required under hardened runtime)
+ENT_ARG=(); [ -f "$ENTITLEMENTS" ] && ENT_ARG=(--entitlements "$ENTITLEMENTS")
 if [ -n "${CODESIGN_ID:-}" ]; then
-  codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_ID" "$APP"
-  echo "  signed: $CODESIGN_ID (hardened runtime)"
-  codesign --verify --deep --strict "$APP" && echo "  verify: OK"
+  codesign --force --options runtime --timestamp "${ENT_ARG[@]}" --sign "$CODESIGN_ID" "$APP"
+  echo "  signed: $CODESIGN_ID (hardened runtime${ENT_ARG:+, camera entitlement})"
+  codesign --verify --strict "$APP" && echo "  verify: OK"
 else
-  codesign --force --deep --sign - "$APP" 2>/dev/null \
+  codesign --force "${ENT_ARG[@]}" --sign - "$APP" 2>/dev/null \
     && echo "  ad-hoc signed (recipients: right-click > Open on first launch)" \
     || echo "  (codesign unavailable -- app still runs locally)"
 fi
