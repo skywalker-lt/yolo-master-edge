@@ -215,12 +215,13 @@ struct CameraStage: View {
                     ctx.draw(Image(decorative: mask, scale: 1),
                              in: CGRect(x: ox, y: oy, width: dw, height: vid.height * scale))
                 }
-                if !drawBoxes { return }
+                if !drawBoxes && label == .off { return }   // masks-only with no labels -> nothing more to draw
                 for d in dets {
                     let color = overlayPalette[((d.cls % overlayPalette.count) + overlayPalette.count) % overlayPalette.count]
                     let r = CGRect(x: ox + d.rect.minX * scale, y: oy + d.rect.minY * scale,
                                    width: d.rect.width * scale, height: d.rect.height * scale)
                     let rp = Path(roundedRect: r, cornerRadius: 3)
+                    if drawBoxes {
                     switch style {
                     case .solid:
                         ctx.stroke(rp, with: .color(color), lineWidth: lw * 1.2)
@@ -238,6 +239,7 @@ struct CameraStage: View {
                         br.move(to: CGPoint(x: r.maxX, y: r.maxY - arm)); br.addLine(to: CGPoint(x: r.maxX, y: r.maxY)); br.addLine(to: CGPoint(x: r.maxX - arm, y: r.maxY))
                         ctx.stroke(br, with: .color(color), lineWidth: lw * 1.4)
                     }
+                    }   // if drawBoxes
                     if label != .off {
                         let name = d.cls < cam.names.count ? cam.names[d.cls] : "class\(d.cls)"
                         let txt = label == .min ? name : "\(name) \(String(format: "%.2f", d.score))"
