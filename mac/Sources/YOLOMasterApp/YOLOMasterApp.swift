@@ -100,8 +100,10 @@ final class InferenceEngine: ObservableObject {
     private var folderCache: [FolderItem] = []
     private var folderInput: URL?
     private var videoCache: [[Detection]] = []
-    private var videoFps: Double = 30
+    @Published private(set) var videoFps: Double = 30
     private var videoInput: URL?
+    private var videoGrabber: FrameGrabber?
+    private var scrubTask: Task<Void, Never>?
     private let queue = DispatchQueue(label: "com.yolomaster.inference")
 
     func resetResults() {
@@ -233,9 +235,10 @@ final class InferenceEngine: ObservableObject {
                     }
                 }
                 let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
-                let firstCG = await extractFrame(input, atSeconds: 0)
+                let grabber = FrameGrabber(url: input)
+                let firstCG = await grabber.frame(atSeconds: 0)
                 DispatchQueue.main.async {
-                    self.videoCache = frames; self.videoFps = fps; self.videoInput = input
+                    self.videoCache = frames; self.videoFps = fps; self.videoInput = input; self.videoGrabber = grabber
                     self.modelInfo = info; self.infer = summary; self.hasResults = !frames.isEmpty
                     self.busy = false; self.progress = nil
                     self.status = "Inferred \(frames.count) frames — scrub & tune, then Export"
@@ -250,16 +253,15 @@ final class InferenceEngine: ObservableObject {
         }
     }
 
-    // ---- scrub: show a cached video frame at `time` (instant; no inference) ----
+    // ---- scrub: show a cached video frame at `time` (instant; no inference). Live + coalesced. ----
     func showVideoFrame(time: Double, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
-        guard let input = videoInput, !videoCache.isEmpty else { return }
+        guard !videoCache.isEmpty, let grabber = videoGrabber else { return }
         let idx = min(max(0, Int((time * videoFps).rounded())), videoCache.count - 1)
         let cands = videoCache[idx]
-        Task { [weak self] in
-            guard let self else { return }
-            if let cg = await extractFrame(input, atSeconds: time) {
-                self.queue.async { self.currentCG = cg; self.currentCands = cands; self.currentMs = 0; self.render(conf: conf, iou: iou, style: style, label: label) }
-            }
+        scrubTask?.cancel()   // drop the in-flight frame so dragging stays snappy
+        scrubTask = Task { [weak self] in
+            guard let self, let cg = await grabber.frame(atSeconds: time), !Task.isCancelled else { return }
+            self.queue.async { self.currentCG = cg; self.currentCands = cands; self.currentMs = 0; self.render(conf: conf, iou: iou, style: style, label: label) }
         }
     }
 
@@ -372,7 +374,8 @@ struct ContentView: View {
     @State private var iconSize: Double = 108
     @State private var videoDur = 0.0
     @State private var scrubTime = 0.0
-    @State private var scrubWork: DispatchWorkItem?
+    @State private var playing = false
+    @State private var playTimer: Timer?
     @FocusState private var kbFocused: Bool
 
     private enum PickTarget { case model, source }
@@ -413,6 +416,7 @@ struct ContentView: View {
         .onChange(of: label) { rerender() }
         .onChange(of: modelURL) { setupSource() }
         .onChange(of: sourceURL) { setupSource() }
+        .onChange(of: scrubTime) { requestFrame() }   // live: render as the slider/playback moves
         .focusable().focused($kbFocused).onAppear { DispatchQueue.main.async { kbFocused = true } }
         .onKeyPress(.leftArrow)  { step(-1, vertical: false); return .handled }
         .onKeyPress(.rightArrow) { step(1,  vertical: false); return .handled }
@@ -427,6 +431,7 @@ struct ContentView: View {
         }
     }
     private func setupSource() {
+        stopPlay()
         engine.resetResults()
         guard let s = sourceURL else { return }
         switch classifySource(s) {
@@ -451,13 +456,22 @@ struct ContentView: View {
         engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label)
     }
     private func rerender() { engine.restyle(conf: conf, iou: iou, style: style, label: label) }
-    private func scrubFrame() {
-        scrubWork?.cancel()
-        let t = scrubTime
-        let work = DispatchWorkItem { engine.showVideoFrame(time: t, conf: conf, iou: iou, style: style, label: label) }
-        scrubWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    /// Render the current scrub time's frame (live; engine coalesces rapid calls).
+    private func requestFrame() {
+        if sourceKind == .video && engine.hasResults {
+            engine.showVideoFrame(time: scrubTime, conf: conf, iou: iou, style: style, label: label)
+        }
     }
+    private func togglePlay() {
+        playing.toggle()
+        playTimer?.invalidate(); playTimer = nil
+        guard playing, videoDur > 0, engine.hasResults else { playing = false; return }
+        let dt = 1.0 / max(engine.videoFps, 1)
+        playTimer = Timer.scheduledTimer(withTimeInterval: dt, repeats: true) { _ in
+            scrubTime = (scrubTime + dt >= videoDur) ? 0 : scrubTime + dt   // advances -> onChange renders
+        }
+    }
+    private func stopPlay() { playing = false; playTimer?.invalidate(); playTimer = nil }
     private var gridColumns: Int { max(1, Int((380.0 - 24) / (iconSize + 8))) }
     private func step(_ dir: Int, vertical: Bool) {
         switch sourceKind {
@@ -465,7 +479,7 @@ struct ContentView: View {
             let stride = (vertical && finderMode == .icons) ? gridColumns : 1
             selectAndShow(min(max(0, selectedIndex + dir * stride), folderImages.count - 1))
         case .video where engine.hasResults:
-            scrubTime = min(max(0, scrubTime + Double(dir) * (vertical ? 1.0 : 0.2)), max(videoDur, 0.0)); scrubFrame()
+            scrubTime = min(max(0, scrubTime + Double(dir) * (vertical ? 1.0 : 0.2)), max(videoDur, 0.0))
         default: break
         }
     }
@@ -588,10 +602,15 @@ struct ContentView: View {
     }
 
     private var scrubberBar: some View {
-        VStack(spacing: 2) {
-            Slider(value: $scrubTime, in: 0...max(videoDur, 0.01)) { editing in if !editing { scrubFrame() } }
-            Text("preview frame @ \(String(format: "%.2f", scrubTime))s / \(String(format: "%.1f", videoDur))s")
-                .font(.caption2).foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            Button { togglePlay() } label: {
+                Image(systemName: playing ? "pause.fill" : "play.fill").font(.title3).frame(width: 22)
+            }.buttonStyle(.borderless)
+            VStack(spacing: 2) {
+                Slider(value: $scrubTime, in: 0...max(videoDur, 0.01))
+                Text("\(String(format: "%.2f", scrubTime))s / \(String(format: "%.1f", videoDur))s")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }.padding(.horizontal, 12).padding(.vertical, 8).background(Color(nsColor: .windowBackgroundColor))
     }
 
