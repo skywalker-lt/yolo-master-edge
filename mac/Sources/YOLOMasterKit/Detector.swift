@@ -6,6 +6,7 @@
 import Foundation
 import CoreML
 import CoreGraphics
+import CoreVideo
 
 /// A single detection in ORIGINAL-image pixel coordinates (top-left origin).
 /// `maskCoeffs` is non-empty only for segmentation models (nm mask-prototype coefficients).
@@ -277,6 +278,26 @@ public final class Detector {
         let proto = isSegment ? out.featureValue(for: protoName)?.multiArrayValue : nil
         return RawOutput(y: y, proto: proto, scaleX: lb.scaleX, scaleY: lb.scaleY, padX: lb.padX, padY: lb.padY,
                          origW: image.width, origH: image.height, inferMs: infMs)
+    }
+
+    /// Low-latency forward from a camera `CVPixelBuffer` (BGRA). Wraps the buffer as a CGImage with a
+    /// single copy (no CIContext) then runs the same letterbox → predict path. For real-time streaming.
+    public func forward(_ pixelBuffer: CVPixelBuffer) throws -> RawOutput {
+        guard let cg = Detector.cgImage(from: pixelBuffer) else { throw DetectorError.inputBuildFailed }
+        return try forward(cg)
+    }
+
+    /// Cheap BGRA `CVPixelBuffer` → `CGImage` (one memcpy via a buffer-backed context; no Core Image).
+    static func cgImage(from pb: CVPixelBuffer) -> CGImage? {
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
+        guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
+        let bmp = CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue  // 32BGRA
+        guard let ctx = CGContext(data: base, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: CVPixelBufferGetBytesPerRow(pb),
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: bmp) else { return nil }
+        return ctx.makeImage()
     }
 
     /// Decode + per-class NMS from a cached forward pass. Cheap — no model call.
