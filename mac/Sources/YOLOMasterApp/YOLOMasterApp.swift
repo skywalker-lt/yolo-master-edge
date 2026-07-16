@@ -16,7 +16,7 @@ import ImageIO
 import AVFoundation
 @preconcurrency import YOLOMasterKit   // Detector/RawOutput aren't Sendable; we hop them to main safely
 
-let brandColor = Color(red: 86.0 / 255.0, green: 199.0 / 255.0, blue: 187.0 / 255.0)   // #56C7BB — app accent
+let brandColor = Color.accentColor   // default system accent (blue)
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
