@@ -358,7 +358,8 @@ struct FinderView: View {
 // ---------- AVPlayer video stage (real-time playback) + live detection overlay ----------
 final class PlayerController: ObservableObject {
     let player = AVPlayer()
-    @Published var currentTime: Double = 0
+    @Published var currentTime: Double = 0     // playhead (drives the slider during playback)
+    @Published var displayTime: Double = 0     // time of the frame actually ON SCREEN (drives the overlay)
     @Published var isPlaying = false
     private var loaded: URL?
     private var timeObs: Any?
@@ -367,10 +368,13 @@ final class PlayerController: ObservableObject {
         guard loaded != url else { return }
         loaded = url
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
-        currentTime = 0; isPlaying = false
+        currentTime = 0; displayTime = 0; isPlaying = false
         if timeObs == nil {
             timeObs = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] t in
-                self?.currentTime = t.seconds.isFinite ? t.seconds : 0
+                guard let self else { return }
+                let s = t.seconds.isFinite ? t.seconds : 0
+                self.currentTime = s
+                if self.isPlaying { self.displayTime = s }   // during playback, boxes track the shown frame
             }
         }
         if endObs == nil {
@@ -381,7 +385,11 @@ final class PlayerController: ObservableObject {
     }
     func togglePlay() { isPlaying.toggle(); isPlaying ? player.play() : player.pause() }
     func pause() { isPlaying = false; player.pause() }
-    func seek(_ t: Double) { player.seek(to: CMTime(seconds: max(0, t), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) }
+    func seek(_ t: Double) {
+        player.seek(to: CMTime(seconds: max(0, t), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] done in
+            if done { DispatchQueue.main.async { self?.displayTime = t } }   // draw boxes only after the frame is on screen
+        }
+    }
     deinit { if let o = timeObs { player.removeTimeObserver(o) }; if let e = endObs { NotificationCenter.default.removeObserver(e) } }
 }
 
@@ -406,7 +414,8 @@ let overlayPalette: [Color] = [
 struct VideoStage: View {
     @ObservedObject var engine: InferenceEngine
     @ObservedObject var pc: PlayerController
-    let conf: Double, iou: Double, label: LabelMode
+    let conf: Double, iou: Double
+    let style: BoxStyle, label: LabelMode
     var body: some View {
         ZStack {
             PlayerView(player: pc.player)
@@ -414,13 +423,31 @@ struct VideoStage: View {
                 let vid = engine.videoSize
                 guard vid.width > 0, vid.height > 0 else { return }
                 let scale = Swift.min(size.width / vid.width, size.height / vid.height)
-                let dw = vid.width * scale, dh = vid.height * scale
-                let ox = (size.width - dw) / 2, oy = (size.height - dh) / 2
+                let dw = vid.width * scale
+                let ox = (size.width - dw) / 2, oy = (size.height - vid.height * scale) / 2
                 let lw = Swift.max(1.5, dw / 640 * 1.5)
-                for d in engine.detsAt(time: pc.currentTime, conf: conf, iou: iou) {
+                for d in engine.detsAt(time: pc.displayTime, conf: conf, iou: iou) {   // displayTime -> boxes match the shown frame
                     let color = overlayPalette[d.cls % overlayPalette.count]
                     let r = CGRect(x: ox + d.rect.minX * scale, y: oy + d.rect.minY * scale, width: d.rect.width * scale, height: d.rect.height * scale)
-                    ctx.stroke(Path(roundedRect: r, cornerRadius: 3), with: .color(color), lineWidth: lw)
+                    let rp = Path(roundedRect: r, cornerRadius: 3)
+                    switch style {
+                    case .solid:
+                        ctx.stroke(rp, with: .color(color), lineWidth: lw * 1.2)
+                    case .neon:
+                        var g = ctx
+                        g.addFilter(.shadow(color: color, radius: lw * 4))
+                        g.stroke(rp, with: .color(color), lineWidth: lw * 1.3)
+                    case .hud:
+                        ctx.fill(Path(r), with: .color(color.opacity(0.08)))
+                        ctx.stroke(Path(r), with: .color(color.opacity(0.35)), lineWidth: lw * 0.6)
+                        let arm = Swift.min(Swift.min(r.width, r.height) * 0.28, lw * 22)
+                        var br = Path()
+                        br.move(to: CGPoint(x: r.minX + arm, y: r.minY)); br.addLine(to: CGPoint(x: r.minX, y: r.minY)); br.addLine(to: CGPoint(x: r.minX, y: r.minY + arm))
+                        br.move(to: CGPoint(x: r.maxX - arm, y: r.minY)); br.addLine(to: CGPoint(x: r.maxX, y: r.minY)); br.addLine(to: CGPoint(x: r.maxX, y: r.minY + arm))
+                        br.move(to: CGPoint(x: r.minX, y: r.maxY - arm)); br.addLine(to: CGPoint(x: r.minX, y: r.maxY)); br.addLine(to: CGPoint(x: r.minX + arm, y: r.maxY))
+                        br.move(to: CGPoint(x: r.maxX, y: r.maxY - arm)); br.addLine(to: CGPoint(x: r.maxX, y: r.maxY)); br.addLine(to: CGPoint(x: r.maxX - arm, y: r.maxY))
+                        ctx.stroke(br, with: .color(color), lineWidth: lw * 1.4)
+                    }
                     if label != .off {
                         let name = d.cls < engine.names.count ? engine.names[d.cls] : "class\(d.cls)"
                         let txt = label == .min ? name : "\(name) \(String(format: "%.2f", d.score))"
@@ -499,10 +526,8 @@ struct ContentView: View {
         .onChange(of: modelURL) { setupSource() }
         .onChange(of: sourceURL) { setupSource() }
         .onChange(of: scrubTime) { if scrubbing { pc.seek(scrubTime) } }   // seek while dragging
-        .onChange(of: pc.currentTime) {
-            if pc.isPlaying && !scrubbing { scrubTime = pc.currentTime }   // slider follows playback
-            if sourceKind == .video && engine.hasResults { engine.setVideoFrameStats(time: pc.currentTime, conf: conf, iou: iou) }
-        }
+        .onChange(of: pc.currentTime) { if pc.isPlaying && !scrubbing { scrubTime = pc.currentTime } }   // slider follows playback
+        .onChange(of: pc.displayTime) { if sourceKind == .video && engine.hasResults { engine.setVideoFrameStats(time: pc.displayTime, conf: conf, iou: iou) } }
         .focusable().focused($kbFocused).onAppear { DispatchQueue.main.async { kbFocused = true } }
         .onKeyPress(.leftArrow)  { step(-1, vertical: false); return .handled }
         .onKeyPress(.rightArrow) { step(1,  vertical: false); return .handled }
@@ -663,7 +688,7 @@ struct ContentView: View {
         ZStack {
             Color(nsColor: .underPageBackgroundColor)
             if sourceKind == .video && engine.hasResults {
-                VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, label: label).padding(12)
+                VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, style: style, label: label).padding(12)
             } else if let img = engine.resultImage {
                 Image(nsImage: img).resizable().scaledToFit().padding(12)
             } else if (sourceKind == .folder || sourceKind == .video) && !engine.hasResults && !engine.busy {
