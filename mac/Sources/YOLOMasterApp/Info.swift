@@ -53,6 +53,24 @@ struct InfoView: View {
                             .font(.callout).foregroundStyle(.secondary)
                     }
 
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Author").font(.headline)
+                        HStack(alignment: .center, spacing: 12) {
+                            authorAvatar()   // round, to set it apart from the square org logos
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Thomas Lee").font(.callout.weight(.semibold))
+                                Text("The Hong Kong University of Science and Technology")
+                                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                if let url = URL(string: "https://github.com/skywalker-lt") {
+                                    Link(destination: url) {
+                                        Label("github.com/skywalker-lt", systemImage: "link").font(.caption)
+                                    }
+                                }
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Acknowledgements").font(.headline)
                         Text("This app stands on the following open-source projects, with gratitude.")
@@ -95,6 +113,19 @@ struct InfoView: View {
             }
         }
         .frame(width: 580, height: 660)
+    }
+
+    @ViewBuilder private func authorAvatar() -> some View {
+        Group {
+            if let img = ackLogo("skywalker-lt", "png") {
+                Image(nsImage: img).resizable().scaledToFill()
+            } else {
+                Circle().fill(.quaternary).overlay(Image(systemName: "person.fill").foregroundStyle(.secondary))
+            }
+        }
+        .frame(width: 54, height: 54)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
     }
 
     @ViewBuilder private func logo(_ a: Ack) -> some View {
