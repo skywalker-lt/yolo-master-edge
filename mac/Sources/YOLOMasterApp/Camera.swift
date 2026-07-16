@@ -89,6 +89,12 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             self.output.setSampleBufferDelegate(self, queue: self.camQueue)
             guard self.session.canAddOutput(self.output) else { self.session.commitConfiguration(); return false }
             self.session.addOutput(self.output)
+            // Mirror the delivered frames (selfie view). Inference + candidates + masks are then all in
+            // mirrored coordinates, matching the mirrored preview layer — so the overlay stays aligned.
+            if let conn = self.output.connection(with: .video), conn.isVideoMirroringSupported {
+                conn.automaticallyAdjustsVideoMirroring = false
+                conn.isVideoMirrored = true
+            }
             self.session.commitConfiguration()
             self.configured = true
             return true
@@ -140,7 +146,7 @@ final class CameraPreviewNSView: NSView {
     override func layout() {
         super.layout()
         if let c = previewLayer.connection, c.isVideoMirroringSupported {
-            c.automaticallyAdjustsVideoMirroring = false; c.isVideoMirrored = false
+            c.automaticallyAdjustsVideoMirroring = false; c.isVideoMirrored = true   // selfie mirror, matches the mirrored data output
         }
     }
 }
