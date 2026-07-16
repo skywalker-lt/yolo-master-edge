@@ -635,15 +635,15 @@ struct ContentView: View {
                                     .pickerStyle(.segmented).labelsHidden()
                             }
                         }
-                        if !(engine.modelIsSegment && overlay == .masks) {   // masks-only: boxes/labels are hidden
+                        if !(engine.modelIsSegment && overlay == .masks) {   // box style is irrelevant with boxes hidden
                             segRow("Box style") {
                                 Picker("", selection: $style) { ForEach(BoxStyle.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
                                     .pickerStyle(.segmented).labelsHidden()
                             }
-                            segRow("Label") {
-                                Picker("", selection: $label) { ForEach(LabelMode.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
-                                    .pickerStyle(.segmented).labelsHidden()
-                            }
+                        }
+                        segRow("Label") {   // labels stay adjustable even in masks-only mode
+                            Picker("", selection: $label) { ForEach(LabelMode.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
+                                .pickerStyle(.segmented).labelsHidden()
                         }
                     }
                     sectionBox("Compute", "cpu") {
