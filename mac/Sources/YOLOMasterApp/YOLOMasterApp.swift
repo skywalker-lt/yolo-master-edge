@@ -1,9 +1,11 @@
 // YOLOMasterApp — SwiftUI frontend for the Core ML runner (YOLOMasterKit backend).
 //
-// Pick a .mlpackage + a source (image / folder / video). A preview frame loads and you tune
-// conf/iou/style/label on it IN REAL TIME (cached forward pass — no re-inference). A Finder
-// (Icons / List / Gallery views) picks which frame to tune; then Export writes the whole thing.
-// A progress bar overlays the preview during inference (indeterminate) and export (with count).
+// Pipeline:  choose model + source  ->  RUN (infer the whole set once, progress bar)  ->
+//            browse the Finder + tune conf/iou/style/label in real time (cheap NMS/redraw
+//            from cached candidates, NO re-inference)  ->  Export writes with the tuned params.
+//   image  -> Run infers 1 -> tune -> Save
+//   folder -> Run infers all (cache) -> Finder (Icons/List/Gallery) + arrows to browse -> Export folder
+//   video  -> scrub a frame (infers it) -> tune -> Export video
 //
 // Build & run:  swift run -c release --package-path mac YOLOMasterApp   |   Bundle: mac/make_app.sh
 import SwiftUI
@@ -24,14 +26,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct YOLOMasterApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     var body: some Scene {
-        WindowGroup("YOLO-Master · Core ML") {
-            ContentView().frame(minWidth: 1120, minHeight: 720)
-        }
-        .windowStyle(.titleBar)
+        WindowGroup("YOLO-Master · Core ML") { ContentView().frame(minWidth: 1120, minHeight: 720) }
+            .windowStyle(.titleBar)
     }
 }
 
-// ---------- async, cached thumbnails (smooth for thousands of images) ----------
+// ---- async, cached thumbnails ----
 func makeThumbnail(_ url: URL, max: CGFloat) -> NSImage? {
     guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
     let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -40,7 +40,6 @@ func makeThumbnail(_ url: URL, max: CGFloat) -> NSImage? {
     guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
     return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
 }
-
 final class ThumbCache {
     static let shared = ThumbCache()
     private let cache = NSCache<NSString, NSImage>()
@@ -56,64 +55,112 @@ final class ThumbCache {
         }
     }
 }
-
 struct AsyncThumb: View {
-    let url: URL
-    var max: CGFloat = 128
-    var fit: Bool = false
+    let url: URL; var max: CGFloat = 128; var fit: Bool = false
     @State private var image: NSImage?
     var body: some View {
         Group {
-            if let image {
-                if fit { Image(nsImage: image).resizable().scaledToFit() }
-                else { Image(nsImage: image).resizable().scaledToFill() }
-            } else { Rectangle().fill(Color.gray.opacity(0.15)) }
+            if let image { (fit ? Image(nsImage: image).resizable().scaledToFit()
+                                : Image(nsImage: image).resizable().scaledToFill()) }
+            else { Rectangle().fill(Color.gray.opacity(0.15)) }
         }
         .onAppear { if image == nil { ThumbCache.shared.thumb(url, max: max) { image = $0 } } }
     }
 }
 
-// ---------- inference engine ----------
+// ---------- inference engine (two-phase: forward-once + cheap tuning) ----------
 final class InferenceEngine: ObservableObject {
     @Published var resultImage: NSImage?
     @Published var detCount = 0
-    @Published var inferMs = 0.0
     @Published var modelSummary = ""
-    @Published var status = "Choose a model (.mlpackage) + a source (image / folder / video)."
+    @Published var status = "Choose a model (.mlpackage) + a source, then Run."
     @Published var busy = false
     @Published var exporting = false
-    @Published var progress: Double?        // nil = indeterminate
+    @Published var hasResults = false          // folder: inference cache ready
+    @Published var progress: Double?
     @Published var outputURL: URL?
 
     private var detector: Detector?
     private var key = ""
-    private var rawOutput: Detector.RawOutput?
-    private var sourceCG: CGImage?
-    private var lastInferMs = 0.0
+    private var detNames: [String] = []
+    private var currentCG: CGImage?
+    private var currentCands: [Detection] = []
+    private var currentMs = 0.0
     private var lastAnnotated: CGImage?
+    private var folderCache: [FolderItem] = []
+    private var folderInput: URL?
     private let queue = DispatchQueue(label: "com.yolomaster.inference")
 
+    func resetResults() {
+        hasResults = false; folderCache = []; folderInput = nil; outputURL = nil
+        resultImage = nil; detCount = 0; currentCG = nil; currentCands = []
+        status = "Ready — press Run."
+    }
+
+    // ---- image / video-frame: forward one, cache candidates, render ----
     func previewURL(model: URL, image: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
         guard let cg = loadCGImage(image) else { publish(error: "Could not read image."); return }
         preview(model: model, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label)
     }
-
     func preview(model: URL, cg: CGImage, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
-        busy = true; progress = nil; outputURL = nil; status = "Inferring…"
+        busy = true; progress = nil; status = "Inferring…"
         let k = model.path + "|" + compute.rawValue
         queue.async { [weak self] in
             guard let self else { return }
             do {
                 let det = try self.reuseDetector(model: model, compute: compute, key: k)
                 let raw = try det.forward(cg)
-                self.rawOutput = raw; self.sourceCG = cg; self.lastInferMs = raw.inferMs
+                self.currentCG = cg; self.currentCands = det.candidates(raw); self.currentMs = raw.inferMs
+                self.detNames = det.classNames
                 let summary = det.summary
-                DispatchQueue.main.async { self.modelSummary = summary; self.inferMs = raw.inferMs }
+                DispatchQueue.main.async { self.modelSummary = summary }
                 self.render(conf: conf, iou: iou, style: style, label: label)
             } catch { self.publish(error: "Inference failed: \(error.localizedDescription)") }
         }
     }
 
+    // ---- folder: infer ALL once (progress), cache candidates ----
+    func runFolder(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        busy = true; exporting = false; hasResults = false; progress = 0; outputURL = nil; status = "Inferring folder…"
+        let k = model.path + "|" + compute.rawValue
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let det = try self.reuseDetector(model: model, compute: compute, key: k)
+                self.detNames = det.classNames
+                let items = inferFolder(det, input: input, confFloor: 0.05) { done, total in
+                    DispatchQueue.main.async {
+                        self.progress = total > 0 ? Double(done) / Double(total) : nil
+                        self.status = "Inferring \(done)/\(total)…"
+                    }
+                }
+                self.folderCache = items; self.folderInput = input
+                let summary = det.summary
+                if let first = items.first, let cg = loadCGImage(first.url) {
+                    self.currentCG = cg; self.currentCands = first.candidates; self.currentMs = 0
+                }
+                DispatchQueue.main.async {
+                    self.modelSummary = summary; self.hasResults = !items.isEmpty
+                    self.busy = false; self.progress = nil
+                    self.status = "Inferred \(items.count) images — browse & tune, then Export"
+                }
+                self.render(conf: conf, iou: iou, style: style, label: label)
+            } catch { self.publish(error: "Inference failed: \(error.localizedDescription)") }
+        }
+    }
+
+    // ---- show a cached folder item (instant; no inference) ----
+    func showFolder(index i: Int, url: URL, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        queue.async { [weak self] in
+            guard let self, let cg = loadCGImage(url) else { return }
+            self.currentCG = cg
+            self.currentCands = self.folderCache.indices.contains(i) ? self.folderCache[i].candidates : []
+            self.currentMs = 0
+            self.render(conf: conf, iou: iou, style: style, label: label)
+        }
+    }
+
+    // ---- tuning: cheap re-NMS + redraw of the current frame ----
     private var pendingRestyle: DispatchWorkItem?
     func restyle(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
         pendingRestyle?.cancel()
@@ -121,44 +168,36 @@ final class InferenceEngine: ObservableObject {
         pendingRestyle = item
         queue.async(execute: item)
     }
-
     private func render(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
-        guard let det = detector, let raw = rawOutput, let cg = sourceCG else {
-            DispatchQueue.main.async { self.busy = false }; return
-        }
-        let dets = det.decode(raw, conf: Float(conf), iou: CGFloat(iou))
-        let annotated = annotate(cg, dets, names: det.classNames, style: style, label: label) ?? cg
+        guard let cg = currentCG, !detNames.isEmpty else { DispatchQueue.main.async { self.busy = false }; return }
+        let dets = Detector.nms(currentCands, conf: Float(conf), iou: CGFloat(iou))
+        let annotated = annotate(cg, dets, names: detNames, style: style, label: label) ?? cg
         self.lastAnnotated = annotated
         let ns = NSImage(cgImage: annotated, size: NSSize(width: cg.width, height: cg.height))
-        let ms = self.lastInferMs
+        let ms = self.currentMs
         DispatchQueue.main.async {
             self.resultImage = ns; self.detCount = dets.count; self.busy = false
-            self.status = "preview: \(dets.count) detections · \(String(format: "%.1f", ms)) ms"
+            self.status = ms > 0 ? "\(dets.count) detections · \(String(format: "%.1f", ms)) ms" : "\(dets.count) detections"
         }
     }
 
-    func exportFolder(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+    // ---- export ----
+    func exportFolder(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        guard let input = folderInput, !folderCache.isEmpty else { return }
         busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting folder…"
         let out = input.deletingLastPathComponent().appendingPathComponent(input.lastPathComponent + "_annotated")
+        let cache = folderCache, names = detNames
         queue.async { [weak self] in
             guard let self else { return }
-            do {
-                let det = try self.reuseDetector(model: model, compute: compute, key: model.path + "|" + compute.rawValue)
-                let stats = runFolder(det, input: input, output: out, conf: Float(conf), iou: CGFloat(iou), style: style, label: label) { done, total, last in
-                    DispatchQueue.main.async {
-                        self.progress = total > 0 ? Double(done) / Double(total) : nil
-                        if let last { self.resultImage = NSImage(cgImage: last, size: NSSize(width: last.width, height: last.height)) }
-                        self.status = "Exporting \(done)/\(total)…"
-                    }
-                }
-                DispatchQueue.main.async {
-                    self.outputURL = out; self.busy = false; self.exporting = false; self.progress = nil
-                    self.status = "Exported \(stats.processed)/\(stats.total) · mean \(String(format: "%.1f", stats.meanMs)) ms"
-                }
-            } catch { self.publish(error: "Export failed: \(error.localizedDescription)") }
+            let n = exportFolderCached(cache, output: out, names: names, conf: Float(conf), iou: CGFloat(iou), style: style, label: label) { done, total in
+                DispatchQueue.main.async { self.progress = total > 0 ? Double(done)/Double(total) : nil; self.status = "Exporting \(done)/\(total)…" }
+            }
+            DispatchQueue.main.async {
+                self.outputURL = out; self.busy = false; self.exporting = false; self.progress = nil
+                self.status = "Exported \(n) images"
+            }
         }
     }
-
     func exportVideo(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
         busy = true; exporting = true; progress = nil; outputURL = nil; status = "Exporting video…"
         let out = input.deletingLastPathComponent().appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_annotated.mp4")
@@ -174,9 +213,9 @@ final class InferenceEngine: ObservableObject {
                 }
                 DispatchQueue.main.async {
                     self.outputURL = out; self.busy = false; self.exporting = false
-                    self.status = "Exported \(stats.frames) frames @\(stats.fps)fps · mean \(String(format: "%.1f", stats.meanMs)) ms"
+                    self.status = "Exported \(stats.frames) frames @\(stats.fps)fps"
                 }
-            } catch { self.publish(error: "Export failed: \(error.localizedDescription)") }
+            } catch { DispatchQueue.main.async { self.status = "Export failed: \(error.localizedDescription)"; self.busy = false; self.exporting = false } }
         }
     }
 
@@ -184,13 +223,10 @@ final class InferenceEngine: ObservableObject {
         if let d = detector, key == k { return d }
         let d = try Detector(modelURL: model, compute: compute); detector = d; key = k; return d
     }
-    private func publish(error: String) {
-        DispatchQueue.main.async { self.status = error; self.busy = false; self.exporting = false; self.progress = nil }
-    }
+    private func publish(error: String) { DispatchQueue.main.async { self.status = error; self.busy = false; self.exporting = false; self.progress = nil } }
     func save() {
         guard let cg = lastAnnotated else { return }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.jpeg, .png]; panel.nameFieldStringValue = "annotated.jpg"
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.jpeg, .png]; panel.nameFieldStringValue = "annotated.jpg"
         if panel.runModal() == .OK, let url = panel.url { saveCGImage(cg, to: url) }
     }
     func reveal() { if let u = outputURL { NSWorkspace.shared.activateFileViewerSelecting([u]) } }
@@ -219,15 +255,10 @@ struct FinderView: View {
                 if mode == .icons { Slider(value: $iconSize, in: 64...200).frame(width: 90) }
             }.padding(8)
             Divider()
-            switch mode {
-            case .icons:   icons
-            case .list:    list
-            case .gallery: gallery
-            }
+            switch mode { case .icons: icons; case .list: list; case .gallery: gallery }
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
-
     private var icons: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: iconSize), spacing: 8)], spacing: 8) {
@@ -237,13 +268,11 @@ struct FinderView: View {
                             .frame(width: iconSize, height: iconSize * 0.72).clipped().cornerRadius(5)
                             .overlay(RoundedRectangle(cornerRadius: 5).stroke(i == selected ? Color.accentColor : .clear, lineWidth: 3))
                         Text(images[i].lastPathComponent).font(.caption2).lineLimit(1).truncationMode(.middle).frame(width: iconSize)
-                    }
-                    .contentShape(Rectangle()).onTapGesture { onSelect(i) }
+                    }.contentShape(Rectangle()).onTapGesture { onSelect(i) }
                 }
             }.padding(10)
         }
     }
-
     private var list: some View {
         ScrollView {
             LazyVStack(spacing: 1) {
@@ -260,7 +289,6 @@ struct FinderView: View {
             }
         }
     }
-
     private var gallery: some View {
         VStack(spacing: 6) {
             if images.indices.contains(selected) {
@@ -271,8 +299,7 @@ struct FinderView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 4) {
                     ForEach(images.indices, id: \.self) { i in
-                        AsyncThumb(url: images[i], max: 130)
-                            .frame(width: 82, height: 58).clipped().cornerRadius(3)
+                        AsyncThumb(url: images[i], max: 130).frame(width: 82, height: 58).clipped().cornerRadius(3)
                             .overlay(RoundedRectangle(cornerRadius: 3).stroke(i == selected ? Color.accentColor : .clear, lineWidth: 2))
                             .onTapGesture { onSelect(i) }
                     }
@@ -285,7 +312,6 @@ struct FinderView: View {
 // ---------- main UI ----------
 struct ContentView: View {
     @StateObject private var engine = InferenceEngine()
-
     @State private var modelURL: URL?
     @State private var sourceURL: URL?
     @State private var conf = 0.25
@@ -309,43 +335,31 @@ struct ContentView: View {
     private var kindLabel: String {
         switch sourceKind { case .image: "image"; case .folder: "folder"; case .video: "video"; case .unknown: "unsupported" }
     }
-    private var canExport: Bool { modelURL != nil && sourceURL != nil && !engine.busy }
     private var pickerTypes: [UTType] {
         if pickTarget == .source { return [.image, .movie, .mpeg4Movie, .folder] }
         let byId = ["com.apple.coreml.mlpackage", "com.apple.coreml.mlmodelc", "com.apple.coreml.model"].compactMap { UTType($0) }
         let byExt = ["mlpackage", "mlmodelc", "mlmodel"].compactMap { UTType(filenameExtension: $0) }
-        let all = byId + byExt + [.package]
-        return all.isEmpty ? [.item] : all
+        let all = byId + byExt + [.package]; return all.isEmpty ? [.item] : all
     }
 
     var body: some View {
         HStack(spacing: 0) {
             controls.frame(width: 300).padding(16)
             Divider()
-            if sourceKind == .folder && !engine.exporting {
-                FinderView(images: folderImages, selected: $selectedIndex, mode: $finderMode, iconSize: $iconSize) { i in
-                    selectPreview(i)
-                }
-                .frame(width: 380)
+            if sourceKind == .folder && engine.hasResults && !engine.exporting {
+                FinderView(images: folderImages, selected: $selectedIndex, mode: $finderMode, iconSize: $iconSize) { selectAndShow($0) }
+                    .frame(width: 380)
                 Divider()
             }
             VStack(spacing: 0) {
-                preview
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                preview.frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(alignment: .bottom) { if engine.busy { progressBar } }
                 if sourceKind == .video && !engine.exporting { scrubberBar }
             }
         }
-        .fileImporter(isPresented: $showPicker, allowedContentTypes: pickerTypes) { result in
-            if case .success(let url) = result { assign(url) }
-        }
+        .fileImporter(isPresented: $showPicker, allowedContentTypes: pickerTypes) { if case .success(let u) = $0 { assign(u) } }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            for p in providers {
-                _ = p.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    DispatchQueue.main.async { assign(url) }
-                }
-            }
+            for p in providers { _ = p.loadObject(ofClass: URL.self) { url, _ in guard let url else { return }; DispatchQueue.main.async { assign(url) } } }
             return true
         }
         .onChange(of: conf) { rerender() }
@@ -354,41 +368,11 @@ struct ContentView: View {
         .onChange(of: label) { rerender() }
         .onChange(of: modelURL) { setupSource() }
         .onChange(of: sourceURL) { setupSource() }
-        // arrow-key browsing (folder: move selection; video: scrub)
-        .focusable()
-        .focused($kbFocused)
-        .onAppear { DispatchQueue.main.async { kbFocused = true } }
+        .focusable().focused($kbFocused).onAppear { DispatchQueue.main.async { kbFocused = true } }
         .onKeyPress(.leftArrow)  { step(-1, vertical: false); return .handled }
         .onKeyPress(.rightArrow) { step(1,  vertical: false); return .handled }
         .onKeyPress(.upArrow)    { step(-1, vertical: true);  return .handled }
         .onKeyPress(.downArrow)  { step(1,  vertical: true);  return .handled }
-    }
-
-    /// Select image `i` and preview+tune it.
-    private func selectPreview(_ i: Int) {
-        guard folderImages.indices.contains(i) else { return }
-        selectedIndex = i
-        if let m = modelURL {
-            engine.previewURL(model: m, image: folderImages[i], compute: compute, conf: conf, iou: iou, style: style, label: label)
-        }
-    }
-
-    /// Estimated grid columns for ↑/↓ row jumps (finder is 380 wide).
-    private var gridColumns: Int { max(1, Int((380.0 - 24) / (iconSize + 8))) }
-
-    /// Arrow-key navigation: folder moves selection (↑/↓ by a grid row in Icons view), video scrubs.
-    private func step(_ dir: Int, vertical: Bool) {
-        switch sourceKind {
-        case .folder:
-            guard !folderImages.isEmpty else { return }
-            let stride = (vertical && finderMode == .icons) ? gridColumns : 1
-            selectPreview(min(max(0, selectedIndex + dir * stride), folderImages.count - 1))
-        case .video:
-            let dt = Double(dir) * (vertical ? 1.0 : 0.2)
-            scrubTime = min(max(0, scrubTime + dt), max(videoDur, 0.0))
-            scrubFrame()
-        default: break
-        }
     }
 
     private func assign(_ url: URL) {
@@ -397,51 +381,55 @@ struct ContentView: View {
         default: sourceURL = url
         }
     }
-
     private func setupSource() {
-        guard let m = modelURL, let s = sourceURL else { return }
-        switch sourceKind {
-        case .image:
-            engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
-        case .folder:
-            folderImages = listImages(s); selectedIndex = 0
-            if let first = folderImages.first {
-                engine.previewURL(model: m, image: first, compute: compute, conf: conf, iou: iou, style: style, label: label)
-            }
+        engine.resetResults()
+        guard let s = sourceURL else { return }
+        switch classifySource(s) {
+        case .folder: folderImages = listImages(s); selectedIndex = 0
         case .video:
             Task {
                 let dur = await videoDuration(s)
                 await MainActor.run { videoDur = dur; scrubTime = 0 }
-                if let cg = await extractFrame(s, atSeconds: 0) {
+                if let m = modelURL, let cg = await extractFrame(s, atSeconds: 0) {
                     await MainActor.run { engine.preview(model: m, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label) }
                 }
             }
-        case .unknown: break
+        default: break
         }
     }
-
+    private func runInfer() {
+        guard let m = modelURL, let s = sourceURL else { return }
+        switch sourceKind {
+        case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
+        case .folder: engine.runFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
+        default: break
+        }
+    }
+    private func selectAndShow(_ i: Int) {
+        guard folderImages.indices.contains(i) else { return }
+        selectedIndex = i
+        engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label)
+    }
     private func rerender() { engine.restyle(conf: conf, iou: iou, style: style, label: label) }
-
     private func scrubFrame() {
         scrubWork?.cancel()
         let t = scrubTime
         let work = DispatchWorkItem {
             guard let m = modelURL, let s = sourceURL else { return }
-            Task {
-                if let cg = await extractFrame(s, atSeconds: t) {
-                    await MainActor.run { engine.preview(model: m, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label) }
-                }
-            }
+            Task { if let cg = await extractFrame(s, atSeconds: t) {
+                await MainActor.run { engine.preview(model: m, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label) } } }
         }
         scrubWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
     }
-
-    private func export() {
-        guard let m = modelURL, let s = sourceURL else { return }
+    private var gridColumns: Int { max(1, Int((380.0 - 24) / (iconSize + 8))) }
+    private func step(_ dir: Int, vertical: Bool) {
         switch sourceKind {
-        case .folder: engine.exportFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
-        case .video:  engine.exportVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
+        case .folder where engine.hasResults && !folderImages.isEmpty:
+            let stride = (vertical && finderMode == .icons) ? gridColumns : 1
+            selectAndShow(min(max(0, selectedIndex + dir * stride), folderImages.count - 1))
+        case .video:
+            scrubTime = min(max(0, scrubTime + Double(dir) * (vertical ? 1.0 : 0.2)), max(videoDur, 0.0)); scrubFrame()
         default: break
         }
     }
@@ -453,26 +441,21 @@ struct ContentView: View {
                    button: "Choose .mlpackage…") { pickTarget = .model; DispatchQueue.main.async { showPicker = true } }
             picker(title: "Source", value: sourceURL.map { "\($0.lastPathComponent)  (\(kindLabel))" } ?? "none",
                    button: "Choose image / folder / video…") { pickTarget = .source; DispatchQueue.main.async { showPicker = true } }
-            slider(title: "conf", value: $conf, range: 0.01...0.95)
+            slider(title: "conf", value: $conf, range: 0.05...0.95)
             slider(title: "iou",  value: $iou,  range: 0.10...0.90)
             labeled("Box style") {
-                Picker("", selection: $style) { ForEach(BoxStyle.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.segmented).labelsHidden()
+                Picker("", selection: $style) { ForEach(BoxStyle.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).labelsHidden()
             }
             labeled("Label") {
-                Picker("", selection: $label) { ForEach(LabelMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.segmented).labelsHidden()
+                Picker("", selection: $label) { ForEach(LabelMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).labelsHidden()
             }
             labeled("Compute") {
-                Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.menu).labelsHidden()
+                Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu).labelsHidden()
             }
             actionRow
             Spacer()
             Text(engine.status).font(.callout).foregroundStyle(.secondary)
-            if !engine.modelSummary.isEmpty {
-                Text(engine.modelSummary).font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
-            }
+            if !engine.modelSummary.isEmpty { Text(engine.modelSummary).font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled) }
         }
     }
 
@@ -480,25 +463,27 @@ struct ContentView: View {
         HStack {
             switch sourceKind {
             case .image:
-                Button("Save…") { engine.save() }.buttonStyle(.borderedProminent).disabled(engine.resultImage == nil)
-            case .folder, .video:
-                Button(sourceKind == .video ? "Export video →" : "Export folder →") { export() }
-                    .buttonStyle(.borderedProminent).disabled(!canExport)
+                Button("Run") { runInfer() }.buttonStyle(.borderedProminent).disabled(sourceURL == nil || engine.busy)
+                Button("Save…") { engine.save() }.disabled(engine.resultImage == nil)
+            case .folder:
+                Button(engine.hasResults ? "Re-run" : "Run") { runInfer() }.buttonStyle(.borderedProminent).disabled(sourceURL == nil || engine.busy)
+                Button("Export →") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label) }.disabled(!engine.hasResults || engine.busy)
                 if engine.outputURL != nil { Button("Reveal") { engine.reveal() } }
-            case .unknown:
-                Button("Run") {}.disabled(true)
+            case .video:
+                Button("Export video →") {
+                    if let m = modelURL, let s = sourceURL { engine.exportVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label) }
+                }.buttonStyle(.borderedProminent).disabled(sourceURL == nil || engine.busy)
+                if engine.outputURL != nil { Button("Reveal") { engine.reveal() } }
+            case .unknown: Button("Run") {}.disabled(true)
             }
         }
     }
 
-    // progress bar over the preview: indeterminate for inference, determinate (with count) for export
     private var progressBar: some View {
         VStack(spacing: 4) {
-            if let p = engine.progress { ProgressView(value: p) }
-            else { ProgressView().progressViewStyle(.linear) }
+            if let p = engine.progress { ProgressView(value: p) } else { ProgressView().progressViewStyle(.linear) }
             Text(engine.status).font(.caption)
-        }
-        .padding(10).frame(maxWidth: .infinity).background(.ultraThinMaterial)
+        }.padding(10).frame(maxWidth: .infinity).background(.ultraThinMaterial)
     }
 
     private var preview: some View {
@@ -506,11 +491,15 @@ struct ContentView: View {
             Color(nsColor: .underPageBackgroundColor)
             if let img = engine.resultImage {
                 Image(nsImage: img).resizable().scaledToFit().padding(12)
+            } else if sourceKind == .folder && !engine.hasResults && !engine.busy {
+                VStack(spacing: 8) {
+                    Image(systemName: "folder").font(.system(size: 48)).foregroundStyle(.tertiary)
+                    Text("\(folderImages.count) images — press Run to infer").foregroundStyle(.secondary)
+                }
             } else {
                 VStack(spacing: 8) {
-                    Image(systemName: sourceKind == .video ? "film" : sourceKind == .folder ? "folder" : "photo")
-                        .font(.system(size: 48)).foregroundStyle(.tertiary)
-                    Text(sourceURL == nil ? "Choose a model + source" : "Loading preview…").foregroundStyle(.secondary)
+                    Image(systemName: sourceKind == .video ? "film" : "photo").font(.system(size: 48)).foregroundStyle(.tertiary)
+                    Text(sourceURL == nil ? "Choose a model + source" : "Press Run").foregroundStyle(.secondary)
                 }
             }
         }
@@ -521,8 +510,7 @@ struct ContentView: View {
             Slider(value: $scrubTime, in: 0...max(videoDur, 0.01)) { editing in if !editing { scrubFrame() } }
             Text("preview frame @ \(String(format: "%.2f", scrubTime))s / \(String(format: "%.1f", videoDur))s")
                 .font(.caption2).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8).background(Color(nsColor: .windowBackgroundColor))
+        }.padding(.horizontal, 12).padding(.vertical, 8).background(Color(nsColor: .windowBackgroundColor))
     }
 
     private func picker(title: String, value: String, button: String, action: @escaping () -> Void) -> some View {
@@ -540,9 +528,6 @@ struct ContentView: View {
         }
     }
     private func labeled<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            content()
-        }
+        VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption).foregroundStyle(.secondary); content() }
     }
 }

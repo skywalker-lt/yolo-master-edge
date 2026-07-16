@@ -39,6 +39,13 @@ public enum ComputeMode: String, CaseIterable, Sendable {
 
 public enum DetectorError: Error { case inputBuildFailed, badOutput }
 
+/// IoU of two rects (used by NMS).
+func rectIoU(_ a: CGRect, _ b: CGRect) -> CGFloat {
+    let i = a.intersection(b); if i.isNull { return 0 }
+    let ia = i.width * i.height
+    return ia / (a.width * a.height + b.width * b.height - ia + 1e-6)
+}
+
 /// Loads a `.mlpackage`/`.mlmodelc` YOLO-Master detector and runs inference.
 /// `imgsz`, class count and names are read from the model (works for any exported
 /// ultralytics detect model), so preprocessing always matches the checkpoint.
@@ -136,25 +143,22 @@ public final class Detector {
         return try? MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: arr)])
     }
 
-    // ---------- decode + NMS ----------
-    private func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
-        let i = a.intersection(b); if i.isNull { return 0 }
-        let ia = i.width * i.height
-        return ia / (a.width * a.height + b.width * b.height - ia + 1e-6)
-    }
-
-    private func decodeAndNMS(_ y: MLMultiArray, _ origW: Int, _ origH: Int,
-                              _ scale: CGFloat, _ padX: CGFloat, _ padY: CGFloat,
-                              conf: Float, iouT: CGFloat) -> [Detection] {
+    // ---------- decode + NMS (split so forward is cached once, tuning stays cheap) ----------
+    /// All boxes above `confFloor` (NO NMS), ORIGINAL-image pixels, sorted by score desc.
+    /// Cache this once per image after `forward`; then re-run `nms(_:conf:iou:)` for cheap tuning.
+    public func candidates(_ raw: RawOutput, confFloor: Float = 0.05) -> [Detection] {
+        let y = raw.y
         let na = y.shape[2].intValue
         let s1 = y.strides[1].intValue, s2 = y.strides[2].intValue
+        let scale = raw.scale, padX = raw.padX, padY = raw.padY
+        let origW = raw.origW, origH = raw.origH
         var dets: [Detection] = []
         func decodeAnchors(_ at: (Int, Int) -> Float32) {
             for a in 0..<na {
                 let cx = CGFloat(at(0, a)), cy = CGFloat(at(1, a)), bw = CGFloat(at(2, a)), bh = CGFloat(at(3, a))
                 for c in 0..<nc {
                     let s = at(4 + c, a)
-                    if s <= conf { continue }
+                    if s <= confFloor { continue }
                     var x1 = (cx - bw / 2 - padX) / scale, y1 = (cy - bh / 2 - padY) / scale
                     var x2 = (cx + bw / 2 - padX) / scale, y2 = (cy + bh / 2 - padY) / scale
                     x1 = max(0, min(CGFloat(origW), x1)); x2 = max(0, min(CGFloat(origW), x2))
@@ -177,10 +181,15 @@ public final class Detector {
             }
         }
         dets.sort { $0.score > $1.score }
+        return dets
+    }
+
+    /// Filter cached `candidates` by `conf` + per-class greedy NMS (cap 300). Cheap — no model call.
+    public static func nms(_ dets: [Detection], conf: Float, iou iouT: CGFloat, maxDet: Int = 300) -> [Detection] {
         var keep: [Detection] = []
-        for d in dets {
-            if keep.count >= 300 { break }
-            if !keep.contains(where: { $0.cls == d.cls && iou($0.rect, d.rect) > iouT }) { keep.append(d) }
+        for d in dets where d.score > conf {
+            if keep.count >= maxDet { break }
+            if !keep.contains(where: { $0.cls == d.cls && rectIoU($0.rect, d.rect) > iouT }) { keep.append(d) }
         }
         return keep
     }
@@ -219,7 +228,7 @@ public final class Detector {
 
     /// Decode + per-class NMS from a cached forward pass. Cheap — no model call.
     public func decode(_ raw: RawOutput, conf: Float, iou iouT: CGFloat) -> [Detection] {
-        decodeAndNMS(raw.y, raw.origW, raw.origH, raw.scale, raw.padX, raw.padY, conf: conf, iouT: iouT)
+        Detector.nms(candidates(raw, confFloor: conf), conf: conf, iou: iouT)
     }
 
     /// Convenience: forward + decode in one call (used by the CLI). `inferMs` is model-only latency.
