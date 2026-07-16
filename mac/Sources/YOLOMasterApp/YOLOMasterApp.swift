@@ -90,8 +90,10 @@ final class InferenceEngine: ObservableObject {
     @Published var modelInfo: StatModelInfo?   // model name / imgsz / classes / compute
     @Published var infer: InferSummary?        // count / avg / min / max / total / fps
     @Published var classCounts: [ClassCount] = []   // per-class breakdown of the current frame
+    @Published var modelIsSegment = false      // drives the Masks/Boxes/Both overlay control
 
     private var detector: Detector?
+    private var currentRaw: Detector.RawOutput?    // cached forward pass for the shown image (seg masks need protos)
     private var key = ""
     private var detNames: [String] = []
     private var currentCG: CGImage?
@@ -109,17 +111,17 @@ final class InferenceEngine: ObservableObject {
 
     func resetResults() {
         hasResults = false; folderCache = []; folderInput = nil; videoCache = []; videoInput = nil; videoURL = nil; videoSize = .zero; outputURL = nil
-        resultImage = nil; detCount = 0; currentCG = nil; currentCands = []
+        resultImage = nil; detCount = 0; currentCG = nil; currentCands = []; currentRaw = nil
         infer = nil; classCounts = []
         status = "Ready — press Run."
     }
 
     // ---- image / video-frame: forward one, cache candidates, render ----
-    func previewURL(model: URL, image: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+    func previewURL(model: URL, image: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
         guard let cg = loadCGImage(image) else { publish(error: "Could not read image."); return }
-        preview(model: model, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label)
+        preview(model: model, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay)
     }
-    func preview(model: URL, cg: CGImage, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+    func preview(model: URL, cg: CGImage, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
         busy = true; progress = nil; status = "Inferring…"
         let k = model.path + "|" + compute.rawValue
         queue.async { [weak self] in
@@ -128,17 +130,18 @@ final class InferenceEngine: ObservableObject {
                 let det = try self.reuseDetector(model: model, compute: compute, key: k)
                 let raw = try det.forward(cg)
                 self.currentCG = cg; self.currentCands = det.candidates(raw); self.currentMs = raw.inferMs
+                self.currentRaw = det.isSegment ? raw : nil
                 self.detNames = det.classNames
                 let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
                 let s = InferSummary([raw.inferMs], wallMs: raw.inferMs)
-                DispatchQueue.main.async { self.modelInfo = info; self.infer = s }
-                self.render(conf: conf, iou: iou, style: style, label: label)
+                DispatchQueue.main.async { self.modelInfo = info; self.infer = s; self.modelIsSegment = det.isSegment }
+                self.render(conf: conf, iou: iou, style: style, label: label, overlay: overlay)
             } catch { self.publish(error: "Inference failed: \(error.localizedDescription)") }
         }
     }
 
     // ---- folder: infer ALL once (progress), cache candidates ----
-    func runFolder(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+    func runFolder(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
         busy = true; exporting = false; hasResults = false; progress = 0; outputURL = nil; status = "Inferring folder…"
         let k = model.path + "|" + compute.rawValue
         queue.async { [weak self] in
@@ -156,40 +159,47 @@ final class InferenceEngine: ObservableObject {
                 let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
                 if let first = items.first, let cg = loadCGImage(first.url) {
                     self.currentCG = cg; self.currentCands = first.candidates; self.currentMs = 0
+                    self.currentRaw = det.isSegment ? try? det.forward(cg) : nil
                 }
                 DispatchQueue.main.async {
                     self.modelInfo = info; self.infer = summary; self.hasResults = !items.isEmpty
-                    self.busy = false; self.progress = nil
+                    self.busy = false; self.progress = nil; self.modelIsSegment = det.isSegment
                     self.status = "Inferred \(items.count) images — browse & tune, then Export"
                 }
-                self.render(conf: conf, iou: iou, style: style, label: label)
+                self.render(conf: conf, iou: iou, style: style, label: label, overlay: overlay)
             } catch { self.publish(error: "Inference failed: \(error.localizedDescription)") }
         }
     }
 
-    // ---- show a cached folder item (instant; no inference) ----
-    func showFolder(index i: Int, url: URL, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+    // ---- show a cached folder item (instant; re-forwards only for seg masks) ----
+    func showFolder(index i: Int, url: URL, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
         queue.async { [weak self] in
             guard let self, let cg = loadCGImage(url) else { return }
             self.currentCG = cg
             self.currentCands = self.folderCache.indices.contains(i) ? self.folderCache[i].candidates : []
             self.currentMs = 0
-            self.render(conf: conf, iou: iou, style: style, label: label)
+            self.currentRaw = (self.detector?.isSegment == true) ? try? self.detector?.forward(cg) : nil
+            self.render(conf: conf, iou: iou, style: style, label: label, overlay: overlay)
         }
     }
 
     // ---- tuning: cheap re-NMS + redraw of the current frame ----
     private var pendingRestyle: DispatchWorkItem?
-    func restyle(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+    func restyle(conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
         pendingRestyle?.cancel()
-        let item = DispatchWorkItem { [weak self] in self?.render(conf: conf, iou: iou, style: style, label: label) }
+        let item = DispatchWorkItem { [weak self] in self?.render(conf: conf, iou: iou, style: style, label: label, overlay: overlay) }
         pendingRestyle = item
         queue.async(execute: item)
     }
-    private func render(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+    private func render(conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
         guard let cg = currentCG, !detNames.isEmpty else { DispatchQueue.main.async { self.busy = false }; return }
         let dets = Detector.nms(currentCands, conf: Float(conf), iou: CGFloat(iou))
-        let annotated = annotate(cg, dets, names: detNames, style: style, label: label) ?? cg
+        var masks: [MaskBitmap] = [], drawBoxes = true
+        if let det = detector, det.isSegment, let raw = currentRaw, overlay != .boxes {
+            masks = dets.compactMap { det.maskImage($0, raw) }
+            drawBoxes = overlay != .masks
+        }
+        let annotated = annotate(cg, dets, names: detNames, style: style, label: label, masks: masks, drawBoxes: drawBoxes) ?? cg
         self.lastAnnotated = annotated
         let ns = NSImage(cgImage: annotated, size: NSSize(width: cg.width, height: cg.height))
         let ms = self.currentMs
@@ -205,14 +215,14 @@ final class InferenceEngine: ObservableObject {
     }
 
     // ---- export ----
-    func exportFolder(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+    func exportFolder(conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
         guard let input = folderInput, !folderCache.isEmpty else { return }
         busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting folder…"
         let out = input.deletingLastPathComponent().appendingPathComponent(input.lastPathComponent + "_annotated")
-        let cache = folderCache, names = detNames
+        let cache = folderCache, names = detNames, det = detector
         queue.async { [weak self] in
             guard let self else { return }
-            let n = exportFolderCached(cache, output: out, names: names, conf: Float(conf), iou: CGFloat(iou), style: style, label: label) { done, total in
+            let n = exportFolderCached(cache, output: out, names: names, conf: Float(conf), iou: CGFloat(iou), style: style, label: label, detector: det, overlay: overlay) { done, total in
                 DispatchQueue.main.async { self.progress = total > 0 ? Double(done)/Double(total) : nil; self.status = "Exporting \(done)/\(total)…" }
             }
             DispatchQueue.main.async {
@@ -473,6 +483,7 @@ struct ContentView: View {
     @State private var iou = 0.50
     @State private var style: BoxStyle = .hud
     @State private var label: LabelMode = .full
+    @State private var overlay: SegOverlay = .both     // segmentation: masks / boxes / both
     @State private var compute: ComputeMode = .cpuAndGPU
     @State private var showPicker = false
     @State private var pickTarget: PickTarget = .model
@@ -523,6 +534,7 @@ struct ContentView: View {
         .onChange(of: iou) { rerender() }
         .onChange(of: style) { rerender() }
         .onChange(of: label) { rerender() }
+        .onChange(of: overlay) { rerender() }
         .onChange(of: modelURL) { setupSource() }
         .onChange(of: sourceURL) { setupSource() }
         .onChange(of: scrubTime) { if scrubbing { pc.seek(scrubTime) } }   // seek while dragging
@@ -556,8 +568,8 @@ struct ContentView: View {
     private func runInfer() {
         guard let m = modelURL, let s = sourceURL else { return }
         switch sourceKind {
-        case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
-        case .folder: engine.runFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
+        case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay)
+        case .folder: engine.runFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay)
         case .video:  engine.runVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
         default: break
         }
@@ -565,13 +577,13 @@ struct ContentView: View {
     private func selectAndShow(_ i: Int) {
         guard folderImages.indices.contains(i) else { return }
         selectedIndex = i
-        engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label)
+        engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label, overlay: overlay)
     }
     private func rerender() {
         if sourceKind == .video {
             if engine.hasResults { engine.setVideoFrameStats(time: pc.currentTime, conf: conf, iou: iou) }  // overlay redraws on conf/iou/label automatically
         } else {
-            engine.restyle(conf: conf, iou: iou, style: style, label: label)
+            engine.restyle(conf: conf, iou: iou, style: style, label: label, overlay: overlay)
         }
     }
     private var gridColumns: Int { max(1, Int((380.0 - 24) / (iconSize + 8))) }
@@ -617,13 +629,21 @@ struct ContentView: View {
                         sliderRow("IoU (NMS)", $iou, 0.10...0.90)
                     }
                     sectionBox("Appearance", "paintbrush.fill") {
-                        segRow("Box style") {
-                            Picker("", selection: $style) { ForEach(BoxStyle.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
-                                .pickerStyle(.segmented).labelsHidden()
+                        if engine.modelIsSegment {
+                            segRow("Overlay") {
+                                Picker("", selection: $overlay) { ForEach(SegOverlay.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
+                                    .pickerStyle(.segmented).labelsHidden()
+                            }
                         }
-                        segRow("Label") {
-                            Picker("", selection: $label) { ForEach(LabelMode.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
-                                .pickerStyle(.segmented).labelsHidden()
+                        if !(engine.modelIsSegment && overlay == .masks) {   // masks-only: boxes/labels are hidden
+                            segRow("Box style") {
+                                Picker("", selection: $style) { ForEach(BoxStyle.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
+                                    .pickerStyle(.segmented).labelsHidden()
+                            }
+                            segRow("Label") {
+                                Picker("", selection: $label) { ForEach(LabelMode.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
+                                    .pickerStyle(.segmented).labelsHidden()
+                            }
                         }
                     }
                     sectionBox("Compute", "cpu") {
@@ -648,7 +668,7 @@ struct ContentView: View {
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
                     .disabled(sourceURL == nil || engine.busy)
                 HStack(spacing: 8) {
-                    secondaryButton("Export", "square.and.arrow.up") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label) }
+                    secondaryButton("Export", "square.and.arrow.up") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label, overlay: overlay) }
                         .disabled(!engine.hasResults || engine.busy)
                     if engine.outputURL != nil { revealButton }
                 }
