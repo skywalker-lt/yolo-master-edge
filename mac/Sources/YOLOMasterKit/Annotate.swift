@@ -45,7 +45,7 @@ public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
         ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))  // proto crop stretched to full image, upright
         ctx.restoreGState()
     }
-    if !drawBoxes { return ctx.makeImage() }
+    if !drawBoxes && label == .off { return ctx.makeImage() }   // masks-only, no labels
     ctx.setLineJoin(.round); ctx.setLineCap(.round)
     let lw = max(CGFloat(2), CGFloat(w) / 640)
     let baseFont = max(CGFloat(12), CGFloat(w) / 95)
@@ -54,28 +54,30 @@ public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
         let box = CGRect(x: d.rect.minX, y: CGFloat(h) - d.rect.maxY, width: d.rect.width, height: d.rect.height)
         let r = min(min(box.width, box.height) * 0.14, lw * 5)
         let rpath = CGPath(roundedRect: box, cornerWidth: r, cornerHeight: r, transform: nil)
-        // ---- box template ----
-        switch style {
-        case .solid:                                    // clean rounded rectangle
-            ctx.addPath(rpath); ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.2); ctx.strokePath()
-        case .neon:                                     // glowing rounded rectangle
-            ctx.saveGState()
-            ctx.setShadow(offset: .zero, blur: lw * 5, color: color.copy(alpha: 0.95) ?? color)
-            ctx.addPath(rpath); ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.3); ctx.strokePath()
-            ctx.addPath(rpath); ctx.strokePath()        // second pass = denser glow
-            ctx.restoreGState()
-        case .hud:                                      // faint fill + thin outline + corner brackets
-            ctx.addRect(box); ctx.setFillColor(color.copy(alpha: 0.08) ?? color); ctx.fillPath()
-            ctx.addRect(box); ctx.setStrokeColor(color.copy(alpha: 0.35) ?? color); ctx.setLineWidth(lw * 0.6); ctx.strokePath()
-            let arm = min(min(box.width, box.height) * 0.28, lw * 22)
-            ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.4)
-            for (cx, cy, sx, sy) in [(box.minX, box.minY, 1.0, 1.0), (box.maxX, box.minY, -1.0, 1.0),
-                                     (box.minX, box.maxY, 1.0, -1.0), (box.maxX, box.maxY, -1.0, -1.0)] {
-                ctx.move(to: CGPoint(x: cx + arm * CGFloat(sx), y: cy))
-                ctx.addLine(to: CGPoint(x: cx, y: cy))
-                ctx.addLine(to: CGPoint(x: cx, y: cy + arm * CGFloat(sy)))
+        // ---- box template (skipped when boxes are hidden, e.g. segmentation masks-only) ----
+        if drawBoxes {
+            switch style {
+            case .solid:                                    // clean rounded rectangle
+                ctx.addPath(rpath); ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.2); ctx.strokePath()
+            case .neon:                                     // glowing rounded rectangle
+                ctx.saveGState()
+                ctx.setShadow(offset: .zero, blur: lw * 5, color: color.copy(alpha: 0.95) ?? color)
+                ctx.addPath(rpath); ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.3); ctx.strokePath()
+                ctx.addPath(rpath); ctx.strokePath()        // second pass = denser glow
+                ctx.restoreGState()
+            case .hud:                                      // faint fill + thin outline + corner brackets
+                ctx.addRect(box); ctx.setFillColor(color.copy(alpha: 0.08) ?? color); ctx.fillPath()
+                ctx.addRect(box); ctx.setStrokeColor(color.copy(alpha: 0.35) ?? color); ctx.setLineWidth(lw * 0.6); ctx.strokePath()
+                let arm = min(min(box.width, box.height) * 0.28, lw * 22)
+                ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.4)
+                for (cx, cy, sx, sy) in [(box.minX, box.minY, 1.0, 1.0), (box.maxX, box.minY, -1.0, 1.0),
+                                         (box.minX, box.maxY, 1.0, -1.0), (box.maxX, box.maxY, -1.0, -1.0)] {
+                    ctx.move(to: CGPoint(x: cx + arm * CGFloat(sx), y: cy))
+                    ctx.addLine(to: CGPoint(x: cx, y: cy))
+                    ctx.addLine(to: CGPoint(x: cx, y: cy + arm * CGFloat(sy)))
+                }
+                ctx.strokePath()
             }
-            ctx.strokePath()
         }
         // ---- label (full | min | off) ----
         if label == .off { continue }
