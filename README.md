@@ -166,6 +166,17 @@ CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 form
 
 See [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) for the full methodology, INT8 quantization deep-dive, and numerical parity analysis.
 
+## 🍎 macOS App — Core ML Runner
+
+Alongside the C++ runtime, the repository ships a native macOS app, **YOLO-Master CoreML Runner** — a [SwiftUI](https://developer.apple.com/xcode/swiftui/) frontend over an Apple [Core ML](https://developer.apple.com/documentation/coreml) backend for on-device [YOLO-Master](https://github.com/Tencent/YOLO-Master) inference, no command line required. It ships with a default segmentation model, so it runs out of the box.
+
+- **Detection & Segmentation:** Runs both bounding-box detectors and instance-segmentation models, with anti-aliased mask overlays and a Masks / Boxes / Both toggle.
+- **Images, Video & Live Camera:** Infers single images, whole folders (batch), and MP4 video, plus a low-latency **live webcam** mode with a real-time FPS / ms-per-frame readout.
+- **Real-Time Tuning:** Confidence, IoU, box style, labels, and letterbox/stretch preprocessing are all adjustable live — the forward pass is cached, so tuning re-draws without re-inferring.
+- **Signed & Notarized:** A **universal** (Apple Silicon + Intel) bundle, **Developer-ID signed and notarized by Apple** — it installs by a simple double-click on macOS 14+, with no Gatekeeper warning and nothing to trust manually.
+
+The `.app` is attached to the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases) page; unzip and open. To build from source, see [`mac/`](mac/) and [`mac/DISTRIBUTING.md`](mac/DISTRIBUTING.md).
+
 ## 🤝 Contributing
 
 Contributions are welcome! If you find any issues or have suggestions for improvements, please feel free to open an issue or submit a pull request on the [project repository](https://github.com/skywalker-lt/yolo-master-edge).
