@@ -8,6 +8,29 @@ import CoreML
 import CoreGraphics
 import CoreVideo
 
+/// IEEE half (Float16 bits) -> Float32, done by hand. The `Float(_: Float16)` conversion initializer
+/// is not available on x86_64 with the current SDK (arm64 has native Float16), so we read each
+/// Float16's `.bitPattern` and convert here — keeps the universal (arm64 + x86_64) build compiling.
+@inline(__always) func halfToFloat(_ h: UInt16) -> Float32 {
+    let sign = UInt32(h & 0x8000) << 16
+    let exp  = UInt32(h & 0x7C00) >> 10
+    let mant = UInt32(h & 0x03FF)
+    let bits: UInt32
+    if exp == 0 {
+        if mant == 0 { bits = sign }                              // +/-0
+        else {                                                    // subnormal -> normalized
+            var e: UInt32 = 127 - 15 + 1, m = mant
+            while (m & 0x0400) == 0 { m <<= 1; e -= 1 }
+            bits = sign | (e << 23) | ((m & 0x03FF) << 13)
+        }
+    } else if exp == 0x1F {
+        bits = sign | 0x7F80_0000 | (mant << 13)                  // +/-inf / NaN
+    } else {
+        bits = sign | ((exp + (127 - 15)) << 23) | (mant << 13)   // normal
+    }
+    return Float32(bitPattern: bits)
+}
+
 /// A single detection in ORIGINAL-image pixel coordinates (top-left origin).
 /// `maskCoeffs` is non-empty only for segmentation models (nm mask-prototype coefficients).
 public struct Detection: Sendable {
@@ -224,7 +247,7 @@ public final class Detector {
         if y.dataType == .float16 {
             y.withUnsafeBufferPointer(ofType: Float16.self) { buf in
                 guard let yp = buf.baseAddress else { return }
-                decodeAnchors { c, a in Float32(yp[c * s1 + a * s2]) }
+                decodeAnchors { c, a in halfToFloat(yp[c * s1 + a * s2].bitPattern) }   // .bitPattern avoids the x86_64-missing Float(Float16) init
             }
         } else {
             y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
@@ -348,7 +371,7 @@ public final class Detector {
         if proto.dataType == .float16 {
             proto.withUnsafeBufferPointer(ofType: Float16.self) { buf in
                 guard let pp = buf.baseAddress else { return }
-                fill { k, i, j in Float32(pp[k * s1 + i * s2 + j * s3]) }
+                fill { k, i, j in halfToFloat(pp[k * s1 + i * s2 + j * s3].bitPattern) }   // .bitPattern avoids the x86_64-missing Float(Float16) init
             }
         } else {
             proto.withUnsafeBufferPointer(ofType: Float32.self) { buf in
