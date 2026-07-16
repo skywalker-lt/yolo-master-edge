@@ -469,11 +469,13 @@ struct VideoStage: View {
                 if let mask = engine.videoMaskImg {   // segmentation overlay, scaled to the video rect
                     ctx.draw(Image(decorative: mask, scale: 1), in: CGRect(x: ox, y: oy, width: dw, height: dh))
                 }
-                if engine.videoIsSegment && overlay == .masks { return }   // masks-only: no boxes/labels
+                let masksOnly = engine.videoIsSegment && overlay == .masks   // hide boxes, keep labels/masks
+                if masksOnly && label == .off { return }
                 for d in engine.detsAt(time: pc.displayTime, conf: conf, iou: iou) {   // displayTime -> boxes match the shown frame
                     let color = overlayPalette[d.cls % overlayPalette.count]
                     let r = CGRect(x: ox + d.rect.minX * scale, y: oy + d.rect.minY * scale, width: d.rect.width * scale, height: d.rect.height * scale)
                     let rp = Path(roundedRect: r, cornerRadius: 3)
+                    if !masksOnly {
                     switch style {
                     case .solid:
                         ctx.stroke(rp, with: .color(color), lineWidth: lw * 1.2)
@@ -492,6 +494,7 @@ struct VideoStage: View {
                         br.move(to: CGPoint(x: r.maxX, y: r.maxY - arm)); br.addLine(to: CGPoint(x: r.maxX, y: r.maxY)); br.addLine(to: CGPoint(x: r.maxX - arm, y: r.maxY))
                         ctx.stroke(br, with: .color(color), lineWidth: lw * 1.4)
                     }
+                    }   // if !masksOnly
                     if label != .off {
                         let name = d.cls < engine.names.count ? engine.names[d.cls] : "class\(d.cls)"
                         let txt = label == .min ? name : "\(name) \(String(format: "%.2f", d.score))"
