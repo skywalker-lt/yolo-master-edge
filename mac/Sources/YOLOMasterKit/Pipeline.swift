@@ -172,3 +172,41 @@ public func extractFrame(_ url: URL, atSeconds t: Double) async -> CGImage? {
     let time = CMTime(seconds: max(0, t), preferredTimescale: 600)
     return try? await gen.image(at: time).image
 }
+
+// ---- two-phase folder flow: infer-all-once (cache candidates) -> tune -> export ----
+public struct FolderItem: Sendable { public let url: URL; public let candidates: [Detection] }
+
+/// Phase 1: forward every image once, caching pre-NMS candidates (conf/iou tuning stays cheap).
+public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
+                        progress: ((_ done: Int, _ total: Int) -> Void)? = nil) -> [FolderItem] {
+    let files = listImages(input)
+    var out: [FolderItem] = []
+    out.reserveCapacity(files.count)
+    for (i, url) in files.enumerated() {
+        if let cg = loadCGImage(url), let raw = try? det.forward(cg) {
+            out.append(FolderItem(url: url, candidates: det.candidates(raw, confFloor: confFloor)))
+        }
+        progress?(i + 1, files.count)
+    }
+    return out
+}
+
+/// Phase 3: write annotated images from cached candidates + the tuned params — NO inference.
+@discardableResult
+public func exportFolderCached(_ items: [FolderItem], output: URL, names: [String],
+                               conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode,
+                               progress: ((_ done: Int, _ total: Int) -> Void)? = nil) -> Int {
+    try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    var written = 0
+    for (i, item) in items.enumerated() {
+        if let cg = loadCGImage(item.url) {
+            let dets = Detector.nms(item.candidates, conf: conf, iou: iou)
+            if let a = annotate(cg, dets, names: names, style: style, label: label) {
+                saveCGImage(a, to: output.appendingPathComponent(item.url.deletingPathExtension().lastPathComponent + ".jpg"))
+                written += 1
+            }
+        }
+        progress?(i + 1, items.count)
+    }
+    return written
+}
