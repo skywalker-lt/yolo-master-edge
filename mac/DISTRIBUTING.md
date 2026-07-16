@@ -37,19 +37,31 @@ After that first approval it opens normally. The camera prompt appears the first
 start **Live Camera** (on-device only; frames never leave the Mac).
 
 ## Friction-free distribution (Developer ID + notarization)
-To ship without the right-click step, sign with a Developer ID and notarize (needs a paid
-Apple Developer account):
+To ship without the right-click step, sign with a Developer ID and notarize. Needs a paid Apple
+Developer account. **No App ID / provisioning profile is required** — Developer-ID direct
+distribution signs against your certificate, and the bundle id can be anything.
 
+One-time setup:
+1. Create a **Developer ID Application** certificate: Xcode > Settings > Accounts > Manage
+   Certificates > `+` > Developer ID Application (installs cert + key into your login keychain).
+2. Store notary credentials as a keychain profile:
+   ```bash
+   xcrun notarytool store-credentials ac-notary \
+     --apple-id you@example.com --team-id TEAMID --password APP_SPECIFIC_PASSWORD
+   ```
+   (app-specific password from appleid.apple.com > Sign-In & Security > App-Specific Passwords)
+
+Then every release is one command — it auto-detects your signing identity, builds universal,
+signs (hardened runtime), notarizes, staples, zips, and verifies:
 ```bash
-# one-time: store notarization credentials in the keychain
-xcrun notarytool store-credentials ac-notary \
-  --apple-id you@example.com --team-id TEAMID --password APP_SPECIFIC_PASSWORD
-
-# build -> sign (hardened runtime) -> notarize -> staple -> zip
-CODESIGN_ID="Developer ID Application: Your Name (TEAMID)" \
-NOTARY_PROFILE=ac-notary \
-mac/make_app.sh 1.0.0
+mac/scripts/release.sh 1.0.0
 ```
+Overrides if needed: `NOTARY_PROFILE=...`, `CODESIGN_ID="Developer ID Application: ... (TEAMID)"`,
+`BUNDLE_ID=com.you.app`, `ARCHS=arm64`.
 
-The stapled zip opens with a normal double-click on any Mac. Distribute via GitHub Releases
-(the `dist/` folder is gitignored — bundles are release assets, not tracked in git).
+The stapled `dist/YOLOMaster-1.0.0.zip` opens with a normal double-click on any Mac (Sonoma+,
+Apple Silicon or Intel). Publish it via GitHub Releases:
+```bash
+gh release create v1.0.0 mac/dist/YOLOMaster-1.0.0.zip --title "YOLOMaster 1.0.0" --notes "..."
+```
+(`dist/` is gitignored — bundles are release assets, not tracked in git.)

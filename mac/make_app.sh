@@ -17,7 +17,7 @@
 set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"          # .../mac
 APP_NAME="YOLOMaster"
-BUNDLE_ID="com.yolomaster.coreml"
+BUNDLE_ID="${BUNDLE_ID:-com.yolomaster.coreml}"   # override with BUNDLE_ID=com.you.app to use your own reverse-domain id
 VERSION="${1:-1.0.0}"
 ARCHS="${ARCHS:-arm64 x86_64}"                 # universal by default; override e.g. ARCHS=arm64
 DIST="$HERE/dist"
