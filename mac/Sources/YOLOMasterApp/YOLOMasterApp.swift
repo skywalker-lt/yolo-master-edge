@@ -693,8 +693,16 @@ struct ContentView: View {
                 primaryButton("Stop Camera", "stop.fill") { stopCamera() }
             } else {
                 sourceActions
-                secondaryButton("Live Camera", "camera.fill") { startCamera() }
+                VStack(spacing: 4) {
+                    Button { startCamera() } label: {
+                        Label("Live Camera", systemImage: "camera.fill").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.pink).controlSize(.large)
                     .disabled(modelURL == nil)
+                    if modelURL == nil {
+                        Text("Load a model to enable the live camera").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
