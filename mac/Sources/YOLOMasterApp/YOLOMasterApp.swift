@@ -1,12 +1,9 @@
 // YOLOMasterApp — SwiftUI frontend for the Core ML runner (YOLOMasterKit backend).
 //
 // Pick a .mlpackage + a source (image / folder / video). A preview frame loads and you tune
-// conf/iou/style/label on it IN REAL TIME (cached forward pass — no re-inference). The finder
-// picks which frame to tune:
-//   image  -> the image; Save the result
-//   folder -> file list (thumbnail + name); tune -> Export folder -> <folder>_annotated/
-//   video  -> frame scrubber;                tune -> Export video  -> <video>_annotated.mp4
-// The finder is hidden while exporting; a progress panel shows instead.
+// conf/iou/style/label on it IN REAL TIME (cached forward pass — no re-inference). A Finder
+// (Icons / List / Gallery views) picks which frame to tune; then Export writes the whole thing.
+// A progress bar overlays the preview during inference (indeterminate) and export (with count).
 //
 // Build & run:  swift run -c release --package-path mac YOLOMasterApp   |   Bundle: mac/make_app.sh
 import SwiftUI
@@ -16,8 +13,6 @@ import CoreGraphics
 import ImageIO
 import YOLOMasterKit
 
-// Unbundled `swift run` launches as an accessory process (.prohibited) — the window never
-// shows. Force a regular, foreground GUI app so both `swift run` and the .app work.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true)
@@ -30,20 +25,52 @@ struct YOLOMasterApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     var body: some Scene {
         WindowGroup("YOLO-Master · Core ML") {
-            ContentView().frame(minWidth: 1040, minHeight: 700)
+            ContentView().frame(minWidth: 1120, minHeight: 720)
         }
         .windowStyle(.titleBar)
     }
 }
 
-/// Fast downsampled thumbnail (doesn't decode the full image).
-func makeThumbnail(_ url: URL, max: CGFloat = 96) -> NSImage? {
+// ---------- async, cached thumbnails (smooth for thousands of images) ----------
+func makeThumbnail(_ url: URL, max: CGFloat) -> NSImage? {
     guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
     let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                  kCGImageSourceThumbnailMaxPixelSize: max,
                                  kCGImageSourceCreateThumbnailWithTransform: true]
     guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
     return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+}
+
+final class ThumbCache {
+    static let shared = ThumbCache()
+    private let cache = NSCache<NSString, NSImage>()
+    private let queue = DispatchQueue(label: "com.yolomaster.thumb", qos: .userInitiated, attributes: .concurrent)
+    init() { cache.countLimit = 800 }
+    func thumb(_ url: URL, max: CGFloat, _ done: @escaping (NSImage?) -> Void) {
+        let key = "\(Int(max))|\(url.path)" as NSString
+        if let img = cache.object(forKey: key) { done(img); return }
+        queue.async { [weak self] in
+            let img = makeThumbnail(url, max: max)
+            if let img { self?.cache.setObject(img, forKey: key) }
+            DispatchQueue.main.async { done(img) }
+        }
+    }
+}
+
+struct AsyncThumb: View {
+    let url: URL
+    var max: CGFloat = 128
+    var fit: Bool = false
+    @State private var image: NSImage?
+    var body: some View {
+        Group {
+            if let image {
+                if fit { Image(nsImage: image).resizable().scaledToFit() }
+                else { Image(nsImage: image).resizable().scaledToFill() }
+            } else { Rectangle().fill(Color.gray.opacity(0.15)) }
+        }
+        .onAppear { if image == nil { ThumbCache.shared.thumb(url, max: max) { image = $0 } } }
+    }
 }
 
 // ---------- inference engine ----------
@@ -54,26 +81,25 @@ final class InferenceEngine: ObservableObject {
     @Published var modelSummary = ""
     @Published var status = "Choose a model (.mlpackage) + a source (image / folder / video)."
     @Published var busy = false
-    @Published var exporting = false        // true only during folder/video export
-    @Published var progress: Double?        // nil = indeterminate (video export)
-    @Published var outputURL: URL?          // folder/video export result
+    @Published var exporting = false
+    @Published var progress: Double?        // nil = indeterminate
+    @Published var outputURL: URL?
 
     private var detector: Detector?
     private var key = ""
-    private var rawOutput: Detector.RawOutput?    // cached forward pass of the preview frame
+    private var rawOutput: Detector.RawOutput?
     private var sourceCG: CGImage?
     private var lastInferMs = 0.0
     private var lastAnnotated: CGImage?
     private let queue = DispatchQueue(label: "com.yolomaster.inference")
 
-    // ===== preview a single frame (image, folder pick, or video scrub) =====
     func previewURL(model: URL, image: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
         guard let cg = loadCGImage(image) else { publish(error: "Could not read image."); return }
         preview(model: model, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label)
     }
 
     func preview(model: URL, cg: CGImage, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
-        busy = true; progress = nil; outputURL = nil; status = "Preview…"
+        busy = true; progress = nil; outputURL = nil; status = "Inferring…"
         let k = model.path + "|" + compute.rawValue
         queue.async { [weak self] in
             guard let self else { return }
@@ -84,12 +110,11 @@ final class InferenceEngine: ObservableObject {
                 let summary = det.summary
                 DispatchQueue.main.async { self.modelSummary = summary; self.inferMs = raw.inferMs }
                 self.render(conf: conf, iou: iou, style: style, label: label)
-            } catch { self.publish(error: "Preview failed: \(error.localizedDescription)") }
+            } catch { self.publish(error: "Inference failed: \(error.localizedDescription)") }
         }
     }
 
     private var pendingRestyle: DispatchWorkItem?
-    /// Re-decode (conf/iou) + re-annotate (style/label) from the cached preview frame — NO model call.
     func restyle(conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
         pendingRestyle?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.render(conf: conf, iou: iou, style: style, label: label) }
@@ -112,7 +137,6 @@ final class InferenceEngine: ObservableObject {
         }
     }
 
-    // ===== export: folder (batch) / video (per frame) with the tuned params =====
     func exportFolder(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
         busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting folder…"
         let out = input.deletingLastPathComponent().appendingPathComponent(input.lastPathComponent + "_annotated")
@@ -160,11 +184,9 @@ final class InferenceEngine: ObservableObject {
         if let d = detector, key == k { return d }
         let d = try Detector(modelURL: model, compute: compute); detector = d; key = k; return d
     }
-
     private func publish(error: String) {
         DispatchQueue.main.async { self.status = error; self.busy = false; self.exporting = false; self.progress = nil }
     }
-
     func save() {
         guard let cg = lastAnnotated else { return }
         let panel = NSSavePanel()
@@ -174,7 +196,93 @@ final class InferenceEngine: ObservableObject {
     func reveal() { if let u = outputURL { NSWorkspace.shared.activateFileViewerSelecting([u]) } }
 }
 
-// ---------- UI ----------
+// ---------- Finder (Icons / List / Gallery) ----------
+enum FinderMode: String, CaseIterable { case icons, list, gallery }
+
+struct FinderView: View {
+    let images: [URL]
+    @Binding var selected: Int
+    let onSelect: (Int) -> Void
+    @State private var mode: FinderMode = .icons
+    @State private var iconSize: Double = 108
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Picker("", selection: $mode) {
+                    Image(systemName: "square.grid.2x2").tag(FinderMode.icons)
+                    Image(systemName: "list.bullet").tag(FinderMode.list)
+                    Image(systemName: "rectangle.grid.1x2").tag(FinderMode.gallery)
+                }.pickerStyle(.segmented).labelsHidden().fixedSize()
+                Spacer()
+                Text("\(images.count) images").font(.caption).foregroundStyle(.secondary)
+                if mode == .icons { Slider(value: $iconSize, in: 64...200).frame(width: 90) }
+            }.padding(8)
+            Divider()
+            switch mode {
+            case .icons:   icons
+            case .list:    list
+            case .gallery: gallery
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var icons: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: iconSize), spacing: 8)], spacing: 8) {
+                ForEach(images.indices, id: \.self) { i in
+                    VStack(spacing: 3) {
+                        AsyncThumb(url: images[i], max: 220)
+                            .frame(width: iconSize, height: iconSize * 0.72).clipped().cornerRadius(5)
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(i == selected ? Color.accentColor : .clear, lineWidth: 3))
+                        Text(images[i].lastPathComponent).font(.caption2).lineLimit(1).truncationMode(.middle).frame(width: iconSize)
+                    }
+                    .contentShape(Rectangle()).onTapGesture { onSelect(i) }
+                }
+            }.padding(10)
+        }
+    }
+
+    private var list: some View {
+        ScrollView {
+            LazyVStack(spacing: 1) {
+                ForEach(images.indices, id: \.self) { i in
+                    HStack(spacing: 8) {
+                        AsyncThumb(url: images[i], max: 90).frame(width: 54, height: 38).clipped().cornerRadius(3)
+                        Text(images[i].lastPathComponent).font(.callout).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(i == selected ? Color.accentColor.opacity(0.25) : .clear)
+                    .contentShape(Rectangle()).onTapGesture { onSelect(i) }
+                }
+            }
+        }
+    }
+
+    private var gallery: some View {
+        VStack(spacing: 6) {
+            if images.indices.contains(selected) {
+                AsyncThumb(url: images[selected], max: 800, fit: true).frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text(images[selected].lastPathComponent).font(.caption).lineLimit(1)
+            }
+            Divider()
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 4) {
+                    ForEach(images.indices, id: \.self) { i in
+                        AsyncThumb(url: images[i], max: 130)
+                            .frame(width: 82, height: 58).clipped().cornerRadius(3)
+                            .overlay(RoundedRectangle(cornerRadius: 3).stroke(i == selected ? Color.accentColor : .clear, lineWidth: 2))
+                            .onTapGesture { onSelect(i) }
+                    }
+                }.padding(6)
+            }.frame(height: 76)
+        }.padding(8)
+    }
+}
+
+// ---------- main UI ----------
 struct ContentView: View {
     @StateObject private var engine = InferenceEngine()
 
@@ -211,14 +319,21 @@ struct ContentView: View {
         HStack(spacing: 0) {
             controls.frame(width: 300).padding(16)
             Divider()
-            if sourceKind == .folder && !engine.exporting {   // file browser (hidden during export)
-                fileList.frame(width: 250)
+            if sourceKind == .folder && !engine.exporting {
+                FinderView(images: folderImages, selected: $selectedIndex) { i in
+                    selectedIndex = i
+                    if let m = modelURL {
+                        engine.previewURL(model: m, image: folderImages[i], compute: compute, conf: conf, iou: iou, style: style, label: label)
+                    }
+                }
+                .frame(width: 380)
                 Divider()
             }
             VStack(spacing: 0) {
-                preview.frame(maxWidth: .infinity, maxHeight: .infinity)
-                if engine.exporting { exportPanel }
-                else if sourceKind == .video { scrubberBar }
+                preview
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .bottom) { if engine.busy { progressBar } }
+                if sourceKind == .video && !engine.exporting { scrubberBar }
             }
         }
         .fileImporter(isPresented: $showPicker, allowedContentTypes: pickerTypes) { result in
@@ -299,12 +414,10 @@ struct ContentView: View {
     private var controls: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("YOLO-Master · Core ML").font(.title3).bold()
-
             picker(title: "Model", value: modelURL?.lastPathComponent ?? "none",
                    button: "Choose .mlpackage…") { pickTarget = .model; DispatchQueue.main.async { showPicker = true } }
             picker(title: "Source", value: sourceURL.map { "\($0.lastPathComponent)  (\(kindLabel))" } ?? "none",
                    button: "Choose image / folder / video…") { pickTarget = .source; DispatchQueue.main.async { showPicker = true } }
-
             slider(title: "conf", value: $conf, range: 0.01...0.95)
             slider(title: "iou",  value: $iou,  range: 0.10...0.90)
             labeled("Box style") {
@@ -319,12 +432,7 @@ struct ContentView: View {
                 Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
                     .pickerStyle(.menu).labelsHidden()
             }
-
             actionRow
-            if engine.busy && !engine.exporting {
-                HStack(spacing: 6) { ProgressView().controlSize(.small); Text("inferring…").font(.caption).foregroundStyle(.secondary) }
-            }
-
             Spacer()
             Text(engine.status).font(.callout).foregroundStyle(.secondary)
             if !engine.modelSummary.isEmpty {
@@ -337,8 +445,7 @@ struct ContentView: View {
         HStack {
             switch sourceKind {
             case .image:
-                Button("Save…") { engine.save() }
-                    .buttonStyle(.borderedProminent).disabled(engine.resultImage == nil)
+                Button("Save…") { engine.save() }.buttonStyle(.borderedProminent).disabled(engine.resultImage == nil)
             case .folder, .video:
                 Button(sourceKind == .video ? "Export video →" : "Export folder →") { export() }
                     .buttonStyle(.borderedProminent).disabled(!canExport)
@@ -347,6 +454,16 @@ struct ContentView: View {
                 Button("Run") {}.disabled(true)
             }
         }
+    }
+
+    // progress bar over the preview: indeterminate for inference, determinate (with count) for export
+    private var progressBar: some View {
+        VStack(spacing: 4) {
+            if let p = engine.progress { ProgressView(value: p) }
+            else { ProgressView().progressViewStyle(.linear) }
+            Text(engine.status).font(.caption)
+        }
+        .padding(10).frame(maxWidth: .infinity).background(.ultraThinMaterial)
     }
 
     private var preview: some View {
@@ -364,67 +481,15 @@ struct ContentView: View {
         }
     }
 
-    // export progress panel (replaces the finder while exporting)
-    private var exportPanel: some View {
-        VStack(spacing: 6) {
-            if let p = engine.progress { ProgressView(value: p) { Text(engine.status).font(.caption) } }
-            else { ProgressView { Text(engine.status).font(.caption) } }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    // folder finder: scrollable file list (thumbnail + filename), lazy for large folders
-    private var fileList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("\(folderImages.count) images — click to preview & tune")
-                .font(.caption).foregroundStyle(.secondary).padding(8)
-            Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(Array(folderImages.enumerated()), id: \.offset) { i, url in
-                        fileRow(i, url)
-                    }
-                }
-            }
-        }
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    private func fileRow(_ i: Int, _ url: URL) -> some View {
-        HStack(spacing: 8) {
-            if let ns = makeThumbnail(url, max: 64) {
-                Image(nsImage: ns).resizable().scaledToFill().frame(width: 46, height: 32).clipped().cornerRadius(3)
-            } else {
-                Color.gray.opacity(0.2).frame(width: 46, height: 32).cornerRadius(3)
-            }
-            Text(url.lastPathComponent).font(.caption).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(i == selectedIndex ? Color.accentColor.opacity(0.25) : Color.clear)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            selectedIndex = i
-            if let m = modelURL {
-                engine.previewURL(model: m, image: url, compute: compute, conf: conf, iou: iou, style: style, label: label)
-            }
-        }
-    }
-
-    // video finder: frame scrubber
     private var scrubberBar: some View {
         VStack(spacing: 2) {
             Slider(value: $scrubTime, in: 0...max(videoDur, 0.01)) { editing in if !editing { scrubFrame() } }
             Text("preview frame @ \(String(format: "%.2f", scrubTime))s / \(String(format: "%.1f", videoDur))s")
                 .font(.caption2).foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(.horizontal, 12).padding(.vertical, 8).background(Color(nsColor: .windowBackgroundColor))
     }
 
-    // ---- small view builders ----
     private func picker(title: String, value: String, button: String, action: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption).foregroundStyle(.secondary)
