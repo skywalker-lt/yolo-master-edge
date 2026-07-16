@@ -117,17 +117,18 @@ final class InferenceEngine: ObservableObject {
     }
 
     // ---- image / video-frame: forward one, cache candidates, render ----
-    func previewURL(model: URL, image: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
+    func previewURL(model: URL, image: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay, preprocess: Detector.PreprocessMode) {
         guard let cg = loadCGImage(image) else { publish(error: "Could not read image."); return }
-        preview(model: model, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay)
+        preview(model: model, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess)
     }
-    func preview(model: URL, cg: CGImage, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
+    func preview(model: URL, cg: CGImage, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay, preprocess: Detector.PreprocessMode) {
         busy = true; progress = nil; status = "Inferring…"
         let k = model.path + "|" + compute.rawValue
         queue.async { [weak self] in
             guard let self else { return }
             do {
                 let det = try self.reuseDetector(model: model, compute: compute, key: k)
+                det.preprocess = preprocess
                 let raw = try det.forward(cg)
                 self.currentCG = cg; self.currentCands = det.candidates(raw); self.currentMs = raw.inferMs
                 self.currentRaw = det.isSegment ? raw : nil
@@ -141,13 +142,14 @@ final class InferenceEngine: ObservableObject {
     }
 
     // ---- folder: infer ALL once (progress), cache candidates ----
-    func runFolder(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
+    func runFolder(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay, preprocess: Detector.PreprocessMode) {
         busy = true; exporting = false; hasResults = false; progress = 0; outputURL = nil; status = "Inferring folder…"
         let k = model.path + "|" + compute.rawValue
         queue.async { [weak self] in
             guard let self else { return }
             do {
                 let det = try self.reuseDetector(model: model, compute: compute, key: k)
+                det.preprocess = preprocess
                 self.detNames = det.classNames
                 let (items, summary) = inferFolder(det, input: input, confFloor: 0.05) { done, total in
                     DispatchQueue.main.async {
@@ -232,12 +234,13 @@ final class InferenceEngine: ObservableObject {
         }
     }
     // ---- video: infer ALL frames once (progress), cache candidates ----
-    func runVideo(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+    func runVideo(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, preprocess: Detector.PreprocessMode) {
         busy = true; exporting = false; hasResults = false; progress = 0; outputURL = nil; status = "Inferring video…"
         Task { [weak self] in
             guard let self else { return }
             do {
                 let det = try Detector(modelURL: model, compute: compute)
+                det.preprocess = preprocess
                 self.detNames = det.classNames
                 let (frames, summary, fps, size) = try await inferVideo(det, input: input, confFloor: 0.05) { done, est in
                     DispatchQueue.main.async {
@@ -484,6 +487,7 @@ struct ContentView: View {
     @State private var style: BoxStyle = .hud
     @State private var label: LabelMode = .full
     @State private var overlay: SegOverlay = .both     // segmentation: masks / boxes / both
+    @State private var preprocess: Detector.PreprocessMode = .letterbox   // input fit: letterbox vs force-resize to imgsz
     @State private var compute: ComputeMode = .cpuAndGPU
     @State private var showPicker = false
     @State private var pickTarget: PickTarget = .model
@@ -500,6 +504,7 @@ struct ContentView: View {
 
     private enum PickTarget { case model, source }
     private var sourceKind: SourceKind { sourceURL.map(classifySource) ?? .unknown }
+    private var modelInfoImgsz: String { engine.modelInfo.map { "\($0.imgsz)×\($0.imgsz)" } ?? "the model's imgsz" }
     private var kindLabel: String {
         switch sourceKind { case .image: "image"; case .folder: "folder"; case .video: "video"; case .unknown: "unsupported" }
     }
@@ -535,6 +540,10 @@ struct ContentView: View {
         .onChange(of: style) { rerender() }
         .onChange(of: label) { rerender() }
         .onChange(of: overlay) { rerender() }
+        .onChange(of: preprocess) {   // preprocessing changes the forward pass -> re-infer (not a cheap re-render)
+            guard !engine.busy, engine.hasResults || engine.resultImage != nil else { return }
+            runInfer()
+        }
         .onChange(of: modelURL) { setupSource() }
         .onChange(of: sourceURL) { setupSource() }
         .onChange(of: scrubTime) { if scrubbing { pc.seek(scrubTime) } }   // seek while dragging
@@ -568,9 +577,9 @@ struct ContentView: View {
     private func runInfer() {
         guard let m = modelURL, let s = sourceURL else { return }
         switch sourceKind {
-        case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay)
-        case .folder: engine.runFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay)
-        case .video:  engine.runVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label)
+        case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess)
+        case .folder: engine.runFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess)
+        case .video:  engine.runVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, preprocess: preprocess)
         default: break
         }
     }
@@ -623,6 +632,19 @@ struct ContentView: View {
                                 set: sourceURL != nil) {
                             pickTarget = .source; DispatchQueue.main.async { showPicker = true }
                         }
+                    }
+                    sectionBox("Preprocess", "aspectratio") {
+                        segRow("Input fit") {
+                            Picker("", selection: $preprocess) {
+                                Text("Letterbox").tag(Detector.PreprocessMode.letterbox)
+                                Text("Stretch").tag(Detector.PreprocessMode.stretch)
+                            }.pickerStyle(.segmented).labelsHidden()
+                        }
+                        Text(preprocess == .stretch
+                             ? "Force-resized to \(modelInfoImgsz) — fills the model input, distorts aspect ratio."
+                             : "Aspect-preserving fit into \(modelInfoImgsz) with gray padding (YOLO default).")
+                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     sectionBox("Detection", "slider.horizontal.3") {
                         sliderRow("Confidence", $conf, 0.05...0.95)

@@ -135,14 +135,29 @@ public final class Detector {
     }
 
     // ---------- preprocess ----------
-    private struct LB { let px: [UInt8]; let scale: CGFloat; let padX: CGFloat; let padY: CGFloat }
+    /// How the source image is fit into the model's fixed imgsz×imgsz input. This is a PREPROCESSING
+    /// choice (changes the forward-pass input), not a tuning param — switching it requires re-inference.
+    /// `.letterbox`: aspect-preserving fit + gray padding (YOLO default). `.stretch`: force-resize the
+    /// whole image to imgsz×imgsz (no padding; the size the model was trained on), distorting aspect.
+    public enum PreprocessMode: String, CaseIterable, Sendable { case letterbox, stretch }
+    public var preprocess: PreprocessMode = .letterbox
+
+    private struct LB { let px: [UInt8]; let scaleX: CGFloat; let scaleY: CGFloat; let padX: CGFloat; let padY: CGFloat }
 
     private func letterbox(_ image: CGImage) -> LB {
         let size = imgsz
         let w = image.width, h = image.height
-        let scale = min(CGFloat(size) / CGFloat(w), CGFloat(size) / CGFloat(h))
-        let nw = Int((CGFloat(w) * scale).rounded()), nh = Int((CGFloat(h) * scale).rounded())
-        let padX = CGFloat(size - nw) / 2, padY = CGFloat(size - nh) / 2
+        let scaleX: CGFloat, scaleY: CGFloat, nw: Int, nh: Int, padX: CGFloat, padY: CGFloat
+        switch preprocess {
+        case .letterbox:                                    // aspect-preserving fit + centered padding
+            let s = min(CGFloat(size) / CGFloat(w), CGFloat(size) / CGFloat(h))
+            scaleX = s; scaleY = s
+            nw = Int((CGFloat(w) * s).rounded()); nh = Int((CGFloat(h) * s).rounded())
+            padX = CGFloat(size - nw) / 2; padY = CGFloat(size - nh) / 2
+        case .stretch:                                      // force-resize to the full imgsz square
+            scaleX = CGFloat(size) / CGFloat(w); scaleY = CGFloat(size) / CGFloat(h)
+            nw = size; nh = size; padX = 0; padY = 0
+        }
         var px = [UInt8](repeating: 114, count: size * size * 4)
         px.withUnsafeMutableBytes { raw in
             guard let ctx = CGContext(data: raw.baseAddress, width: size, height: size, bitsPerComponent: 8,
@@ -151,7 +166,7 @@ public final class Detector {
             ctx.interpolationQuality = .high
             ctx.draw(image, in: CGRect(x: padX, y: padY, width: CGFloat(nw), height: CGFloat(nh)))  // no flip -> top-down
         }
-        return LB(px: px, scale: scale, padX: padX, padY: padY)
+        return LB(px: px, scaleX: scaleX, scaleY: scaleY, padX: padX, padY: padY)
     }
 
     private func fillInput(_ raster: [UInt8]) -> MLDictionaryFeatureProvider? {
@@ -179,7 +194,7 @@ public final class Detector {
         let y = raw.y
         let na = y.shape[2].intValue
         let s1 = y.strides[1].intValue, s2 = y.strides[2].intValue
-        let scale = raw.scale, padX = raw.padX, padY = raw.padY
+        let scaleX = raw.scaleX, scaleY = raw.scaleY, padX = raw.padX, padY = raw.padY
         let origW = raw.origW, origH = raw.origH
         var dets: [Detection] = []
         func decodeAnchors(_ at: (Int, Int) -> Float32) {
@@ -188,8 +203,8 @@ public final class Detector {
                 for c in 0..<nc {
                     let s = at(4 + c, a)
                     if s <= confFloor { continue }
-                    var x1 = (cx - bw / 2 - padX) / scale, y1 = (cy - bh / 2 - padY) / scale
-                    var x2 = (cx + bw / 2 - padX) / scale, y2 = (cy + bh / 2 - padY) / scale
+                    var x1 = (cx - bw / 2 - padX) / scaleX, y1 = (cy - bh / 2 - padY) / scaleY
+                    var x2 = (cx + bw / 2 - padX) / scaleX, y2 = (cy + bh / 2 - padY) / scaleY
                     x1 = max(0, min(CGFloat(origW), x1)); x2 = max(0, min(CGFloat(origW), x2))
                     y1 = max(0, min(CGFloat(origH), y1)); y2 = max(0, min(CGFloat(origH), y2))
                     if x2 > x1 && y2 > y1 {
@@ -239,12 +254,12 @@ public final class Detector {
     public final class RawOutput {
         fileprivate let y: MLMultiArray
         fileprivate let proto: MLMultiArray?   // segmentation prototypes [1, nm, mh, mw]
-        fileprivate let scale, padX, padY: CGFloat
+        fileprivate let scaleX, scaleY, padX, padY: CGFloat   // per-axis (scaleX==scaleY for letterbox)
         public let origW, origH: Int
         public let inferMs: Double
-        fileprivate init(y: MLMultiArray, proto: MLMultiArray?, scale: CGFloat, padX: CGFloat, padY: CGFloat,
+        fileprivate init(y: MLMultiArray, proto: MLMultiArray?, scaleX: CGFloat, scaleY: CGFloat, padX: CGFloat, padY: CGFloat,
                          origW: Int, origH: Int, inferMs: Double) {
-            self.y = y; self.proto = proto; self.scale = scale; self.padX = padX; self.padY = padY
+            self.y = y; self.proto = proto; self.scaleX = scaleX; self.scaleY = scaleY; self.padX = padX; self.padY = padY
             self.origW = origW; self.origH = origH; self.inferMs = inferMs
         }
     }
@@ -260,7 +275,7 @@ public final class Detector {
             throw DetectorError.badOutput
         }
         let proto = isSegment ? out.featureValue(for: protoName)?.multiArrayValue : nil
-        return RawOutput(y: y, proto: proto, scale: lb.scale, padX: lb.padX, padY: lb.padY,
+        return RawOutput(y: y, proto: proto, scaleX: lb.scaleX, scaleY: lb.scaleY, padX: lb.padX, padY: lb.padY,
                          origW: image.width, origH: image.height, inferMs: infMs)
     }
 
@@ -323,7 +338,7 @@ public final class Detector {
         // [pad, pad + orig*scale]. Express that as a unit crop of the proto grid (top-left origin).
         let sz = CGFloat(imgsz)
         let crop = CGRect(x: raw.padX / sz, y: raw.padY / sz,
-                          width: CGFloat(raw.origW) * raw.scale / sz, height: CGFloat(raw.origH) * raw.scale / sz)
+                          width: CGFloat(raw.origW) * raw.scaleX / sz, height: CGFloat(raw.origH) * raw.scaleY / sz)
         return MaskBitmap(image: img, protoCrop: crop, clip: det.rect)
     }
 
