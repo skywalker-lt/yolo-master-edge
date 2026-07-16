@@ -689,9 +689,10 @@ struct ContentView: View {
                             Picker("", selection: $preprocess) {
                                 Text("Letterbox").tag(Detector.PreprocessMode.letterbox)
                                 Text("Stretch").tag(Detector.PreprocessMode.stretch)
-                            }.pickerStyle(.segmented).labelsHidden()
+                            }.pickerStyle(.segmented).labelsHidden().disabled(cameraOn)
                         }
-                        Text(preprocess == .stretch
+                        Text(cameraOn ? "Stop the camera to change the input fit."
+                             : preprocess == .stretch
                              ? "Force-resized to \(modelInfoImgsz) — fills the model input, distorts aspect ratio."
                              : "Aspect-preserving fit into \(modelInfoImgsz) with gray padding (YOLO default).")
                             .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -721,7 +722,11 @@ struct ContentView: View {
                     }
                     sectionBox("Compute", "cpu") {
                         Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.label).tag($0) } }
-                            .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                            .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading).disabled(cameraOn)
+                        if cameraOn {
+                            Text("Stop the camera to change the compute backend.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                     sectionBox("Inference", "chart.bar.doc.horizontal") { summaryContent }
                 }
