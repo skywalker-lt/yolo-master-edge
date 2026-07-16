@@ -13,6 +13,7 @@ import AppKit
 import UniformTypeIdentifiers
 import CoreGraphics
 import ImageIO
+import AVFoundation
 import YOLOMasterKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -101,13 +102,13 @@ final class InferenceEngine: ObservableObject {
     private var folderInput: URL?
     private var videoCache: [[Detection]] = []
     @Published private(set) var videoFps: Double = 30
+    @Published private(set) var videoURL: URL?
+    @Published private(set) var videoSize: CGSize = .zero
     private var videoInput: URL?
-    private var videoGrabber: FrameGrabber?
-    private var scrubTask: Task<Void, Never>?
     private let queue = DispatchQueue(label: "com.yolomaster.inference")
 
     func resetResults() {
-        hasResults = false; folderCache = []; folderInput = nil; videoCache = []; videoInput = nil; outputURL = nil
+        hasResults = false; folderCache = []; folderInput = nil; videoCache = []; videoInput = nil; videoURL = nil; videoSize = .zero; outputURL = nil
         resultImage = nil; detCount = 0; currentCG = nil; currentCands = []
         infer = nil; classCounts = []
         status = "Ready — press Run."
@@ -235,42 +236,31 @@ final class InferenceEngine: ObservableObject {
                     }
                 }
                 let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
-                let grabber = FrameGrabber(url: input)
-                let firstCG = await grabber.frame(atSeconds: 0)
                 DispatchQueue.main.async {
-                    self.videoCache = frames; self.videoFps = fps; self.videoInput = input; self.videoGrabber = grabber
+                    self.videoCache = frames; self.videoFps = fps; self.videoInput = input; self.videoURL = input; self.videoSize = size
                     self.modelInfo = info; self.infer = summary; self.hasResults = !frames.isEmpty
                     self.busy = false; self.progress = nil
-                    self.status = "Inferred \(frames.count) frames — scrub & tune, then Export"
-                }
-                if let cg = firstCG {
-                    self.queue.async {
-                        self.currentCG = cg; self.currentCands = frames.first ?? []; self.currentMs = 0
-                        self.render(conf: conf, iou: iou, style: style, label: label)
-                    }
+                    self.status = "Inferred \(frames.count) frames — play / scrub & tune, then Export"
+                    self.setVideoFrameStats(time: 0, conf: conf, iou: iou)
                 }
             } catch { DispatchQueue.main.async { self.status = "Inference failed: \(error.localizedDescription)"; self.busy = false; self.progress = nil } }
         }
     }
 
-    // ---- scrub: coalesced (drops the in-flight frame so dragging stays snappy) ----
-    func showVideoFrame(time: Double, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
-        scrubTask?.cancel()
-        scrubTask = Task { [weak self] in await self?.showVideoFrameAsync(time: time, conf: conf, iou: iou, style: style, label: label) }
-    }
-
-    // ---- render a cached video frame and RETURN when it's displayed (playback awaits this -> self-paced) ----
-    func showVideoFrameAsync(time: Double, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) async {
-        guard !videoCache.isEmpty, let grabber = videoGrabber else { return }
+    // ---- video overlay data: AVPlayer displays frames; we draw boxes from cached candidates at time ----
+    var names: [String] { detNames }
+    func detsAt(time: Double, conf: Double, iou: Double) -> [Detection] {
+        guard !videoCache.isEmpty else { return [] }
         let idx = min(max(0, Int((time * videoFps).rounded())), videoCache.count - 1)
-        let cands = videoCache[idx]
-        guard let cg = await grabber.frame(atSeconds: time), !Task.isCancelled else { return }
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            self.queue.async {
-                self.currentCG = cg; self.currentCands = cands; self.currentMs = 0
-                self.render(conf: conf, iou: iou, style: style, label: label)
-                cont.resume()
-            }
+        return Detector.nms(videoCache[idx], conf: Float(conf), iou: CGFloat(iou))
+    }
+    /// Update the 'this frame' summary stats for the video frame at `time`.
+    func setVideoFrameStats(time: Double, conf: Double, iou: Double) {
+        let dets = detsAt(time: time, conf: conf, iou: iou)
+        detCount = dets.count
+        var byClass: [Int: Int] = [:]; for d in dets { byClass[d.cls, default: 0] += 1 }
+        classCounts = byClass.sorted { $0.value > $1.value }.map {
+            ClassCount(name: detNames.indices.contains($0.key) ? detNames[$0.key] : "class\($0.key)", count: $0.value)
         }
     }
 
@@ -365,6 +355,88 @@ struct FinderView: View {
     }
 }
 
+// ---------- AVPlayer video stage (real-time playback) + live detection overlay ----------
+final class PlayerController: ObservableObject {
+    let player = AVPlayer()
+    @Published var currentTime: Double = 0
+    @Published var isPlaying = false
+    private var loaded: URL?
+    private var timeObs: Any?
+    private var endObs: NSObjectProtocol?
+    func load(_ url: URL) {
+        guard loaded != url else { return }
+        loaded = url
+        player.replaceCurrentItem(with: AVPlayerItem(url: url))
+        currentTime = 0; isPlaying = false
+        if timeObs == nil {
+            timeObs = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] t in
+                self?.currentTime = t.seconds.isFinite ? t.seconds : 0
+            }
+        }
+        if endObs == nil {
+            endObs = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main) { [weak self] _ in
+                self?.player.seek(to: .zero); if self?.isPlaying == true { self?.player.play() }
+            }
+        }
+    }
+    func togglePlay() { isPlaying.toggle(); isPlaying ? player.play() : player.pause() }
+    func pause() { isPlaying = false; player.pause() }
+    func seek(_ t: Double) { player.seek(to: CMTime(seconds: max(0, t), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) }
+    deinit { if let o = timeObs { player.removeTimeObserver(o) }; if let e = endObs { NotificationCenter.default.removeObserver(e) } }
+}
+
+final class PlayerContainer: NSView {
+    let playerLayer = AVPlayerLayer()
+    override func makeBackingLayer() -> CALayer { playerLayer.videoGravity = .resizeAspect; return playerLayer }
+}
+struct PlayerView: NSViewRepresentable {
+    let player: AVPlayer
+    func makeNSView(context: Context) -> PlayerContainer { let v = PlayerContainer(); v.wantsLayer = true; v.playerLayer.player = player; return v }
+    func updateNSView(_ v: PlayerContainer, context: Context) { v.playerLayer.player = player }
+}
+
+let overlayPalette: [Color] = [
+    Color(red: 0.98, green: 0.26, blue: 0.30), Color(red: 0.20, green: 0.71, blue: 0.98), Color(red: 0.16, green: 0.85, blue: 0.52),
+    Color(red: 0.99, green: 0.79, blue: 0.12), Color(red: 0.72, green: 0.40, blue: 0.98), Color(red: 0.99, green: 0.55, blue: 0.18),
+    Color(red: 0.10, green: 0.83, blue: 0.80), Color(red: 0.98, green: 0.36, blue: 0.66), Color(red: 0.55, green: 0.82, blue: 0.28),
+    Color(red: 0.40, green: 0.52, blue: 0.98)]
+
+/// AVPlayer plays the raw video (hardware-decoded, real-time); a Canvas overlays boxes for the
+/// current play-head time from cached candidates, so playback is smooth AND boxes stay live-tunable.
+struct VideoStage: View {
+    @ObservedObject var engine: InferenceEngine
+    @ObservedObject var pc: PlayerController
+    let conf: Double, iou: Double, label: LabelMode
+    var body: some View {
+        ZStack {
+            PlayerView(player: pc.player)
+            Canvas { ctx, size in
+                let vid = engine.videoSize
+                guard vid.width > 0, vid.height > 0 else { return }
+                let scale = Swift.min(size.width / vid.width, size.height / vid.height)
+                let dw = vid.width * scale, dh = vid.height * scale
+                let ox = (size.width - dw) / 2, oy = (size.height - dh) / 2
+                let lw = Swift.max(1.5, dw / 640 * 1.5)
+                for d in engine.detsAt(time: pc.currentTime, conf: conf, iou: iou) {
+                    let color = overlayPalette[d.cls % overlayPalette.count]
+                    let r = CGRect(x: ox + d.rect.minX * scale, y: oy + d.rect.minY * scale, width: d.rect.width * scale, height: d.rect.height * scale)
+                    ctx.stroke(Path(roundedRect: r, cornerRadius: 3), with: .color(color), lineWidth: lw)
+                    if label != .off {
+                        let name = d.cls < engine.names.count ? engine.names[d.cls] : "class\(d.cls)"
+                        let txt = label == .min ? name : "\(name) \(String(format: "%.2f", d.score))"
+                        let resolved = ctx.resolve(Text(txt).font(.system(size: Swift.max(9, dw / 95))).bold().foregroundColor(.white))
+                        let ts = resolved.measure(in: size)
+                        let chip = CGRect(x: r.minX, y: Swift.max(oy, r.minY - ts.height - 4), width: ts.width + 6, height: ts.height + 4)
+                        ctx.fill(Path(roundedRect: chip, cornerRadius: 3), with: .color(color.opacity(0.85)))
+                        ctx.draw(resolved, at: CGPoint(x: chip.minX + 3, y: chip.minY + 2), anchor: .topLeading)
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
 // ---------- main UI ----------
 struct ContentView: View {
     @StateObject private var engine = InferenceEngine()
@@ -383,8 +455,9 @@ struct ContentView: View {
     @State private var iconSize: Double = 108
     @State private var videoDur = 0.0
     @State private var scrubTime = 0.0
-    @State private var playing = false
-    @State private var playTask: Task<Void, Never>?
+    @State private var scrubbing = false
+    @State private var wasPlaying = false
+    @StateObject private var pc = PlayerController()
     @FocusState private var kbFocused: Bool
 
     private enum PickTarget { case model, source }
@@ -425,7 +498,11 @@ struct ContentView: View {
         .onChange(of: label) { rerender() }
         .onChange(of: modelURL) { setupSource() }
         .onChange(of: sourceURL) { setupSource() }
-        .onChange(of: scrubTime) { requestFrame() }   // live: render as the slider/playback moves
+        .onChange(of: scrubTime) { if scrubbing { pc.seek(scrubTime) } }   // seek while dragging
+        .onChange(of: pc.currentTime) {
+            if pc.isPlaying && !scrubbing { scrubTime = pc.currentTime }   // slider follows playback
+            if sourceKind == .video && engine.hasResults { engine.setVideoFrameStats(time: pc.currentTime, conf: conf, iou: iou) }
+        }
         .focusable().focused($kbFocused).onAppear { DispatchQueue.main.async { kbFocused = true } }
         .onKeyPress(.leftArrow)  { step(-1, vertical: false); return .handled }
         .onKeyPress(.rightArrow) { step(1,  vertical: false); return .handled }
@@ -440,12 +517,13 @@ struct ContentView: View {
         }
     }
     private func setupSource() {
-        stopPlay()
+        pc.pause()
         engine.resetResults()
         guard let s = sourceURL else { return }
         switch classifySource(s) {
         case .folder: folderImages = listImages(s); selectedIndex = 0
         case .video:
+            pc.load(s)
             Task { let dur = await videoDuration(s); await MainActor.run { videoDur = dur; scrubTime = 0 } }
         default: break
         }
@@ -464,28 +542,13 @@ struct ContentView: View {
         selectedIndex = i
         engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label)
     }
-    private func rerender() { engine.restyle(conf: conf, iou: iou, style: style, label: label) }
-    /// Live scrub render (engine coalesces rapid calls). Skipped during playback (the play loop renders).
-    private func requestFrame() {
-        if sourceKind == .video && engine.hasResults && !playing {
-            engine.showVideoFrame(time: scrubTime, conf: conf, iou: iou, style: style, label: label)
+    private func rerender() {
+        if sourceKind == .video {
+            if engine.hasResults { engine.setVideoFrameStats(time: pc.currentTime, conf: conf, iou: iou) }  // overlay redraws on conf/iou/label automatically
+        } else {
+            engine.restyle(conf: conf, iou: iou, style: style, label: label)
         }
     }
-    private func togglePlay() {
-        if playing { stopPlay(); return }
-        guard videoDur > 0, engine.hasResults else { return }
-        playing = true
-        let step = 1.0 / max(engine.videoFps, 1)
-        playTask = Task { @MainActor in
-            while self.playing && !Task.isCancelled {
-                await engine.showVideoFrameAsync(time: scrubTime, conf: conf, iou: iou, style: style, label: label)
-                if !self.playing { break }
-                scrubTime = (scrubTime + step >= videoDur) ? 0 : scrubTime + step
-                try? await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
-            }
-        }
-    }
-    private func stopPlay() { playing = false; playTask?.cancel(); playTask = nil }
     private var gridColumns: Int { max(1, Int((380.0 - 24) / (iconSize + 8))) }
     private func step(_ dir: Int, vertical: Bool) {
         switch sourceKind {
@@ -494,6 +557,7 @@ struct ContentView: View {
             selectAndShow(min(max(0, selectedIndex + dir * stride), folderImages.count - 1))
         case .video where engine.hasResults:
             scrubTime = min(max(0, scrubTime + Double(dir) * (vertical ? 1.0 : 0.2)), max(videoDur, 0.0))
+            pc.seek(scrubTime)
         default: break
         }
     }
@@ -598,7 +662,9 @@ struct ContentView: View {
     private var preview: some View {
         ZStack {
             Color(nsColor: .underPageBackgroundColor)
-            if let img = engine.resultImage {
+            if sourceKind == .video && engine.hasResults {
+                VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, label: label).padding(12)
+            } else if let img = engine.resultImage {
                 Image(nsImage: img).resizable().scaledToFit().padding(12)
             } else if (sourceKind == .folder || sourceKind == .video) && !engine.hasResults && !engine.busy {
                 VStack(spacing: 8) {
@@ -617,11 +683,15 @@ struct ContentView: View {
 
     private var scrubberBar: some View {
         HStack(spacing: 12) {
-            Button { togglePlay() } label: {
-                Image(systemName: playing ? "pause.fill" : "play.fill").font(.title3).frame(width: 22)
+            Button { pc.togglePlay() } label: {
+                Image(systemName: pc.isPlaying ? "pause.fill" : "play.fill").font(.title3).frame(width: 22)
             }.buttonStyle(.borderless)
             VStack(spacing: 2) {
-                Slider(value: $scrubTime, in: 0...max(videoDur, 0.01))
+                Slider(value: $scrubTime, in: 0...max(videoDur, 0.01)) { editing in
+                    scrubbing = editing
+                    if editing { wasPlaying = pc.isPlaying; pc.pause() }
+                    else { pc.seek(scrubTime); if wasPlaying { pc.togglePlay() } }
+                }
                 Text("\(String(format: "%.2f", scrubTime))s / \(String(format: "%.1f", videoDur))s")
                     .font(.caption2).foregroundStyle(.secondary)
             }
