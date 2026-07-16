@@ -540,6 +540,7 @@ struct ContentView: View {
     @StateObject private var pc = PlayerController()
     @State private var cameraOn = false   // live-camera mode; the session lives in LiveCameraView (isolated observation)
     @State private var cameraIsSegment = false   // set by LiveCameraView once its detector is built
+    @State private var cameraMirror = true       // live-camera selfie mirror (toggled from the stage)
     @State private var showInfo = false          // About & Licenses sheet
     @FocusState private var kbFocused: Bool
 
@@ -840,7 +841,7 @@ struct ContentView: View {
             if cameraOn {
                 LiveCameraView(modelURL: modelURL, compute: compute, preprocess: preprocess,
                                conf: conf, iou: iou, overlay: overlay, style: style, label: label,
-                               isSegment: $cameraIsSegment).padding(12)
+                               isSegment: $cameraIsSegment, mirror: $cameraMirror).padding(12)
             } else if let err = sourceError {
                 VStack(spacing: 10) {
                     Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 44)).foregroundStyle(.orange)
