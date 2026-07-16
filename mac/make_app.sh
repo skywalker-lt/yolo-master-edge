@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Build YOLOMasterApp and assemble a double-clickable, redistributable YOLOMaster.app.
 # Run on macOS (needs the Swift toolchain + Core ML). Usage: mac/make_app.sh [version]
-set -euo pipefail
+# Note: intentionally NOT using `set -u` -- macOS's stock bash 3.2 can abort on benign
+# parameter expansions; `set -e` + pipefail already catch real failures.
+set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"          # .../mac
 APP_NAME="YOLOMaster"
 BUNDLE_ID="com.yolomaster.coreml"
 VERSION="${1:-1.0.0}"
 
-echo "[1/3] swift build -c release (YOLOMasterApp)…"
+echo "[1/3] swift build -c release (YOLOMasterApp)..."
 swift build -c release --package-path "$HERE" --product YOLOMasterApp
 BIN="$(swift build -c release --package-path "$HERE" --show-bin-path)/YOLOMasterApp"
 [ -x "$BIN" ] || { echo "build product not found: $BIN" >&2; exit 1; }
 
 APP="$HERE/dist/$APP_NAME.app"
-echo "[2/3] assembling $APP…"
+echo "[2/3] assembling $APP ..."
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
@@ -38,8 +40,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "[3/3] ad-hoc codesign (lets it run locally; re-sign with a Developer ID to distribute)…"
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "  (codesign skipped — app still runs locally)"
+echo "[3/3] ad-hoc codesign (lets it run locally; re-sign with a Developer ID to distribute)..."
+codesign --force --deep --sign - "$APP" 2>/dev/null || echo "  (codesign skipped -- app still runs locally)"
 
 echo "done -> $APP"
 echo "  run:  open \"$APP\""
