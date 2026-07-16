@@ -71,6 +71,10 @@ struct AsyncThumb: View {
     }
 }
 
+// ---------- stats models ----------
+struct StatModelInfo: Equatable { let name: String; let imgsz: Int; let nc: Int; let compute: String }
+struct ClassCount: Identifiable, Equatable { var id: String { name }; let name: String; let count: Int }
+
 // ---------- inference engine (two-phase: forward-once + cheap tuning) ----------
 final class InferenceEngine: ObservableObject {
     @Published var resultImage: NSImage?
@@ -82,6 +86,9 @@ final class InferenceEngine: ObservableObject {
     @Published var hasResults = false          // folder: inference cache ready
     @Published var progress: Double?
     @Published var outputURL: URL?
+    @Published var modelInfo: StatModelInfo?   // model name / imgsz / classes / compute
+    @Published var infer: InferSummary?        // count / avg / min / max / total / fps
+    @Published var classCounts: [ClassCount] = []   // per-class breakdown of the current frame
 
     private var detector: Detector?
     private var key = ""
@@ -97,6 +104,7 @@ final class InferenceEngine: ObservableObject {
     func resetResults() {
         hasResults = false; folderCache = []; folderInput = nil; outputURL = nil
         resultImage = nil; detCount = 0; currentCG = nil; currentCands = []
+        infer = nil; classCounts = []
         status = "Ready — press Run."
     }
 
@@ -115,8 +123,9 @@ final class InferenceEngine: ObservableObject {
                 let raw = try det.forward(cg)
                 self.currentCG = cg; self.currentCands = det.candidates(raw); self.currentMs = raw.inferMs
                 self.detNames = det.classNames
-                let summary = det.summary
-                DispatchQueue.main.async { self.modelSummary = summary }
+                let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
+                let s = InferSummary([raw.inferMs])
+                DispatchQueue.main.async { self.modelInfo = info; self.infer = s }
                 self.render(conf: conf, iou: iou, style: style, label: label)
             } catch { self.publish(error: "Inference failed: \(error.localizedDescription)") }
         }
@@ -131,19 +140,19 @@ final class InferenceEngine: ObservableObject {
             do {
                 let det = try self.reuseDetector(model: model, compute: compute, key: k)
                 self.detNames = det.classNames
-                let items = inferFolder(det, input: input, confFloor: 0.05) { done, total in
+                let (items, summary) = inferFolder(det, input: input, confFloor: 0.05) { done, total in
                     DispatchQueue.main.async {
                         self.progress = total > 0 ? Double(done) / Double(total) : nil
                         self.status = "Inferring \(done)/\(total)…"
                     }
                 }
                 self.folderCache = items; self.folderInput = input
-                let summary = det.summary
+                let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
                 if let first = items.first, let cg = loadCGImage(first.url) {
                     self.currentCG = cg; self.currentCands = first.candidates; self.currentMs = 0
                 }
                 DispatchQueue.main.async {
-                    self.modelSummary = summary; self.hasResults = !items.isEmpty
+                    self.modelInfo = info; self.infer = summary; self.hasResults = !items.isEmpty
                     self.busy = false; self.progress = nil
                     self.status = "Inferred \(items.count) images — browse & tune, then Export"
                 }
@@ -178,8 +187,13 @@ final class InferenceEngine: ObservableObject {
         self.lastAnnotated = annotated
         let ns = NSImage(cgImage: annotated, size: NSSize(width: cg.width, height: cg.height))
         let ms = self.currentMs
+        var byClass: [Int: Int] = [:]
+        for d in dets { byClass[d.cls, default: 0] += 1 }
+        let breakdown = byClass.sorted { $0.value > $1.value }.map {
+            ClassCount(name: self.detNames.indices.contains($0.key) ? self.detNames[$0.key] : "class\($0.key)", count: $0.value)
+        }
         DispatchQueue.main.async {
-            self.resultImage = ns; self.detCount = dets.count; self.busy = false
+            self.resultImage = ns; self.detCount = dets.count; self.busy = false; self.classCounts = breakdown
             self.status = ms > 0 ? "\(dets.count) detections · \(String(format: "%.1f", ms)) ms" : "\(dets.count) detections"
         }
     }
@@ -461,6 +475,7 @@ struct ContentView: View {
                         Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.label).tag($0) } }
                             .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    sectionBox("Inference", "chart.bar.doc.horizontal") { summaryContent }
                 }
             }
 
@@ -572,5 +587,50 @@ struct ContentView: View {
     }
     private func segRow<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 4) { Text(title).font(.callout); content() }
+    }
+
+    // ---- inference summary panel ----
+    @ViewBuilder private var summaryContent: some View {
+        if let s = engine.infer {
+            if let info = engine.modelInfo {
+                statRow("Model", info.name)
+                statRow("Input", "\(info.imgsz) × \(info.imgsz) px")
+                statRow("Classes", "\(info.nc)")
+                statRow("Compute", info.compute)
+            }
+            Divider()
+            statRow(s.count > 1 ? "Images" : "Frame", "\(s.count)")
+            statRow("Avg speed", String(format: "%.1f ms/img", s.meanMs))
+            statRow("Throughput", String(format: "%.0f img/s", s.fps))
+            if s.count > 1 {
+                statRow("Fastest", String(format: "%.1f ms", s.minMs))
+                statRow("Slowest", String(format: "%.1f ms", s.maxMs))
+                statRow("Total infer", String(format: "%.2f s", s.totalMs / 1000))
+            }
+            Divider()
+            statRow("Detections", "\(engine.detCount)  (this frame)")
+            if !engine.classCounts.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(engine.classCounts.prefix(12)) { c in
+                        HStack {
+                            Text(c.name).font(.caption)
+                            Spacer(minLength: 8)
+                            Text("\(c.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                    }
+                }.padding(.top, 2)
+            }
+        } else {
+            HStack { Image(systemName: "info.circle").foregroundStyle(.tertiary)
+                     Text("Run inference to see stats.").font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+
+    private func statRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value).font(.caption.monospacedDigit()).lineLimit(1).truncationMode(.middle)
+        }
     }
 }
