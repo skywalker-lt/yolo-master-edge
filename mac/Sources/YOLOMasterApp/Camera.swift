@@ -157,29 +157,26 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
 // ---------- live preview layer (un-mirrored so boxes align with the un-mirrored data output) ----------
 final class CameraPreviewNSView: NSView {
     let previewLayer = AVCaptureVideoPreviewLayer()
-    var mirrored = true { didSet { applyMirror() } }
     override func makeBackingLayer() -> CALayer { previewLayer.videoGravity = .resizeAspect; return previewLayer }
-    override func layout() { super.layout(); applyMirror() }
-    // The preview connection is nil right after the session is attached (it only appears once the
-    // session's video input goes live, which happens async on the capture queue). Applying mirroring
-    // once in layout() therefore raced and randomly left the connection at its default mirroring, so the
-    // preview and the overlay could disagree. Retry until the connection exists so it reliably matches.
-    func applyMirror(retries: Int = 15) {
-        if let c = previewLayer.connection, c.isVideoMirroringSupported {
-            c.automaticallyAdjustsVideoMirroring = false
-            c.isVideoMirrored = mirrored
+    override func layout() { super.layout(); disableHardwareMirror() }
+    // Keep the preview's OWN connection un-mirrored. The visual selfie flip is applied in SwiftUI
+    // (.scaleEffect on the view) so it works even on cameras whose preview connection doesn't support
+    // isVideoMirrored — the exact case that left the preview un-mirrored while the data output/overlay
+    // was mirrored. Retry until the connection exists (it's nil right after the session attaches).
+    private func disableHardwareMirror(retries: Int = 15) {
+        if let c = previewLayer.connection {
+            if c.isVideoMirroringSupported { c.automaticallyAdjustsVideoMirroring = false; c.isVideoMirrored = false }
         } else if retries > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in self?.applyMirror(retries: retries - 1) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in self?.disableHardwareMirror(retries: retries - 1) }
         }
     }
 }
 struct CameraPreviewView: NSViewRepresentable {
     let session: AVCaptureSession
-    var mirrored: Bool
     func makeNSView(context: Context) -> CameraPreviewNSView {
-        let v = CameraPreviewNSView(); v.wantsLayer = true; v.previewLayer.session = session; v.mirrored = mirrored; return v
+        let v = CameraPreviewNSView(); v.wantsLayer = true; v.previewLayer.session = session; return v
     }
-    func updateNSView(_ v: CameraPreviewNSView, context: Context) { v.previewLayer.session = session; v.mirrored = mirrored }
+    func updateNSView(_ v: CameraPreviewNSView, context: Context) { v.previewLayer.session = session }
 }
 
 // ---------- lifecycle owner: builds the detector, starts/stops the session, isolates observation ----------
@@ -233,7 +230,7 @@ struct CameraStage: View {
         let drawBoxes = !masksOnly
         let mask: CGImage? = (cam.isSegment && overlay != .boxes) ? cam.makeMask(dets) : nil
         return ZStack(alignment: .topLeading) {
-            CameraPreviewView(session: cam.session, mirrored: mirror)
+            CameraPreviewView(session: cam.session).scaleEffect(x: mirror ? -1 : 1, y: 1)   // selfie flip in SwiftUI (reliable)
             Canvas { ctx, size in
                 let vid = cam.frameSize
                 guard vid.width > 0, vid.height > 0 else { return }
