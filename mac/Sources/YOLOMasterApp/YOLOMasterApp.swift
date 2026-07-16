@@ -870,10 +870,15 @@ struct ContentView: View {
     }
 
     private func sectionBox<C: View>(_ title: String, _ icon: String, @ViewBuilder _ content: () -> C) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 12) { content() }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 2)
-        } label: {
-            Label(title, systemImage: icon).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: icon)                       // title: left edge aligns with the card below
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                .padding(.leading, 2)
+            VStack(alignment: .leading, spacing: 14) { content() }   // roomier gap between option rows
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)                                          // breathing room inside the card
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
         }
     }
     private func fileRow(icon: String, title: String, value: String, set: Bool, action: @escaping () -> Void) -> some View {
