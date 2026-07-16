@@ -527,6 +527,7 @@ struct ContentView: View {
     @State private var showPicker = false
     @State private var pickTarget: PickTarget = .model
     @State private var folderImages: [URL] = []
+    @State private var sourceError: String?      // set when the chosen source is invalid (e.g. mixed folder)
     @State private var selectedIndex = 0
     @State private var finderMode: FinderMode = .icons
     @State private var iconSize: Double = 108
@@ -609,17 +610,30 @@ struct ContentView: View {
     private func setupSource() {
         pc.pause()
         engine.resetResults()
+        sourceError = nil; folderImages = []
         guard let s = sourceURL else { return }
         switch classifySource(s) {
-        case .folder: folderImages = listImages(s); selectedIndex = 0
+        case .folder:
+            let others = folderNonImages(s)
+            if !others.isEmpty {
+                let sample = others.prefix(3).map { $0.lastPathComponent }.joined(separator: ", ")
+                let more = others.count > 3 ? " (+\(others.count - 3) more)" : ""
+                sourceError = "This folder isn’t images-only — it contains: \(sample)\(more). Pick a folder that holds only image files."
+            } else {
+                let imgs = listImages(s)
+                if imgs.isEmpty { sourceError = "This folder has no images." }
+                else { folderImages = imgs; selectedIndex = 0 }
+            }
         case .video:
             pc.load(s)
             Task { let dur = await videoDuration(s); await MainActor.run { videoDur = dur; scrubTime = 0 } }
+        case .unknown:
+            sourceError = "Unsupported source. Choose an image, a video, or a folder of images."
         default: break
         }
     }
     private func runInfer() {
-        guard let m = modelURL, let s = sourceURL else { return }
+        guard let m = modelURL, let s = sourceURL, sourceError == nil else { return }
         switch sourceKind {
         case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess)
         case .folder: engine.runFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess)
@@ -730,6 +744,7 @@ struct ContentView: View {
                     sectionBox("Inference", "chart.bar.doc.horizontal") { summaryContent }
                 }
             }
+            .disabled(engine.busy)   // lock every control during image/folder/video inference; tune after it finishes (camera isn't engine.busy)
 
             actionRow
         }
@@ -762,11 +777,11 @@ struct ContentView: View {
         VStack(spacing: 8) {
             switch sourceKind {
             case .image:
-                primaryButton("Run", "play.fill") { runInfer() }.disabled(sourceURL == nil || engine.busy)
+                primaryButton("Run", "play.fill") { runInfer() }.disabled(sourceURL == nil || engine.busy || sourceError != nil)
                 secondaryButton("Save…", "square.and.arrow.down") { engine.save() }.disabled(engine.resultImage == nil)
             case .folder:
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
-                    .disabled(sourceURL == nil || engine.busy)
+                    .disabled(sourceURL == nil || engine.busy || sourceError != nil)
                 HStack(spacing: 8) {
                     secondaryButton("Export", "square.and.arrow.up") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label, overlay: overlay) }
                         .disabled(!engine.hasResults || engine.busy)
@@ -774,7 +789,7 @@ struct ContentView: View {
                 }
             case .video:
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
-                    .disabled(sourceURL == nil || engine.busy)
+                    .disabled(sourceURL == nil || engine.busy || sourceError != nil)
                 HStack(spacing: 8) {
                     secondaryButton("Export", "square.and.arrow.up") { engine.exportVideo(conf: conf, iou: iou, style: style, label: label, overlay: overlay) }
                         .disabled(!engine.hasResults || engine.busy)
@@ -811,6 +826,11 @@ struct ContentView: View {
                 LiveCameraView(modelURL: modelURL, compute: compute, preprocess: preprocess,
                                conf: conf, iou: iou, overlay: overlay, style: style, label: label,
                                isSegment: $cameraIsSegment).padding(12)
+            } else if let err = sourceError {
+                VStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 44)).foregroundStyle(.orange)
+                    Text(err).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 380)
+                }.padding(24)
             } else if sourceKind == .video && engine.hasResults {
                 VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, overlay: overlay, style: style, label: label).padding(12)
             } else if let img = engine.resultImage {
