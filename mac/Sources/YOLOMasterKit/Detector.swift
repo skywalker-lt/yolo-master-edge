@@ -322,21 +322,26 @@ public final class Detector {
         let nmv = min(cm, det.maskCoeffs.count)
         let s1 = proto.strides[1].intValue, s2 = proto.strides[2].intValue, s3 = proto.strides[3].intValue
         let coeffs = det.maskCoeffs
-        // premultiplied (context uses premultipliedLast) tint from the class palette
+        // tint from the class palette (context is premultipliedLast -> RGB carries color*alpha)
         let comps = classColor(det.cls).components ?? [1, 0.25, 0.25, 1]
-        let a = Float(alpha)
-        let tr = UInt8(max(0, min(255, Float(comps[0]) * a))), tg = UInt8(max(0, min(255, Float(comps[1]) * a)))
-        let tb = UInt8(max(0, min(255, Float(comps[2]) * a)))
+        let cr = Float(comps[0]), cg = Float(comps[1]), cb = Float(comps[2]), aMax = Float(alpha)
+        // Anti-aliased coverage instead of a hard threshold: smoothstep the sigmoid across a soft band
+        // around `threshold`. Combined with bilinear upscaling this removes the classic serrated edge.
+        let band: Float = 0.14, e0 = threshold - band, e1 = threshold + band, inv = 1 / (e1 - e0)
         var px = [UInt8](repeating: 0, count: mw * mh * 4)
         func fill(_ at: (Int, Int, Int) -> Float32) {
             for i in 0..<mh {
                 for j in 0..<mw {
                     var acc: Float = 0
                     for k in 0..<nmv { acc += coeffs[k] * Float(at(k, i, j)) }
-                    if 1 / (1 + expf(-acc)) > threshold {
-                        let o = (i * mw + j) * 4
-                        px[o] = tr; px[o + 1] = tg; px[o + 2] = tb; px[o + 3] = alpha
-                    }
+                    let v = 1 / (1 + expf(-acc))
+                    var t = (v - e0) * inv
+                    if t <= 0 { continue }
+                    if t > 1 { t = 1 }
+                    let a = t * t * (3 - 2 * t) * aMax          // smoothstep coverage * max alpha
+                    let o = (i * mw + j) * 4
+                    px[o] = UInt8(min(255, cr * a)); px[o + 1] = UInt8(min(255, cg * a))
+                    px[o + 2] = UInt8(min(255, cb * a)); px[o + 3] = UInt8(min(255, a))
                 }
             }
         }
@@ -373,6 +378,7 @@ public final class Detector {
               let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high   // bilinear upscale proto->full res -> smooth mask edges
         var drew = false
         for d in dets {
             guard let m = maskImage(d, raw) else { continue }
