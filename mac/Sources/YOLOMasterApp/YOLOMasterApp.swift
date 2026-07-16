@@ -255,6 +255,7 @@ final class InferenceEngine: ObservableObject {
                 let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
                 DispatchQueue.main.async {
                     self.videoCache = frames; self.videoRaws = raws; self.videoDet = det.isSegment ? det : nil
+                    self.modelIsSegment = det.isSegment
                     self.videoFps = fps; self.videoInput = input; self.videoURL = input; self.videoSize = size; self.videoMaskImg = nil
                     self.modelInfo = info; self.infer = summary; self.hasResults = !frames.isEmpty
                     self.busy = false; self.progress = nil
@@ -531,11 +532,13 @@ struct ContentView: View {
     @State private var wasPlaying = false
     @StateObject private var pc = PlayerController()
     @State private var cameraOn = false   // live-camera mode; the session lives in LiveCameraView (isolated observation)
+    @State private var cameraIsSegment = false   // set by LiveCameraView once its detector is built
     @FocusState private var kbFocused: Bool
 
     private enum PickTarget { case model, source }
     private var sourceKind: SourceKind { sourceURL.map(classifySource) ?? .unknown }
     private var modelInfoImgsz: String { engine.modelInfo.map { "\($0.imgsz)×\($0.imgsz)" } ?? "the model's imgsz" }
+    private var isSegModel: Bool { cameraOn ? cameraIsSegment : engine.modelIsSegment }   // drives the Overlay control in both modes
     private var kindLabel: String {
         switch sourceKind { case .image: "image"; case .folder: "folder"; case .video: "video"; case .unknown: "unsupported" }
     }
@@ -696,13 +699,13 @@ struct ContentView: View {
                         sliderRow("IoU (NMS)", $iou, 0.10...0.90)
                     }
                     sectionBox("Appearance", "paintbrush.fill") {
-                        if engine.modelIsSegment {
+                        if isSegModel {
                             segRow("Overlay") {
                                 Picker("", selection: $overlay) { ForEach(SegOverlay.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
                                     .pickerStyle(.segmented).labelsHidden()
                             }
                         }
-                        if !(engine.modelIsSegment && overlay == .masks) {   // box style is irrelevant with boxes hidden
+                        if !(isSegModel && overlay == .masks) {   // box style is irrelevant with boxes hidden
                             segRow("Box style") {
                                 Picker("", selection: $style) { ForEach(BoxStyle.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
                                     .pickerStyle(.segmented).labelsHidden()
@@ -796,7 +799,8 @@ struct ContentView: View {
             Color(nsColor: .underPageBackgroundColor)
             if cameraOn {
                 LiveCameraView(modelURL: modelURL, compute: compute, preprocess: preprocess,
-                               conf: conf, iou: iou, overlay: overlay, style: style, label: label).padding(12)
+                               conf: conf, iou: iou, overlay: overlay, style: style, label: label,
+                               isSegment: $cameraIsSegment).padding(12)
             } else if sourceKind == .video && engine.hasResults {
                 VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, overlay: overlay, style: style, label: label).padding(12)
             } else if let img = engine.resultImage {
