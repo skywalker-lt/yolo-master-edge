@@ -123,6 +123,7 @@ struct InfoView: View {
             }
         }
         .frame(width: 580, height: 660)
+        .tint(brandColor)
     }
 
     @ViewBuilder private func authorAvatar() -> some View {

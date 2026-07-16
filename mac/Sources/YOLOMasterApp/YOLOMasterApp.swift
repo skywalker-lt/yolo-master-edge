@@ -16,6 +16,8 @@ import ImageIO
 import AVFoundation
 @preconcurrency import YOLOMasterKit   // Detector/RawOutput aren't Sendable; we hop them to main safely
 
+let brandColor = Color(red: 0.0, green: 131.0 / 255.0, blue: 127.0 / 255.0)   // #00837F — app accent
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true)
@@ -369,7 +371,7 @@ struct FinderView: View {
                     VStack(spacing: 3) {
                         AsyncThumb(url: images[i], max: 220)
                             .frame(width: iconSize, height: iconSize * 0.72).clipped().cornerRadius(5)
-                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(i == selected ? Color.accentColor : .clear, lineWidth: 3))
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(i == selected ? brandColor : .clear, lineWidth: 3))
                         Text(images[i].lastPathComponent).font(.caption2).lineLimit(1).truncationMode(.middle).frame(width: iconSize)
                     }.contentShape(Rectangle()).onTapGesture { onSelect(i) }
                 }
@@ -386,7 +388,7 @@ struct FinderView: View {
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(i == selected ? Color.accentColor.opacity(0.25) : .clear)
+                    .background(i == selected ? brandColor.opacity(0.25) : .clear)
                     .contentShape(Rectangle()).onTapGesture { onSelect(i) }
                 }
             }
@@ -601,6 +603,7 @@ struct ContentView: View {
         .onKeyPress(.rightArrow) { step(1,  vertical: false); return .handled }
         .onKeyPress(.upArrow)    { step(-1, vertical: true);  return .handled }
         .onKeyPress(.downArrow)  { step(1,  vertical: true);  return .handled }
+        .tint(brandColor)   // teal accent for buttons/controls (Live Camera keeps its own pink tint)
     }
 
     private func assign(_ url: URL) {
@@ -679,7 +682,8 @@ struct ContentView: View {
     private var controls: some View {
         VStack(spacing: 14) {
             HStack(spacing: 10) {
-                Image(systemName: "viewfinder.circle.fill").font(.system(size: 27)).foregroundStyle(Color.accentColor)
+                Image(nsImage: NSImage(named: "NSApplicationIcon") ?? NSImage())
+                    .resizable().frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 0) {
                     Text("YOLO-Master").font(.headline)
                     Text("Core ML runner").font(.caption).foregroundStyle(.secondary)
@@ -889,7 +893,7 @@ struct ContentView: View {
     private func fileRow(icon: String, title: String, value: String, set: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: icon).font(.system(size: 15)).foregroundStyle(set ? Color.accentColor : .secondary).frame(width: 20)
+                Image(systemName: icon).font(.system(size: 15)).foregroundStyle(set ? brandColor : .secondary).frame(width: 20)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title).font(.caption).foregroundStyle(.secondary)
                     Text(value).font(.callout).lineLimit(1).truncationMode(.middle).foregroundStyle(set ? Color.primary : .secondary)
