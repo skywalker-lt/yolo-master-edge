@@ -12,10 +12,10 @@ import CoreML
 import CoreGraphics
 import CoreVideo
 import QuartzCore
-import YOLOMasterKit
+@preconcurrency import YOLOMasterKit   // Detector/RawOutput aren't Sendable; hopped to main safely
 
 // ---------- capture + inference driver ----------
-final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {   // guarded by camQueue + main-hops
     let session = AVCaptureSession()
     // Raw per-frame output (pre-NMS). CameraStage applies conf/iou/overlay reactively via SwiftUI props
     // — so tuning is instant and never routed through a side channel that could miss updates.

@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
 import CoreGraphics
 import ImageIO
 import AVFoundation
-import YOLOMasterKit
+@preconcurrency import YOLOMasterKit   // Detector/RawOutput aren't Sendable; we hop them to main safely
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -77,7 +77,7 @@ struct StatModelInfo: Equatable { let name: String; let imgsz: Int; let nc: Int;
 struct ClassCount: Identifiable, Equatable { var id: String { name }; let name: String; let count: Int }
 
 // ---------- inference engine (two-phase: forward-once + cheap tuning) ----------
-final class InferenceEngine: ObservableObject {
+final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state is guarded by `queue` + main-hops
     @Published var resultImage: NSImage?
     @Published var detCount = 0
     @Published var modelSummary = ""
