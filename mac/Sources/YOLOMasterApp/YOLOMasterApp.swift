@@ -598,15 +598,12 @@ struct ContentView: View {
                 engine.updateVideoMask(time: pc.displayTime, conf: conf, iou: iou, overlay: overlay)
             }
         }
-        .focusable().focused($kbFocused).onAppear { DispatchQueue.main.async { kbFocused = true } }
+        .focusable().focused($kbFocused).focusEffectDisabled().onAppear { DispatchQueue.main.async { kbFocused = true } }
         .onKeyPress(.leftArrow)  { step(-1, vertical: false); return .handled }
         .onKeyPress(.rightArrow) { step(1,  vertical: false); return .handled }
         .onKeyPress(.upArrow)    { step(-1, vertical: true);  return .handled }
         .onKeyPress(.downArrow)  { step(1,  vertical: true);  return .handled }
-        .onKeyPress(.space) {   // space toggles play/pause of the inferred video
-            guard sourceKind == .video, engine.hasResults, !cameraOn else { return .ignored }
-            pc.togglePlay(); return .handled
-        }
+        .onKeyPress(.space) { toggleVideoPlayback() }   // space toggles play/pause of the inferred video
         .tint(brandColor)   // teal accent for buttons/controls (Live Camera keeps its own pink tint)
     }
 
@@ -651,6 +648,11 @@ struct ContentView: View {
         }
     }
     // ---- live camera (session lifecycle + detector build handled inside LiveCameraView) ----
+    private func toggleVideoPlayback() -> KeyPress.Result {   // extracted so the view body type-checks
+        guard sourceKind == .video, engine.hasResults, !cameraOn else { return .ignored }
+        pc.togglePlay()
+        return .handled
+    }
     private func startCamera() { guard modelURL != nil, !engine.busy else { return }; pc.pause(); cameraOn = true }
     private func stopCamera() { cameraOn = false }
 
