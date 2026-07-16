@@ -6,6 +6,7 @@ import CoreGraphics
 import AVFoundation
 import CoreImage
 import CoreVideo
+import ImageIO   // CGImagePropertyOrientation
 
 public enum PipelineError: Error { case noVideoTrack, readerInit, writerInit }
 
@@ -103,9 +104,11 @@ public func runVideo(_ det: Detector, input: URL, output: URL,
     let nominalFps = (try? await track.load(.nominalFrameRate)) ?? 0
     let fps = nominalFps > 0 ? nominalFps : 30
     let transform = (try? await track.load(.preferredTransform)) ?? .identity
+    let orient = videoOrientation(transform)
     let naturalSize = (try? await track.load(.naturalSize)) ?? .zero
-    let disp = naturalSize.applying(transform)
-    let natW = Int(abs(disp.width).rounded()), natH = Int(abs(disp.height).rounded())
+    let swap = (orient == .right || orient == .left)
+    let natW = Int((swap ? naturalSize.height : naturalSize.width).rounded())
+    let natH = Int((swap ? naturalSize.width : naturalSize.height).rounded())
     let (outW, outH) = resize > 0 ? fitLongSide(natW, natH, resize) : (natW, natH)
 
     guard let reader = try? AVAssetReader(asset: asset) else { throw PipelineError.readerInit }
@@ -131,13 +134,8 @@ public func runVideo(_ det: Detector, input: URL, output: URL,
     while reader.status == .reading {
         guard let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { break }
         let pts = CMSampleBufferGetPresentationTimeStamp(sb)
-        var ci = CIImage(cvPixelBuffer: pb)
-        if !transform.isIdentity {
-            ci = ci.transformed(by: transform)
-            ci = ci.transformed(by: CGAffineTransform(translationX: -ci.extent.origin.x, y: -ci.extent.origin.y))
-        }
-        guard var cg = cictx.createCGImage(ci, from: CGRect(x: 0, y: 0, width: CGFloat(natW), height: CGFloat(natH)))
-        else { continue }
+        let ci = CIImage(cvPixelBuffer: pb).oriented(orient)   // upright, matching AVPlayer
+        guard var cg = cictx.createCGImage(ci, from: ci.extent) else { continue }
         if resize > 0 { cg = resizeExact(cg, outW, outH) }
         guard let res = try? det.detect(cg, conf: conf, iou: iou) else { continue }
         times.append(res.inferMs)
@@ -267,6 +265,19 @@ public func exportFolderCached(_ items: [FolderItem], output: URL, names: [Strin
 
 // ---- two-phase video flow: infer every frame once (cache candidates) -> scrub/tune -> export ----
 
+/// CGImagePropertyOrientation matching a video track's preferredTransform, so each CIImage frame is
+/// oriented the SAME way AVFoundation displays it. Using CIImage.oriented(_:) (rather than a raw
+/// transformed(by:), which mishandles CIImage's bottom-left origin) keeps a rotated video's overlay
+/// aligned instead of 180-flipped.
+func videoOrientation(_ t: CGAffineTransform) -> CGImagePropertyOrientation {
+    switch (t.a.rounded(), t.b.rounded(), t.c.rounded(), t.d.rounded()) {
+    case (0, 1, -1, 0):  return .right   // 90 CW (portrait)
+    case (0, -1, 1, 0):  return .left    // 90 CCW
+    case (-1, 0, 0, -1): return .down    // 180
+    default:             return .up      // identity
+    }
+}
+
 /// Phase 1: stream + forward every frame once, caching per-frame candidates + timing.
 public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
                        progress: ((_ done: Int, _ estTotal: Int) -> Void)? = nil) async throws -> (frames: [[Detection]], raws: [Detector.RawOutput?], summary: InferSummary, fps: Double, size: CGSize) {
@@ -275,11 +286,13 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
     let nominalFps = (try? await track.load(.nominalFrameRate)) ?? 0
     let fps = nominalFps > 0 ? nominalFps : 30
     let transform = (try? await track.load(.preferredTransform)) ?? .identity
+    let orient = videoOrientation(transform)
     let naturalSize = (try? await track.load(.naturalSize)) ?? .zero
     let dur = (try? await asset.load(.duration))?.seconds ?? 0
     let estTotal = Int((dur * Double(fps)).rounded())
-    let disp = naturalSize.applying(transform)
-    let natW = Int(abs(disp.width).rounded()), natH = Int(abs(disp.height).rounded())
+    let swap = (orient == .right || orient == .left)   // 90° rotation swaps width/height
+    let natW = Int((swap ? naturalSize.height : naturalSize.width).rounded())
+    let natH = Int((swap ? naturalSize.width : naturalSize.height).rounded())
     guard let reader = try? AVAssetReader(asset: asset) else { throw PipelineError.readerInit }
     let rout = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
     rout.alwaysCopiesSampleData = false; reader.add(rout); reader.startReading()
@@ -289,12 +302,8 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
     let t0 = Date()
     while reader.status == .reading {
         guard let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { break }
-        var ci = CIImage(cvPixelBuffer: pb)
-        if !transform.isIdentity {
-            ci = ci.transformed(by: transform)
-            ci = ci.transformed(by: CGAffineTransform(translationX: -ci.extent.origin.x, y: -ci.extent.origin.y))
-        }
-        if let cg = cictx.createCGImage(ci, from: CGRect(x: 0, y: 0, width: CGFloat(natW), height: CGFloat(natH))),
+        let ci = CIImage(cvPixelBuffer: pb).oriented(orient)   // upright, matching AVPlayer
+        if let cg = cictx.createCGImage(ci, from: ci.extent),
            let raw = try? det.forward(cg) {
             frames.append(det.candidates(raw, confFloor: confFloor)); times.append(raw.inferMs)
             raws.append(seg ? raw : nil)
@@ -317,9 +326,11 @@ public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]
     let nominalFps = (try? await track.load(.nominalFrameRate)) ?? 0
     let fps = nominalFps > 0 ? nominalFps : 30
     let transform = (try? await track.load(.preferredTransform)) ?? .identity
+    let orient = videoOrientation(transform)
     let naturalSize = (try? await track.load(.naturalSize)) ?? .zero
-    let disp = naturalSize.applying(transform)
-    let natW = Int(abs(disp.width).rounded()), natH = Int(abs(disp.height).rounded())
+    let swap = (orient == .right || orient == .left)
+    let natW = Int((swap ? naturalSize.height : naturalSize.width).rounded())
+    let natH = Int((swap ? naturalSize.width : naturalSize.height).rounded())
     let (outW, outH) = resize > 0 ? fitLongSide(natW, natH, resize) : (natW, natH)
     guard let reader = try? AVAssetReader(asset: asset) else { throw PipelineError.readerInit }
     let rout = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
@@ -336,12 +347,8 @@ public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]
     while reader.status == .reading {
         guard let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { break }
         let pts = CMSampleBufferGetPresentationTimeStamp(sb)
-        var ci = CIImage(cvPixelBuffer: pb)
-        if !transform.isIdentity {
-            ci = ci.transformed(by: transform)
-            ci = ci.transformed(by: CGAffineTransform(translationX: -ci.extent.origin.x, y: -ci.extent.origin.y))
-        }
-        guard var cg = cictx.createCGImage(ci, from: CGRect(x: 0, y: 0, width: CGFloat(natW), height: CGFloat(natH))) else { n += 1; continue }
+        let ci = CIImage(cvPixelBuffer: pb).oriented(orient)   // upright, matching AVPlayer
+        guard var cg = cictx.createCGImage(ci, from: ci.extent) else { n += 1; continue }
         if resize > 0 { cg = resizeExact(cg, outW, outH) }
         let dets = Detector.nms(n < framesCands.count ? framesCands[n] : [], conf: conf, iou: iou)
         var masks: [MaskBitmap] = []
