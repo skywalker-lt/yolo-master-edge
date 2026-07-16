@@ -247,7 +247,7 @@ public func exportFolderCached(_ items: [FolderItem], output: URL, names: [Strin
 
 /// Phase 1: stream + forward every frame once, caching per-frame candidates + timing.
 public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
-                       progress: ((_ done: Int, _ estTotal: Int) -> Void)? = nil) async throws -> (frames: [[Detection]], summary: InferSummary, fps: Double) {
+                       progress: ((_ done: Int, _ estTotal: Int) -> Void)? = nil) async throws -> (frames: [[Detection]], summary: InferSummary, fps: Double, size: CGSize) {
     let asset = AVURLAsset(url: input)
     guard let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first else { throw PipelineError.noVideoTrack }
     let nominalFps = (try? await track.load(.nominalFrameRate)) ?? 0
@@ -277,7 +277,7 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
         n += 1
         if n % 4 == 0 { progress?(n, estTotal) }
     }
-    return (frames, InferSummary(times), Double(fps))
+    return (frames, InferSummary(times), Double(fps), CGSize(width: natW, height: natH))
 }
 
 /// Phase 3: re-stream frames in order, apply cached candidates[i] + tuned params, encode. NO inference.
