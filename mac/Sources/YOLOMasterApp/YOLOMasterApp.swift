@@ -538,6 +538,7 @@ struct ContentView: View {
     @StateObject private var pc = PlayerController()
     @State private var cameraOn = false   // live-camera mode; the session lives in LiveCameraView (isolated observation)
     @State private var cameraIsSegment = false   // set by LiveCameraView once its detector is built
+    @State private var showInfo = false          // About & Licenses sheet
     @FocusState private var kbFocused: Bool
 
     private enum PickTarget { case model, source }
@@ -569,6 +570,7 @@ struct ContentView: View {
                 if !cameraOn && sourceKind == .video && engine.hasResults && !engine.exporting { scrubberBar }
             }
         }
+        .sheet(isPresented: $showInfo) { InfoView() }
         .fileImporter(isPresented: $showPicker, allowedContentTypes: pickerTypes) { if case .success(let u) = $0 { assign(u) } }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for p in providers { _ = p.loadObject(ofClass: URL.self) { url, _ in guard let url else { return }; DispatchQueue.main.async { assign(url) } } }
@@ -683,6 +685,8 @@ struct ContentView: View {
                     Text("Core ML runner").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { showInfo = true } label: { Image(systemName: "info.circle").font(.system(size: 16)) }
+                    .buttonStyle(.borderless).help("About & Licenses")
             }
 
             ScrollView {
