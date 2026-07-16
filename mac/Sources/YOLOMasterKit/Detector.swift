@@ -8,9 +8,10 @@ import CoreML
 import CoreGraphics
 import CoreVideo
 
-/// IEEE half (Float16 bits) -> Float32, done by hand. The `Float(_: Float16)` conversion initializer
-/// is not available on x86_64 with the current SDK (arm64 has native Float16), so we read each
-/// Float16's `.bitPattern` and convert here — keeps the universal (arm64 + x86_64) build compiling.
+/// IEEE half bits (UInt16) -> Float32, done by hand. On x86_64 the `Float16` *instance* API
+/// (conversions, `.bitPattern`) is unavailable with the current SDK (arm64 has native Float16), so
+/// half-precision Core ML tensors are read as raw UInt16 and converted here — keeps the universal
+/// (arm64 + x86_64) build compiling with identical numerics on both slices.
 @inline(__always) func halfToFloat(_ h: UInt16) -> Float32 {
     let sign = UInt32(h & 0x8000) << 16
     let exp  = UInt32(h & 0x7C00) >> 10
@@ -245,9 +246,9 @@ public final class Detector {
             }
         }
         if y.dataType == .float16 {
-            y.withUnsafeBufferPointer(ofType: Float16.self) { buf in
+            y.withUnsafeBufferPointer(ofType: UInt16.self) { buf in   // read half bits as UInt16 (no Float16 instance API -> x86_64-safe)
                 guard let yp = buf.baseAddress else { return }
-                decodeAnchors { c, a in halfToFloat(yp[c * s1 + a * s2].bitPattern) }   // .bitPattern avoids the x86_64-missing Float(Float16) init
+                decodeAnchors { c, a in halfToFloat(yp[c * s1 + a * s2]) }
             }
         } else {
             y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
@@ -369,9 +370,9 @@ public final class Detector {
             }
         }
         if proto.dataType == .float16 {
-            proto.withUnsafeBufferPointer(ofType: Float16.self) { buf in
+            proto.withUnsafeBufferPointer(ofType: UInt16.self) { buf in   // read half bits as UInt16 (no Float16 instance API -> x86_64-safe)
                 guard let pp = buf.baseAddress else { return }
-                fill { k, i, j in halfToFloat(pp[k * s1 + i * s2 + j * s3].bitPattern) }   // .bitPattern avoids the x86_64-missing Float(Float16) init
+                fill { k, i, j in halfToFloat(pp[k * s1 + i * s2 + j * s3]) }
             }
         } else {
             proto.withUnsafeBufferPointer(ofType: Float32.self) { buf in
