@@ -438,48 +438,98 @@ struct ContentView: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("YOLO-Master · Core ML").font(.title3).bold()
-            picker(title: "Model", value: modelURL?.lastPathComponent ?? "none",
-                   button: "Choose .mlpackage…") { pickTarget = .model; DispatchQueue.main.async { showPicker = true } }
-            picker(title: "Source", value: sourceURL.map { "\($0.lastPathComponent)  (\(kindLabel))" } ?? "none",
-                   button: "Choose image / folder / video…") { pickTarget = .source; DispatchQueue.main.async { showPicker = true } }
-            slider(title: "conf", value: $conf, range: 0.05...0.95)
-            slider(title: "iou",  value: $iou,  range: 0.10...0.90)
-            labeled("Box style") {
-                Picker("", selection: $style) { ForEach(BoxStyle.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).labelsHidden()
+        VStack(spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "viewfinder.circle.fill").font(.system(size: 27)).foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("YOLO-Master").font(.headline)
+                    Text("Core ML runner").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
             }
-            labeled("Label") {
-                Picker("", selection: $label) { ForEach(LabelMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).labelsHidden()
+
+            ScrollView {
+                VStack(spacing: 14) {
+                    sectionBox("Files", "folder") {
+                        fileRow(icon: "cube.box.fill", title: "Model",
+                                value: modelURL?.lastPathComponent ?? "Choose .mlpackage…", set: modelURL != nil) {
+                            pickTarget = .model; DispatchQueue.main.async { showPicker = true }
+                        }
+                        Divider()
+                        fileRow(icon: "photo.on.rectangle.angled", title: "Source",
+                                value: sourceURL.map { "\($0.lastPathComponent) · \(kindLabel)" } ?? "Choose image / folder / video…",
+                                set: sourceURL != nil) {
+                            pickTarget = .source; DispatchQueue.main.async { showPicker = true }
+                        }
+                    }
+                    sectionBox("Detection", "slider.horizontal.3") {
+                        sliderRow("Confidence", $conf, 0.05...0.95)
+                        sliderRow("IoU (NMS)", $iou, 0.10...0.90)
+                    }
+                    sectionBox("Appearance", "paintbrush.fill") {
+                        segRow("Box style") {
+                            Picker("", selection: $style) { ForEach(BoxStyle.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
+                                .pickerStyle(.segmented).labelsHidden()
+                        }
+                        segRow("Label") {
+                            Picker("", selection: $label) { ForEach(LabelMode.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
+                                .pickerStyle(.segmented).labelsHidden()
+                        }
+                    }
+                    sectionBox("Compute", "cpu") {
+                        Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                            .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }
-            labeled("Compute") {
-                Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu).labelsHidden()
-            }
+
             actionRow
-            Spacer()
-            Text(engine.status).font(.callout).foregroundStyle(.secondary)
-            if !engine.modelSummary.isEmpty { Text(engine.modelSummary).font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled) }
+
+            HStack(spacing: 7) {
+                Circle().fill(engine.busy ? Color.orange : (engine.resultImage != nil ? Color.green : Color.secondary))
+                    .frame(width: 7, height: 7)
+                Text(engine.status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Spacer(minLength: 0)
+            }
+            .padding(9).frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
         }
     }
 
     @ViewBuilder private var actionRow: some View {
-        HStack {
+        VStack(spacing: 8) {
             switch sourceKind {
             case .image:
-                Button("Run") { runInfer() }.buttonStyle(.borderedProminent).disabled(sourceURL == nil || engine.busy)
-                Button("Save…") { engine.save() }.disabled(engine.resultImage == nil)
+                primaryButton("Run", "play.fill") { runInfer() }.disabled(sourceURL == nil || engine.busy)
+                secondaryButton("Save…", "square.and.arrow.down") { engine.save() }.disabled(engine.resultImage == nil)
             case .folder:
-                Button(engine.hasResults ? "Re-run" : "Run") { runInfer() }.buttonStyle(.borderedProminent).disabled(sourceURL == nil || engine.busy)
-                Button("Export →") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label) }.disabled(!engine.hasResults || engine.busy)
-                if engine.outputURL != nil { Button("Reveal") { engine.reveal() } }
+                primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
+                    .disabled(sourceURL == nil || engine.busy)
+                HStack(spacing: 8) {
+                    secondaryButton("Export", "square.and.arrow.up") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label) }
+                        .disabled(!engine.hasResults || engine.busy)
+                    if engine.outputURL != nil { revealButton }
+                }
             case .video:
-                Button("Export video →") {
+                primaryButton("Export video", "square.and.arrow.up") {
                     if let m = modelURL, let s = sourceURL { engine.exportVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label) }
-                }.buttonStyle(.borderedProminent).disabled(sourceURL == nil || engine.busy)
-                if engine.outputURL != nil { Button("Reveal") { engine.reveal() } }
-            case .unknown: Button("Run") {}.disabled(true)
+                }.disabled(sourceURL == nil || engine.busy)
+                if engine.outputURL != nil { revealButton }
+            case .unknown:
+                EmptyView()
             }
         }
+    }
+
+    private func primaryButton(_ title: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) { Label(title, systemImage: icon).frame(maxWidth: .infinity) }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+    }
+    private func secondaryButton(_ title: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) { Label(title, systemImage: icon).frame(maxWidth: .infinity) }.controlSize(.large)
+    }
+    private var revealButton: some View {
+        Button { engine.reveal() } label: { Image(systemName: "magnifyingglass") }.controlSize(.large)
     }
 
     private var progressBar: some View {
@@ -516,21 +566,38 @@ struct ContentView: View {
         }.padding(.horizontal, 12).padding(.vertical, 8).background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private func picker(title: String, value: String, button: String, action: @escaping () -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Button(button, action: action).frame(maxWidth: .infinity)
-            Text(value).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+    private func sectionBox<C: View>(_ title: String, _ icon: String, @ViewBuilder _ content: () -> C) -> some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) { content() }.frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            Label(title, systemImage: icon).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
         }
     }
-    private func slider(title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack { Text(title).font(.caption).foregroundStyle(.secondary); Spacer()
-                     Text(String(format: "%.2f", value.wrappedValue)).font(.caption).monospacedDigit() }
+    private func fileRow(icon: String, title: String, value: String, set: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).font(.system(size: 15)).foregroundStyle(set ? Color.accentColor : .secondary).frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.caption).foregroundStyle(.secondary)
+                    Text(value).font(.callout).lineLimit(1).truncationMode(.middle).foregroundStyle(set ? Color.primary : .secondary)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }.buttonStyle(.plain)
+    }
+    private func sliderRow(_ title: String, _ value: Binding<Double>, _ range: ClosedRange<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(title).font(.callout)
+                Spacer()
+                Text(String(format: "%.2f", value.wrappedValue)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                    .padding(.horizontal, 7).padding(.vertical, 1).background(.quaternary, in: Capsule())
+            }
             Slider(value: value, in: range)
         }
     }
-    private func labeled<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption).foregroundStyle(.secondary); content() }
+    private func segRow<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 4) { Text(title).font(.callout); content() }
     }
 }
