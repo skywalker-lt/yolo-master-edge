@@ -15,12 +15,15 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"        # .../mac
 VERSION="${1:-1.0.0}"
 PROFILE="${NOTARY_PROFILE:-ac-notary}"
 
-# auto-detect the Developer ID Application identity unless one was passed in
+echo "== release: YOLO-Master CoreML Runner $VERSION =="
+
+# auto-detect the Developer ID Application identity unless one was passed in.
+# `|| true` + awk-with-exit avoids a SIGPIPE/pipefail interaction that used to kill the script silently.
 if [ -z "${CODESIGN_ID:-}" ]; then
-  CODESIGN_ID="$(security find-identity -v -p codesigning \
-                 | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')"
+  CODESIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+                 | awk -F'"' '/Developer ID Application/{print $2; exit}' || true)"
 fi
-if [ -z "$CODESIGN_ID" ]; then
+if [ -z "${CODESIGN_ID:-}" ]; then
   echo "!! No 'Developer ID Application' certificate found in the keychain." >&2
   echo "   Create one: Xcode > Settings > Accounts > Manage Certificates > + > Developer ID Application" >&2
   echo "   (or developer.apple.com/account > Certificates). Then re-run." >&2
