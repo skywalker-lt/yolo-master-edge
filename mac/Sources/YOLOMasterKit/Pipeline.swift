@@ -176,19 +176,34 @@ public func extractFrame(_ url: URL, atSeconds t: Double) async -> CGImage? {
 // ---- two-phase folder flow: infer-all-once (cache candidates) -> tune -> export ----
 public struct FolderItem: Sendable { public let url: URL; public let candidates: [Detection] }
 
+/// Aggregate inference timing over a set of forward passes.
+public struct InferSummary: Sendable {
+    public let count: Int, meanMs: Double, minMs: Double, maxMs: Double, totalMs: Double
+    public var fps: Double { meanMs > 0 ? 1000 / meanMs : 0 }
+    public init(_ times: [Double]) {
+        count = times.count
+        totalMs = times.reduce(0, +)
+        meanMs = count > 0 ? totalMs / Double(count) : 0
+        minMs = times.min() ?? 0
+        maxMs = times.max() ?? 0
+    }
+}
+
 /// Phase 1: forward every image once, caching pre-NMS candidates (conf/iou tuning stays cheap).
+/// Returns the cached items + inference timing summary.
 public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
-                        progress: ((_ done: Int, _ total: Int) -> Void)? = nil) -> [FolderItem] {
+                        progress: ((_ done: Int, _ total: Int) -> Void)? = nil) -> (items: [FolderItem], summary: InferSummary) {
     let files = listImages(input)
-    var out: [FolderItem] = []
-    out.reserveCapacity(files.count)
+    var out: [FolderItem] = []; out.reserveCapacity(files.count)
+    var times: [Double] = []
     for (i, url) in files.enumerated() {
         if let cg = loadCGImage(url), let raw = try? det.forward(cg) {
             out.append(FolderItem(url: url, candidates: det.candidates(raw, confFloor: confFloor)))
+            times.append(raw.inferMs)
         }
         progress?(i + 1, files.count)
     }
-    return out
+    return (out, InferSummary(times))
 }
 
 /// Phase 3: write annotated images from cached candidates + the tuned params — NO inference.
