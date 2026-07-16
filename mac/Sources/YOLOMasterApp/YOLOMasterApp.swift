@@ -514,7 +514,8 @@ struct VideoStage: View {
 // ---------- main UI ----------
 struct ContentView: View {
     @StateObject private var engine = InferenceEngine()
-    @State private var modelURL: URL?
+    // Default to the model bundled in the app (Resources); user can still pick another. nil under `swift run`.
+    @State private var modelURL: URL? = Bundle.main.url(forResource: "v0.1-seg-N", withExtension: "mlpackage")
     @State private var sourceURL: URL?
     @State private var conf = 0.25
     @State private var iou = 0.50
@@ -691,12 +692,10 @@ struct ContentView: View {
                                 Text("Stretch").tag(Detector.PreprocessMode.stretch)
                             }.pickerStyle(.segmented).labelsHidden().disabled(cameraOn)
                         }
-                        Text(cameraOn ? "Stop the camera to change the input fit."
-                             : preprocess == .stretch
-                             ? "Force-resized to \(modelInfoImgsz) — fills the model input, distorts aspect ratio."
-                             : "Aspect-preserving fit into \(modelInfoImgsz) with gray padding (YOLO default).")
-                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if cameraOn {
+                            Text("Stop the camera to change the input fit.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                     sectionBox("Detection", "slider.horizontal.3") {
                         sliderRow("Confidence", $conf, 0.05...0.95)
@@ -720,7 +719,7 @@ struct ContentView: View {
                                 .pickerStyle(.segmented).labelsHidden()
                         }
                     }
-                    sectionBox("Compute", "cpu") {
+                    sectionBox("Device", "cpu") {
                         Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.label).tag($0) } }
                             .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading).disabled(cameraOn)
                         if cameraOn {
@@ -825,7 +824,9 @@ struct ContentView: View {
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: sourceKind == .video ? "film" : "photo").font(.system(size: 48)).foregroundStyle(.tertiary)
-                    Text(sourceURL == nil ? "Choose a model + source" : "Press Run").foregroundStyle(.secondary)
+                    Text(sourceURL != nil ? "Press Run"
+                         : modelURL == nil ? "Choose a model + source"
+                         : "Choose an image / folder / video — or start Live Camera").foregroundStyle(.secondary)
                 }
             }
         }

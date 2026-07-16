@@ -48,6 +48,13 @@ if [ -f "$HERE/Resources/AppIcon.icns" ]; then
   echo "  icon: AppIcon.icns"
 fi
 
+# bundled default model (loaded on launch; user can pick another). Copy any .mlpackage in Resources/.
+for pkg in "$HERE"/Resources/*.mlpackage; do
+  [ -d "$pkg" ] || continue
+  cp -R "$pkg" "$APP/Contents/Resources/"
+  echo "  default model: $(basename "$pkg")"
+done
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
