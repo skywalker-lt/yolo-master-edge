@@ -60,9 +60,12 @@ struct AsyncThumb: View {
     @State private var image: NSImage?
     var body: some View {
         Group {
-            if let image { (fit ? Image(nsImage: image).resizable().scaledToFit()
-                                : Image(nsImage: image).resizable().scaledToFill()) }
-            else { Rectangle().fill(Color.gray.opacity(0.15)) }
+            if let image {
+                if fit { Image(nsImage: image).resizable().scaledToFit() }
+                else { Image(nsImage: image).resizable().scaledToFill() }
+            } else {
+                Rectangle().fill(Color.gray.opacity(0.15))
+            }
         }
         .onAppear { if image == nil { ThumbCache.shared.thumb(url, max: max) { image = $0 } } }
     }
