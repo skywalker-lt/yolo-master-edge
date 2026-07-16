@@ -31,6 +31,15 @@ public func listImages(_ dir: URL) -> [URL] {
         .sorted { $0.lastPathComponent < $1.lastPathComponent }
 }
 
+/// Visible (non-hidden) entries in `dir` that are NOT images — subfolders or other file types.
+/// A non-empty result means the folder is "mixed" and should be rejected for batch inference.
+public func folderNonImages(_ dir: URL) -> [URL] {
+    ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+        .filter { !$0.lastPathComponent.hasPrefix(".") }                       // ignore .DS_Store & friends
+        .filter { !imageExtensions.contains($0.pathExtension.lowercased()) }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+}
+
 // ---- source resize (output-resolution knob; independent of the model's fixed inference size) ----
 public func resizeExact(_ image: CGImage, _ w: Int, _ h: Int) -> CGImage {
     guard w > 0, h > 0, (w != image.width || h != image.height),
