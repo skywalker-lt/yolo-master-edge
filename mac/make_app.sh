@@ -16,13 +16,15 @@
 # Note: intentionally NOT using `set -u` -- macOS's stock bash 3.2 aborts on benign expansions.
 set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"          # .../mac
-APP_NAME="YOLOMaster"
+APP_NAME="YOLO-Master CoreML Runner"           # display + .app bundle name (Finder / Dock / menu bar)
+EXEC_NAME="YOLOMaster"                          # Mach-O filename inside the bundle (no spaces -> simple paths)
+ZIP_SLUG="YOLO-Master-CoreML-Runner"            # zip filename base (no spaces)
 BUNDLE_ID="${BUNDLE_ID:-com.yolomaster.coreml}"   # override with BUNDLE_ID=com.you.app to use your own reverse-domain id
 VERSION="${1:-1.0.0}"
 ARCHS="${ARCHS:-arm64 x86_64}"                 # universal by default; override e.g. ARCHS=arm64
 DIST="$HERE/dist"
 APP="$DIST/$APP_NAME.app"
-ZIP="$DIST/${APP_NAME}-${VERSION}.zip"
+ZIP="$DIST/${ZIP_SLUG}-${VERSION}.zip"
 
 archargs=""
 for a in $ARCHS; do archargs="$archargs --arch $a"; done
@@ -36,7 +38,7 @@ echo "  binary: $(lipo -archs "$BIN" 2>/dev/null || echo "$ARCHS")"
 echo "[2/4] assembling $APP ..."
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
+cp "$BIN" "$APP/Contents/MacOS/$EXEC_NAME"
 
 # app icon (rendered from AppIcon.icon via scripts/make_icon.py; prebuilt .icns lives in Resources/)
 ICON_KEY=""
@@ -52,8 +54,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>              <string>${APP_NAME}</string>
-  <key>CFBundleDisplayName</key>       <string>YOLO-Master</string>
-  <key>CFBundleExecutable</key>        <string>${APP_NAME}</string>
+  <key>CFBundleDisplayName</key>       <string>${APP_NAME}</string>
+  <key>CFBundleExecutable</key>        <string>${EXEC_NAME}</string>
   <key>CFBundleIdentifier</key>        <string>${BUNDLE_ID}</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
 ${ICON_KEY}

@@ -33,11 +33,11 @@ echo
 
 CODESIGN_ID="$CODESIGN_ID" NOTARY_PROFILE="$PROFILE" "$HERE/make_app.sh" "$VERSION"
 
-APP="$HERE/dist/YOLOMaster.app"
+APP="$HERE/dist/YOLO-Master CoreML Runner.app"
 echo
 echo "== verifying =="
 codesign --verify --deep --strict --verbose=2 "$APP" && echo "codesign: OK"
 xcrun stapler validate "$APP" && echo "staple: OK"
 spctl -a -vvv --type exec "$APP"    # expect: source=Notarized Developer ID
 echo
-echo "shippable: $HERE/dist/YOLOMaster-$VERSION.zip"
+echo "shippable: $HERE/dist/YOLO-Master-CoreML-Runner-$VERSION.zip"
