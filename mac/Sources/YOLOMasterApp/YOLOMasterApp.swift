@@ -253,15 +253,24 @@ final class InferenceEngine: ObservableObject {
         }
     }
 
-    // ---- scrub: show a cached video frame at `time` (instant; no inference). Live + coalesced. ----
+    // ---- scrub: coalesced (drops the in-flight frame so dragging stays snappy) ----
     func showVideoFrame(time: Double, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) {
+        scrubTask?.cancel()
+        scrubTask = Task { [weak self] in await self?.showVideoFrameAsync(time: time, conf: conf, iou: iou, style: style, label: label) }
+    }
+
+    // ---- render a cached video frame and RETURN when it's displayed (playback awaits this -> self-paced) ----
+    func showVideoFrameAsync(time: Double, conf: Double, iou: Double, style: BoxStyle, label: LabelMode) async {
         guard !videoCache.isEmpty, let grabber = videoGrabber else { return }
         let idx = min(max(0, Int((time * videoFps).rounded())), videoCache.count - 1)
         let cands = videoCache[idx]
-        scrubTask?.cancel()   // drop the in-flight frame so dragging stays snappy
-        scrubTask = Task { [weak self] in
-            guard let self, let cg = await grabber.frame(atSeconds: time), !Task.isCancelled else { return }
-            self.queue.async { self.currentCG = cg; self.currentCands = cands; self.currentMs = 0; self.render(conf: conf, iou: iou, style: style, label: label) }
+        guard let cg = await grabber.frame(atSeconds: time), !Task.isCancelled else { return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            self.queue.async {
+                self.currentCG = cg; self.currentCands = cands; self.currentMs = 0
+                self.render(conf: conf, iou: iou, style: style, label: label)
+                cont.resume()
+            }
         }
     }
 
@@ -375,7 +384,7 @@ struct ContentView: View {
     @State private var videoDur = 0.0
     @State private var scrubTime = 0.0
     @State private var playing = false
-    @State private var playTimer: Timer?
+    @State private var playTask: Task<Void, Never>?
     @FocusState private var kbFocused: Bool
 
     private enum PickTarget { case model, source }
@@ -456,22 +465,27 @@ struct ContentView: View {
         engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label)
     }
     private func rerender() { engine.restyle(conf: conf, iou: iou, style: style, label: label) }
-    /// Render the current scrub time's frame (live; engine coalesces rapid calls).
+    /// Live scrub render (engine coalesces rapid calls). Skipped during playback (the play loop renders).
     private func requestFrame() {
-        if sourceKind == .video && engine.hasResults {
+        if sourceKind == .video && engine.hasResults && !playing {
             engine.showVideoFrame(time: scrubTime, conf: conf, iou: iou, style: style, label: label)
         }
     }
     private func togglePlay() {
-        playing.toggle()
-        playTimer?.invalidate(); playTimer = nil
-        guard playing, videoDur > 0, engine.hasResults else { playing = false; return }
-        let dt = 1.0 / max(engine.videoFps, 1)
-        playTimer = Timer.scheduledTimer(withTimeInterval: dt, repeats: true) { _ in
-            scrubTime = (scrubTime + dt >= videoDur) ? 0 : scrubTime + dt   // advances -> onChange renders
+        if playing { stopPlay(); return }
+        guard videoDur > 0, engine.hasResults else { return }
+        playing = true
+        let step = 1.0 / max(engine.videoFps, 1)
+        playTask = Task { @MainActor in
+            while self.playing && !Task.isCancelled {
+                await engine.showVideoFrameAsync(time: scrubTime, conf: conf, iou: iou, style: style, label: label)
+                if !self.playing { break }
+                scrubTime = (scrubTime + step >= videoDur) ? 0 : scrubTime + step
+                try? await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
+            }
         }
     }
-    private func stopPlay() { playing = false; playTimer?.invalidate(); playTimer = nil }
+    private func stopPlay() { playing = false; playTask?.cancel(); playTask = nil }
     private var gridColumns: Int { max(1, Int((380.0 - 24) / (iconSize + 8))) }
     private func step(_ dir: Int, vertical: Bool) {
         switch sourceKind {
