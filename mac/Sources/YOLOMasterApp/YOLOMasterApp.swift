@@ -330,10 +330,34 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         let d = try Detector(modelURL: model, compute: compute); detector = d; key = k; return d
     }
     private func publish(error: String) { DispatchQueue.main.async { self.status = error; self.busy = false; self.exporting = false; self.progress = nil } }
-    func save() {
+    func save() {   // single image / current folder item (lastAnnotated is refreshed on every render)
         guard let cg = lastAnnotated else { return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [.jpeg, .png]; panel.nameFieldStringValue = "annotated.jpg"
         if panel.runModal() == .OK, let url = panel.url { saveCGImage(cg, to: url) }
+    }
+    /// Annotate + save the single video frame shown at `time` (the video overlay is drawn in a Canvas,
+    /// not baked into an image, so we re-extract + annotate here).
+    func saveVideoFrame(time: Double, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
+        guard let input = videoInput, !videoCache.isEmpty else { return }
+        let idx = videoFrameIndex(time)
+        let cands = videoCache[idx]
+        let raw = videoRaws.indices.contains(idx) ? videoRaws[idx] : nil
+        let det = videoDet, names = detNames
+        Task {
+            guard let cg = await extractFrame(input, atSeconds: time) else { return }
+            let dets = Detector.nms(cands, conf: Float(conf), iou: CGFloat(iou))
+            var masks: [MaskBitmap] = [], drawBoxes = true
+            if let det, let raw, overlay != .boxes {
+                masks = dets.compactMap { det.maskImage($0, raw) }
+                drawBoxes = overlay != .masks
+            }
+            let annotated = annotate(cg, dets, names: names, style: style, label: label, masks: masks, drawBoxes: drawBoxes) ?? cg
+            await MainActor.run {
+                let panel = NSSavePanel(); panel.allowedContentTypes = [.jpeg, .png]
+                panel.nameFieldStringValue = String(format: "frame_%.2fs.jpg", time)
+                if panel.runModal() == .OK, let url = panel.url { saveCGImage(annotated, to: url) }
+            }
+        }
     }
     func reveal() { if let u = outputURL { NSWorkspace.shared.activateFileViewerSelecting([u]) } }
 }
@@ -799,7 +823,9 @@ struct ContentView: View {
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
                     .disabled(sourceURL == nil || engine.busy || sourceError != nil)
                 HStack(spacing: 8) {
-                    secondaryButton("Export", "square.and.arrow.up") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label, overlay: overlay) }
+                    secondaryButton("Save image", "square.and.arrow.down") { engine.save() }
+                        .disabled(!engine.hasResults || engine.busy)
+                    secondaryButton("Export all", "square.and.arrow.up") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label, overlay: overlay) }
                         .disabled(!engine.hasResults || engine.busy)
                     if engine.outputURL != nil { revealButton }
                 }
@@ -807,7 +833,9 @@ struct ContentView: View {
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
                     .disabled(sourceURL == nil || engine.busy || sourceError != nil)
                 HStack(spacing: 8) {
-                    secondaryButton("Export", "square.and.arrow.up") { engine.exportVideo(conf: conf, iou: iou, style: style, label: label, overlay: overlay) }
+                    secondaryButton("Save frame", "square.and.arrow.down") { engine.saveVideoFrame(time: pc.displayTime, conf: conf, iou: iou, style: style, label: label, overlay: overlay) }
+                        .disabled(!engine.hasResults || engine.busy)
+                    secondaryButton("Export video", "square.and.arrow.up") { engine.exportVideo(conf: conf, iou: iou, style: style, label: label, overlay: overlay) }
                         .disabled(!engine.hasResults || engine.busy)
                     if engine.outputURL != nil { revealButton }
                 }
