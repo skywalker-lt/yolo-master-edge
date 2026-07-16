@@ -363,6 +363,31 @@ public final class Detector {
         return MaskBitmap(image: img, protoCrop: crop, clip: det.rect)
     }
 
+    /// Transparent original-image-sized overlay compositing every detection's instance mask (box-clipped),
+    /// for the Canvas-based stages (video / live camera) that draw over a raw frame rather than through
+    /// `annotate`. Returns nil for non-seg models or when no mask survives. `dets` should be post-NMS.
+    public func maskOverlay(_ dets: [Detection], _ raw: RawOutput) -> CGImage? {
+        guard isSegment, raw.proto != nil, !dets.isEmpty else { return nil }
+        let w = raw.origW, h = raw.origH
+        guard w > 0, h > 0,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        var drew = false
+        for d in dets {
+            guard let m = maskImage(d, raw) else { continue }
+            let pc = m.protoCrop, iw = CGFloat(m.image.width), ih = CGFloat(m.image.height)
+            let sub = CGRect(x: pc.minX * iw, y: pc.minY * ih, width: pc.width * iw, height: pc.height * ih)
+            guard sub.width > 0, sub.height > 0, let cropped = m.image.cropping(to: sub) else { continue }
+            ctx.saveGState()
+            ctx.clip(to: CGRect(x: m.clip.minX, y: CGFloat(h) - m.clip.maxY, width: m.clip.width, height: m.clip.height))
+            ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))  // upright, matches Canvas top-left mapping
+            ctx.restoreGState()
+            drew = true
+        }
+        return drew ? ctx.makeImage() : nil
+    }
+
     /// Model-only forward (no decode/draw) — for latency benchmarking. Returns ms.
     @discardableResult
     public func inferOnly(_ image: CGImage) throws -> Double {
