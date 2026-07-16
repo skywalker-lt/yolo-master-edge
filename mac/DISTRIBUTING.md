@@ -1,16 +1,16 @@
-# Shipping YOLOMaster.app
+# Shipping YOLO-Master CoreML Runner.app
 
 `mac/make_app.sh` builds and packages a **universal** (Apple Silicon + Intel) macOS app
-into `mac/dist/YOLOMaster.app` and a redistributable `mac/dist/YOLOMaster-<version>.zip`.
+into `mac/dist/YOLO-Master CoreML Runner.app` and a redistributable `mac/dist/YOLO-Master-CoreML-Runner-<version>.zip`.
 
 ## App icon
-The Dock/Finder icon is `Resources/AppIcon.icns`, rendered from the Icon Composer source in
-`AppIcon.icon/` (white→pink gradient squircle + the YOLO-ML-Master glyph). `make_app.sh` copies it
-into the bundle and sets `CFBundleIconFile`. To change the artwork, edit `AppIcon.icon/` (in Xcode's
-Icon Composer, or replace `AppIcon.icon/Assets/icon829.png`) then regenerate:
+The Dock/Finder icon is `Resources/AppIcon.icns`, packed from the finished 1024×1024 master
+`Resources/AppIcon.png` (exported from the Icon Composer source in `AppIcon.icon/`). `make_app.sh`
+copies the `.icns` into the bundle and sets `CFBundleIconFile`. To change the artwork, drop a new
+1024² PNG at `Resources/AppIcon.png` (e.g. export from Icon Composer) then regenerate:
 
 ```bash
-cd mac && python3 scripts/make_icon.py     # needs Python + Pillow + numpy; rewrites Resources/AppIcon.{png,icns}
+cd mac && python3 scripts/make_icon.py     # needs Python + Pillow; resize-only PNG->icns, no distortion
 ```
 
 ## Requirements
@@ -28,7 +28,7 @@ mac/make_app.sh 1.0.0
 ARCHS=arm64 mac/make_app.sh 1.0.0
 ```
 
-Send the resulting `mac/dist/YOLOMaster-1.0.0.zip`.
+Send the resulting `mac/dist/YOLO-Master-CoreML-Runner-1.0.0.zip`.
 
 ## First launch (ad-hoc / unsigned builds)
 Ad-hoc signed apps are not notarized, so Gatekeeper blocks a double-click on another Mac.
@@ -59,9 +59,9 @@ mac/scripts/release.sh 1.0.0
 Overrides if needed: `NOTARY_PROFILE=...`, `CODESIGN_ID="Developer ID Application: ... (TEAMID)"`,
 `BUNDLE_ID=com.you.app`, `ARCHS=arm64`.
 
-The stapled `dist/YOLOMaster-1.0.0.zip` opens with a normal double-click on any Mac (Sonoma+,
+The stapled `dist/YOLO-Master-CoreML-Runner-1.0.0.zip` opens with a normal double-click on any Mac (Sonoma+,
 Apple Silicon or Intel). Publish it via GitHub Releases:
 ```bash
-gh release create v1.0.0 mac/dist/YOLOMaster-1.0.0.zip --title "YOLOMaster 1.0.0" --notes "..."
+gh release create v1.0.0 mac/dist/YOLO-Master-CoreML-Runner-1.0.0.zip --title "YOLO-Master CoreML Runner 1.0.0" --notes "..."
 ```
 (`dist/` is gitignored — bundles are release assets, not tracked in git.)

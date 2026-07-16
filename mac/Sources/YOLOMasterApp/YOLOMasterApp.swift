@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct YOLOMasterApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     var body: some Scene {
-        WindowGroup("YOLO-Master · Core ML") { ContentView().frame(minWidth: 1120, minHeight: 720) }
+        WindowGroup("YOLO-Master CoreML Runner") { ContentView().frame(minWidth: 1120, minHeight: 720) }
             .windowStyle(.titleBar)
     }
 }
