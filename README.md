@@ -1,19 +1,39 @@
-# YOLO-Master-EsMoE-N Edge Inference C++ Runtime
+# YOLO-Master Edge Inference C++ Runtime
 
 <img alt="C++" src="https://img.shields.io/badge/C++-17-blue.svg?style=flat&logo=c%2B%2B"> <img alt="Onnx-runtime" src="https://img.shields.io/badge/OnnxRuntime-717272.svg?logo=Onnx&logoColor=white"> <img alt="NCNN" src="https://img.shields.io/badge/NCNN-Tencent-blue.svg"> <img alt="MNN" src="https://img.shields.io/badge/MNN-Alibaba-orange.svg"> <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey.svg">
 
-This project provides a universal C++ inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) **EsMoE-N** object-detection models, leveraging both the [ONNX Runtime](https://onnxruntime.ai/) and [NCNN](https://github.com/Tencent/ncnn) backends together with the [OpenCV](https://opencv.org/) library. A single binary runs either backend on CPU and [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), auto-detecting the model format, class names, and input size — designed for edge deployment of vertical-domain detectors (VisDrone aerial imagery, SKU-110K, etc.).
+This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML (NEW!)](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, and MacOS; supports CPU, [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), and [Apple Metal Performance Shaders](https://developer.apple.com/documentation/metalperformanceshaders). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
+
+## 🚀🍎 Update (17-07-2026): YOLO-Master CoreML Runner for MacOS (GUI)
+
+**[Download](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-macos/YOLO-Master-CoreML-Runner-1.0.0.zip) and try it now!**
+
+Alongside the Linxu and Windows C++ runtime, we now provide a native, user-friendly macOS runner, **YOLO-Master CoreML Runner** — a [SwiftUI](https://developer.apple.com/xcode/swiftui/) frontend over an Apple [Core ML](https://developer.apple.com/documentation/coreml) backend for on-device [YOLO-Master](https://github.com/Tencent/YOLO-Master) inference, no command line required. It ships with a default `YOLO-Master-v0.1-seg-N` segmentation model, so it runs out of the box. 
+
+<img width="480" alt="Screenshot1" src="https://github.com/user-attachments/assets/d1747b4d-0961-458e-99c5-2a9870b8df96" /> <img width="480" alt="Screenshot2" src="https://github.com/user-attachments/assets/5f71d80a-6238-49bd-a230-95ccd4020d29" /> <img width="480" alt="Screenshot3" src="https://github.com/user-attachments/assets/9cc60636-b795-4326-992c-06239a77db55" /> <img width="480" alt="Screenshot4" src="https://github.com/user-attachments/assets/b5ee48bb-52dc-4ff7-b0bd-f2461b34ad7c" />
+
+- **Detection & Segmentation:** Runs both bounding-box detectors and instance-segmentation models, with anti-aliased mask overlays and a Masks / Boxes / Both toggle.
+- **Images, Video & Live Camera:** Infers single images, whole folders (batch), and MP4 video, plus a low-latency **live webcam** mode with a real-time FPS / ms-per-frame readout.
+- **⭐️ Real-Time Tuning:** Confidence, IoU, box style, labels, and letterbox/stretch preprocessing are all adjustable live:  the forward pass is cached, so tuning re-draws without re-inferring.
+- **Signed & Notarized:** A **universal** (Apple Silicon + Intel) bundle, **Developer-ID signed and notarized by Apple**: it installs by a simple double-click on any Mac with MacOS 14+.
+
+For more details, please check the [Release](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-macos) page.
+
+The refined Windows 10/11 Runner with GUI is also in developmet.
+
+---
+
 
 ## ✨ Benefits
 
-- **One Universal Binary:** A single executable integrates both **ONNX Runtime** and **NCNN** backends; the backend, class names, and input size are auto-detected from the model — no recompilation or any dataset YAML needed at runtime.
+- **Universal Binary for Linux and Windows:** A single executable integrates both **ONNX Runtime** and **NCNN** backends; the backend, class names, and input size are auto-detected from the model — no recompilation or any dataset YAML needed at runtime.
 - **Verified Accuracy:** Reproduces the PyTorch original to **< 0.5%** mAP50-95 across ONNX / NCNN / MNN, and **< 1.0%** under INT8 quantization, on 548 VisDrone validation images.
 - **Deployment-Friendly:** Cross-platform [CMake](https://cmake.org/) build producing **self-contained and relocatable bundles** for Linux x86_64 and Windows 10/11 — installable by unzip, no dependencies on the target.
 - **GPU Acceleration:** Supports FP32 CPU inference and [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) GPU acceleration through the ONNX Runtime CUDA Execution Provider on Linux, and on [NVIDIA Jetson](https://developer.nvidia.com/embedded-computing) Orin via a native TensorRT backend (JetPack 7).
 
 ## ☕ Note
 
-The exported models embed their class names, input size, and stride as ONNX/NCNN metadata, so the runtime configures itself from the model file. Post-processing is tuned for the vertical domain — aspect-ratio-preserving letterbox, per-class **multi-label** NMS, and a low default confidence threshold appropriate for VisDrone's small, dense objects.
+The exported models embed their class names, input size, and stride as ONNX/NCNN/MNN metadata, so the runtime configures itself from the model file. Post-processing is tuned for the vertical domain — aspect-ratio-preserving letterbox, per-class **multi-label** NMS, and a low default confidence threshold appropriate for VisDrone's small, dense objects.
 
 ## 📦 Exporting Models
 
@@ -44,6 +64,23 @@ mnnconvert -f ONNX --modelFile esmoe_n_visdrone_sim.onnx --MNNModel esmoe_n_visd
 
 For more details on exporting, refer to the [Ultralytics Export documentation](https://docs.ultralytics.com/modes/export/).
 
+### Core ML
+
+```zsh
+# detector or segmenter (task auto-detected)
+python coreml_export/export_coreml.py --weights model.pt --imgsz 640 --out model.mlpackage
+
+# YOLO-Master default imgsz is 800 for AI-TOD models — pass --imgsz accordingly
+python coreml_export/export_coreml.py --weights yolo-master-v0.1-N_aitodv2.pt --imgsz 800 --out v0.1-N.mlpackage
+
+# sunsmarterjie/yolov12 checkpoints (split qk+v area-attention) — stock ultralytics + the flag
+python coreml_export/export_coreml.py --weights yolov12x.pt --imgsz 640 --out yolov12x.mlpackage --yolov12-aattn
+
+# a LoRA fine-tune: merge the trained adapters first
+python coreml_export/export_coreml.py --weights base.pt --merge-lora-dir lora_adapter/ --imgsz 640 --out ft.mlpackage
+```
+
+
 ## ⚙️ Dependencies
 
 Ensure you have the following dependencies installed （not required if you only want to smoke-test the pre-built bundles):
@@ -60,7 +97,19 @@ Ensure you have the following dependencies installed （not required if you only
 
 > **Note:** The CUDA Execution Provider is ABI-coupled to a CUDA major version — use the ONNX Runtime GPU build that matches your CUDA Toolkit (e.g. the CUDA-12 build with CUDA 12.x), or you'll hit loader errors.
 
+
+### MacOS-only Dependencies
+|                                                         | Version       | Notes                                                                                                          |
+| :------------------------------------------------------------------ | :------------ | :------------------------------------------------------------------------------------------------------------- |
+| MacOS | Sonoma or newer (14.0+) | SwiftUI API floor (onKeyPress, zero-param onChange)  |
+| [Xcode Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/) | Xcode 15+    | Install with xcode-select --install. Provides swift, codesign, ditto. Full Xcode GUI not required for a build.   |
+| [Swift toolchain](https://www.swift.org/swiftly/documentation/swiftly/install-toolchains/) | 5.9+  | swift-tools-version:5.9 in Package.swift; ships with the CLT/Xcode above. Build: swift build -c release --package-path mac. |       
+| Apple SDK frameworks | macOS 14+ SDK (system) | SwiftUI, AppKit, AVFoundation, Core ML, Core Image, Core Video, ImageIO, QuartzCore, etc. |
+
+
 ## 🛠️ Build Instructions
+
+### Linux & Windows
 
 1.  **Clone the Repository:**
 
@@ -111,6 +160,20 @@ Ensure you have the following dependencies installed （not required if you only
 5.  **Locate Executable:**
     The compiled executable (`yolomaster_edge`, or `yolomaster_edge.exe` on Windows) is located in the `build` directory. On Windows the required backend and OpenCV DLLs are auto-copied next to it.
 
+### MacOS 
+
+1.  **Clone the Repository:**
+    ```bash
+    git clone https://github.com/skywalker-lt/yolo-master-edge.git
+    cd yolo-master-edge/cpp
+    ```
+
+2.  **Build the App** 
+    ```zsh
+    xcode-select --install
+    swift run -c release --package-path mac YOLOMasterApp
+    ```
+
 ## 🚀 Usage
 
 Run the executable, pointing it at a model and a source (image, directory, video, or `dataset.yaml`):
@@ -149,9 +212,9 @@ On an Orin Nano 4 GB the FP16 engine runs at **35.7 FPS** (27.8 ms) with **mAP50
 
 ## 📊 Results
 
-Validated on full 548 VisDrone validation images against the PyTorch original (`mAP50-95 = 0.2036`), using identical settings (conf 0.001, NMS IoU 0.7, multi-label).
+Inference performed on full 548 VisDrone validation images against the PyTorch original (`mAP50-95 = 0.2036`), using identical settings (conf 0.001, NMS IoU 0.7, multi-label).
 
-| Model                     | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
+| Inference Backend                     | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
 | :------------------------ | :------- | :----------- | :------ | :---- |
 | ONNX (ONNX Runtime, CPU)  | 0.2034   | −0.02%       | 40 ms   | 25.0  |
 | NCNN (CPU)                | 0.2034   | −0.02%       | ~80 ms  | ~12.5 |
@@ -159,6 +222,7 @@ Validated on full 548 VisDrone validation images against the PyTorch original (`
 | INT8 mixed (CPU) ¹        | 0.1952   | −0.84%       | 137 ms  | 7.2   |
 | ONNX CUDA (H200 GPU)      | 0.2033   | −0.03%       | 7.8 ms  | ~128  |
 | TensorRT FP16 (Jetson Orin Nano 4GB) | 0.2029 | −0.34% | 27.8 ms | 35.7  |
+| CoreML (M4 Max) | N/A (no validator) | N/A | 17.4 ms | ~57.4 |
 
 CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph. The Jetson row is a native TensorRT FP16 engine, measured on-device (see below).
 
@@ -166,16 +230,6 @@ CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 form
 
 See [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) for the full methodology, INT8 quantization deep-dive, and numerical parity analysis.
 
-## 🍎 macOS App — Core ML Runner
-
-Alongside the C++ runtime, the repository ships a native macOS app, **YOLO-Master CoreML Runner** — a [SwiftUI](https://developer.apple.com/xcode/swiftui/) frontend over an Apple [Core ML](https://developer.apple.com/documentation/coreml) backend for on-device [YOLO-Master](https://github.com/Tencent/YOLO-Master) inference, no command line required. It ships with a default segmentation model, so it runs out of the box.
-
-- **Detection & Segmentation:** Runs both bounding-box detectors and instance-segmentation models, with anti-aliased mask overlays and a Masks / Boxes / Both toggle.
-- **Images, Video & Live Camera:** Infers single images, whole folders (batch), and MP4 video, plus a low-latency **live webcam** mode with a real-time FPS / ms-per-frame readout.
-- **Real-Time Tuning:** Confidence, IoU, box style, labels, and letterbox/stretch preprocessing are all adjustable live — the forward pass is cached, so tuning re-draws without re-inferring.
-- **Signed & Notarized:** A **universal** (Apple Silicon + Intel) bundle, **Developer-ID signed and notarized by Apple** — it installs by a simple double-click on macOS 14+, with no Gatekeeper warning and nothing to trust manually.
-
-The `.app` is attached to the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases) page; unzip and open. To build from source, see [`mac/`](mac/) and [`mac/DISTRIBUTING.md`](mac/DISTRIBUTING.md).
 
 ## 🤝 Contributing
 
