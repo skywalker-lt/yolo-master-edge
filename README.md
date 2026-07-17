@@ -4,7 +4,7 @@
 
 This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML (NEW!)](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, and MacOS; supports CPU, [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), and [Apple Metal Performance Shaders](https://developer.apple.com/documentation/metalperformanceshaders). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
 
-## 🚀🍎 Update (17-07-2026): YOLO-Master CoreML Runner for MacOS (GUI)
+## 🍎 Update (17-07-2026): YOLO-Master CoreML Runner for MacOS (GUI)
 
 **[Download](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-macos/YOLO-Master-CoreML-Runner-1.0.0.zip) and try it now!**
 
