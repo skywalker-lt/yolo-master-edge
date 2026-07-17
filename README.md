@@ -26,10 +26,10 @@ The refined Windows 10/11 Runner with GUI is also in developmet.
 
 ## ✨ Benefits
 
-- **Universal Binary for Linux and Windows:** A single executable integrates both **ONNX Runtime** and **NCNN** backends; the backend, class names, and input size are auto-detected from the model — no recompilation or any dataset YAML needed at runtime.
+- **Universal Binary for Linux and Windows:** A single executable integrates **ONNX Runtime**, **NCNN** and **MNN** backends; the backend, class names, and input size are auto-detected from the model — no recompilation or any dataset YAML needed at runtime.
 - **Verified Accuracy:** Reproduces the PyTorch original to **< 0.5%** mAP50-95 across ONNX / NCNN / MNN, and **< 1.0%** under INT8 quantization, on 548 VisDrone validation images.
 - **Deployment-Friendly:** Cross-platform [CMake](https://cmake.org/) build producing **self-contained and relocatable bundles** for Linux x86_64 and Windows 10/11 — installable by unzip, no dependencies on the target.
-- **GPU Acceleration:** Supports FP32 CPU inference and [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) GPU acceleration through the ONNX Runtime CUDA Execution Provider on Linux, and on [NVIDIA Jetson](https://developer.nvidia.com/embedded-computing) Orin via a native TensorRT backend (JetPack 7).
+- **GPU Acceleration:** Supports FP32 CPU inference and [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) GPU acceleration through the ONNX Runtime CUDA Execution Provider on Linux, on [NVIDIA Jetson](https://developer.nvidia.com/embedded-computing) Orin via a native TensorRT backend (JetPack 7), and accelerated on MacOS via [MPS](https://developer.apple.com/documentation/metalperformanceshaders) beind Core ML.
 
 ## ☕ Note
 
@@ -85,6 +85,8 @@ python coreml_export/export_coreml.py --weights base.pt --merge-lora-dir lora_ad
 
 Ensure you have the following dependencies installed （not required if you only want to smoke-test the pre-built bundles):
 
+### Linux & Windows
+
 | Dependency                                                          | Version       | Notes                                                                                                          |
 | :------------------------------------------------------------------ | :------------ | :------------------------------------------------------------------------------------------------------------- |
 | [ONNX Runtime](https://onnxruntime.ai/docs/install/)                | >=1.18        | Download pre-built binaries or build from source. Use the GPU build for the CUDA Execution Provider.           |
@@ -98,7 +100,7 @@ Ensure you have the following dependencies installed （not required if you only
 > **Note:** The CUDA Execution Provider is ABI-coupled to a CUDA major version — use the ONNX Runtime GPU build that matches your CUDA Toolkit (e.g. the CUDA-12 build with CUDA 12.x), or you'll hit loader errors.
 
 
-### MacOS-only Dependencies
+### MacOS
 |                                                         | Version       | Notes                                                                                                          |
 | :------------------------------------------------------------------ | :------------ | :------------------------------------------------------------------------------------------------------------- |
 | MacOS | Sonoma or newer (14.0+) | SwiftUI API floor (onKeyPress, zero-param onChange)  |
@@ -168,7 +170,7 @@ Ensure you have the following dependencies installed （not required if you only
     cd yolo-master-edge/cpp
     ```
 
-2.  **Build the App** 
+2.  **Build the App and Run** 
     ```zsh
     xcode-select --install
     swift run -c release --package-path mac YOLOMasterApp
@@ -222,7 +224,7 @@ Inference performed on full 548 VisDrone validation images against the PyTorch o
 | INT8 mixed (CPU) ¹        | 0.1952   | −0.84%       | 137 ms  | 7.2   |
 | ONNX CUDA (H200 GPU)      | 0.2033   | −0.03%       | 7.8 ms  | ~128  |
 | TensorRT FP16 (Jetson Orin Nano 4GB) | 0.2029 | −0.34% | 27.8 ms | 35.7  |
-| CoreML (M4 Max) | N/A (no validator) | N/A | 17.4 ms | ~57.4 |
+| Core ML (M4 Max) | N/A (no validator bundled) | N/A | 17.4 ms | ~57.4 |
 
 CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph. The Jetson row is a native TensorRT FP16 engine, measured on-device (see below).
 
