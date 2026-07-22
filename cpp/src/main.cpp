@@ -8,6 +8,9 @@
 #ifdef USE_NCNN
 #include "ncnn_backend.hpp"
 #endif
+#ifdef USE_MNN
+#include "mnn_backend.hpp"
+#endif
 #ifdef USE_TRT
 #include "trt_backend.hpp"
 #endif
@@ -45,7 +48,7 @@ static bool imwrite_jpg(const std::string& path, const cv::Mat& bgr) {
 }
 
 int main(int argc, char** argv) {
-    CLI::App app{"yolomaster_edge - universal YOLO-Master edge runner (ONNX / ncnn)"};
+    CLI::App app{"yolomaster_edge - universal YOLO-Master edge runner (ONNX / ncnn / MNN)"};
     std::string model, source, backend = "auto", classes_opt = "auto", outdir = "runs_edge";
     std::string device = "cpu", savetxt;
     int imgsz = 0, threads = 4, limit = 0, max_det = 300;
@@ -54,7 +57,7 @@ int main(int argc, char** argv) {
 
     app.add_option("-m,--model", model, "model: .onnx file, or ncnn dir / .param")->required();
     app.add_option("-s,--source", source, "image / directory / video / dataset.yaml")->required();
-    app.add_option("-b,--backend", backend, "auto|onnx|ncnn")->default_str("auto");
+    app.add_option("-b,--backend", backend, "auto|onnx|ncnn|mnn")->default_str("auto");
     app.add_option("-d,--device", device, "cpu|cuda|trt|coreml (onnx backend; trt=TensorRT EP, coreml=Apple CoreML EP)")->default_str("cpu");
     app.add_option("--classes", classes_opt, "auto|visdrone|sku (auto = from model metadata)")->default_str("auto");
     app.add_option("--imgsz", imgsz, "inference size (0 = from model / 640)");
@@ -75,6 +78,7 @@ int main(int argc, char** argv) {
         std::error_code ec;
         if (fs::is_directory(model, ec) || ends_with(model, ".param")) backend = "ncnn";
         else if (ends_with(model, ".onnx")) backend = "onnx";
+        else if (ends_with(model, ".mnn")) backend = "mnn";
         else if (ends_with(model, ".engine") || ends_with(model, ".trt")) backend = "trt";
         else { std::cerr << "cannot infer backend from '" << model << "'; pass --backend\n"; return 2; }
     }
@@ -99,6 +103,12 @@ int main(int argc, char** argv) {
             be = std::make_unique<NcnnBackend>(param, bin, threads);
 #else
             std::cerr << "built without ncnn backend\n"; return 2;
+#endif
+        } else if (backend == "mnn") {
+#ifdef USE_MNN
+            be = std::make_unique<MnnBackend>(model, threads, device == "cuda" ? "cuda" : "cpu");
+#else
+            std::cerr << "built without MNN backend (rebuild with -DUSE_MNN=ON)\n"; return 2;
 #endif
         } else if (backend == "trt") {
 #ifdef USE_TRT
