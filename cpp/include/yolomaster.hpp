@@ -10,6 +10,16 @@ struct Detection {
     int class_id = 0;
     float conf = 0.f;
     cv::Rect2f box;               // original-image pixel coords (float, sub-pixel precise)
+    std::vector<float> mask_coeffs; // segmentation mask coefficients (empty for detection models)
+};
+
+// Pre-NMS candidate (decoded to original-image px, unclipped). The GUI caches these after one forward
+// pass and re-runs nms_and_cap() on conf/IoU changes without re-inferring ("forward once, tune cheap").
+struct RawDet {
+    cv::Rect2f box;
+    float score = 0.f;
+    int cls = 0;
+    std::vector<float> mask_coeffs;
 };
 
 struct LetterboxInfo {
@@ -31,6 +41,13 @@ const std::vector<std::string>& visdrone_classes();  // 10
 const std::vector<std::string>& sku110k_classes();   // 1
 
 cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info);
+// Decode raw model output -> pre-NMS candidates (score >= cfg.conf_thresh; pass a low floor to cache).
+std::vector<RawDet> decode_candidates(const float* out, int feat_dim, int num_anchors,
+                                      const Config& cfg, const LetterboxInfo& lb);
+// Per-class NMS + max_det cap + clip-to-frame on cached candidates (cheap; re-run on conf/IoU change).
+std::vector<Detection> nms_and_cap(const std::vector<RawDet>& cands, const Config& cfg,
+                                   int orig_w, int orig_h);
+// Full postprocess = decode_candidates + nms_and_cap (used by the CLI).
 std::vector<Detection> decode(const float* out, int feat_dim, int num_anchors,
                               const Config& cfg, const LetterboxInfo& lb);
 void draw(cv::Mat& img, const std::vector<Detection>& dets, const Config& cfg);
@@ -60,6 +77,10 @@ public:
     int fixed_imgsz = 0;                   // hard input constraint (0 = flexible)
     std::string active_ep = "cpu";         // execution provider actually in use
     double pre_ms = 0, infer_ms = 0, post_ms = 0;
+    // "forward once, tune cheap": each infer() also stashes the pre-NMS candidates so a GUI can
+    // re-run nms_and_cap(candidates,...) on conf/IoU changes without another forward pass.
+    std::vector<RawDet> candidates;
+    int cand_orig_w = 0, cand_orig_h = 0;
 };
 
 } // namespace yolomaster

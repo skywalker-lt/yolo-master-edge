@@ -111,7 +111,9 @@ std::vector<Detection> MnnBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     } else {                                            // fallback: assume channel-major, infer anchor count
         num_anchors = static_cast<int>(outHost.elementSize() / feat);
     }
-    auto dets = decode(dec, feat_dim, num_anchors, cfg, lb);
+    candidates = decode_candidates(dec, feat_dim, num_anchors, cfg, lb);
+    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h;
+    auto dets = nms_and_cap(candidates, cfg, lb.orig_w, lb.orig_h);
     post_ms = ms_since(t2);
     return dets;
 }

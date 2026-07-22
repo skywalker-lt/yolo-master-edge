@@ -68,7 +68,9 @@ std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg)
                 buf[static_cast<size_t>(f) * num_anchors + a] = r[f];
         }
     }
-    auto dets = decode(buf.data(), feat_dim, num_anchors, cfg, lb);
+    candidates = decode_candidates(buf.data(), feat_dim, num_anchors, cfg, lb);
+    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h;
+    auto dets = nms_and_cap(candidates, cfg, lb.orig_w, lb.orig_h);
     post_ms = ms_since(t2);
     return dets;
 }
