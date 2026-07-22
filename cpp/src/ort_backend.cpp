@@ -143,7 +143,9 @@ std::vector<Detection> OrtBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     const int feat_dim = static_cast<int>(shape[1]);
     const int num_anchors = static_cast<int>(shape[2]);
     const float* out = outs.front().GetTensorMutableData<float>();
-    auto dets = decode(out, feat_dim, num_anchors, cfg, lb);
+    candidates = decode_candidates(out, feat_dim, num_anchors, cfg, lb);
+    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h;
+    auto dets = nms_and_cap(candidates, cfg, lb.orig_w, lb.orig_h);
     post_ms = ms_since(t2);
     return dets;
 }

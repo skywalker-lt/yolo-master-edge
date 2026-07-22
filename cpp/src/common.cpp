@@ -69,61 +69,83 @@ static void nms_greedy(const std::vector<cv::Rect2d>& boxes, const std::vector<f
     }
 }
 
-std::vector<Detection> decode(const float* out, int feat_dim, int num_anchors,
-                              const Config& cfg, const LetterboxInfo& lb) {
-    const int nc = feat_dim - 4;
-    std::vector<cv::Rect2d> boxes;   // float boxes -> no int rounding (mAP-precise)
-    std::vector<float> scores;
-    std::vector<int> ids;
+// Decode raw output -> pre-NMS candidates (feat_dim = 4 + nc [+ nm mask coeffs]). Box in orig px.
+std::vector<RawDet> decode_candidates(const float* out, int feat_dim, int num_anchors,
+                                      const Config& cfg, const LetterboxInfo& lb) {
+    const int nc = cfg.num_classes() > 0 ? cfg.num_classes() : (feat_dim - 4);
+    const int nm = feat_dim - 4 - nc;                // mask-coeff count (0 = detection)
+    std::vector<RawDet> cands;
+    auto make = [&](int a, int cls, float score) {
+        const float cx = out[0 * num_anchors + a];
+        const float cy = out[1 * num_anchors + a];
+        const float w  = out[2 * num_anchors + a];
+        const float h  = out[3 * num_anchors + a];
+        const float x0 = (cx - 0.5f * w - lb.pad_x) / lb.scale;
+        const float y0 = (cy - 0.5f * h - lb.pad_y) / lb.scale;
+        RawDet d; d.box = cv::Rect2f(x0, y0, w / lb.scale, h / lb.scale); d.score = score; d.cls = cls;
+        if (nm > 0) { d.mask_coeffs.resize(nm);
+            for (int k = 0; k < nm; ++k) d.mask_coeffs[k] = out[(4 + nc + k) * num_anchors + a]; }
+        cands.push_back(std::move(d));
+    };
     for (int a = 0; a < num_anchors; ++a) {
-        // qualifying classes: all > conf (multi_label, matches ultralytics val) or just argmax
-        int best = -1; float bestv = 0.f;
-        bool any = false;
+        int best = -1; float bestv = 0.f; bool any = false;
         for (int c = 0; c < nc; ++c) {
             const float v = out[(4 + c) * num_anchors + a];
             if (v > bestv) { bestv = v; best = c; }
             if (cfg.multi_label && v >= cfg.conf_thresh) any = true;
         }
         if (!(cfg.multi_label ? any : (bestv >= cfg.conf_thresh))) continue;
-
-        const float cx = out[0 * num_anchors + a];
-        const float cy = out[1 * num_anchors + a];
-        const float w  = out[2 * num_anchors + a];
-        const float h  = out[3 * num_anchors + a];
-        const double x0 = (cx - 0.5f * w - lb.pad_x) / lb.scale;
-        const double y0 = (cy - 0.5f * h - lb.pad_y) / lb.scale;
-        const double bw = static_cast<double>(w) / lb.scale, bh = static_cast<double>(h) / lb.scale;
-
-        if (cfg.multi_label) {                       // one detection per class >= conf
+        if (cfg.multi_label) {                       // one candidate per class >= conf
             for (int c = 0; c < nc; ++c) {
                 const float v = out[(4 + c) * num_anchors + a];
-                if (v < cfg.conf_thresh) continue;
-                boxes.emplace_back(x0, y0, bw, bh); scores.push_back(v); ids.push_back(c);
+                if (v >= cfg.conf_thresh) make(a, c, v);
             }
-        } else {                                     // single best class
-            boxes.emplace_back(x0, y0, bw, bh); scores.push_back(bestv); ids.push_back(best);
-        }
+        } else make(a, best, bestv);                 // single best class
     }
-    // per-class NMS (match ultralytics agnostic=False): offset boxes by class id
-    // so detections of different classes never cross-suppress each other.
+    return cands;
+}
+
+// Per-class NMS (ultralytics agnostic=False via class offset) + max_det cap + clip-to-frame.
+std::vector<Detection> nms_and_cap(const std::vector<RawDet>& cands, const Config& cfg,
+                                   int orig_w, int orig_h) {
+    std::vector<cv::Rect2d> boxes; std::vector<float> scores; std::vector<int> idx;
+    boxes.reserve(cands.size()); scores.reserve(cands.size()); idx.reserve(cands.size());
+    for (size_t i = 0; i < cands.size(); ++i) {
+        if (cands[i].score < cfg.conf_thresh) continue;
+        boxes.emplace_back(cands[i].box.x, cands[i].box.y, cands[i].box.width, cands[i].box.height);
+        scores.push_back(cands[i].score); idx.push_back(static_cast<int>(i));
+    }
     std::vector<int> keep;
     {
-        const double OFF = 8192.0;   // > any VisDrone image dimension
+        const double OFF = 8192.0;                   // > any expected image dimension
         std::vector<cv::Rect2d> off = boxes;
-        for (size_t k = 0; k < off.size(); ++k) { off[k].x += ids[k] * OFF; off[k].y += ids[k] * OFF; }
+        for (size_t k = 0; k < off.size(); ++k) {
+            const int cls = cands[idx[k]].cls;
+            off[k].x += cls * OFF; off[k].y += cls * OFF;
+        }
         nms_greedy(off, scores, cfg.conf_thresh, cfg.iou_thresh, keep);
     }
     std::vector<Detection> dets;
-    const cv::Rect2d frame(0, 0, lb.orig_w, lb.orig_h);
-    for (int i : keep) {                             // keep is score-descending
+    const cv::Rect2d frame(0, 0, orig_w, orig_h);
+    for (int k : keep) {                             // keep is score-descending
         if (static_cast<int>(dets.size()) >= cfg.max_det) break;
-        cv::Rect2d b = boxes[i] & frame;             // clip in float
-        if (b.width > 0 && b.height > 0)
-            dets.push_back({ids[i], scores[i],
-                            cv::Rect2f(static_cast<float>(b.x), static_cast<float>(b.y),
-                                       static_cast<float>(b.width), static_cast<float>(b.height))});
+        const RawDet& c = cands[idx[k]];
+        cv::Rect2d b = cv::Rect2d(c.box.x, c.box.y, c.box.width, c.box.height) & frame;  // clip in float
+        if (b.width > 0 && b.height > 0) {
+            Detection d; d.class_id = c.cls; d.conf = c.score;
+            d.box = cv::Rect2f(static_cast<float>(b.x), static_cast<float>(b.y),
+                               static_cast<float>(b.width), static_cast<float>(b.height));
+            d.mask_coeffs = c.mask_coeffs;
+            dets.push_back(std::move(d));
+        }
     }
     return dets;
+}
+
+std::vector<Detection> decode(const float* out, int feat_dim, int num_anchors,
+                              const Config& cfg, const LetterboxInfo& lb) {
+    auto cands = decode_candidates(out, feat_dim, num_anchors, cfg, lb);
+    return nms_and_cap(cands, cfg, lb.orig_w, lb.orig_h);
 }
 
 void draw(cv::Mat& img, const std::vector<Detection>& dets, const Config& cfg) {
