@@ -6,12 +6,12 @@ MNN** CPU backends. It reuses the exact same C++ runtime as the CLI (`../cpp`), 
 preprocessing (letterbox, RGB /255), decode, per-class NMS, and the class palette
 are identical.
 
-**Stage 1 (this build):** single-image + folder-batch inference, live conf/IoU
-tuning without re-inferring ("forward once, tune cheap"), stretch/letterbox
-preprocess, box styles (hud / solid / neon), label modes, per-class counts, timing
-stats. CPU only. Detection models.
+**Stage 1 (this build):** single-image + folder-batch + video inference, live
+conf/IoU tuning without re-inferring ("forward once, tune cheap"),
+stretch/letterbox preprocess, box styles (hud / solid / neon), label modes,
+per-class counts, timing stats. CPU only. Detection models.
 
-**Later:** video, webcam, segmentation overlays, CUDA.
+**Later:** webcam, segmentation overlays, CUDA.
 
 ---
 
@@ -61,7 +61,12 @@ just one backend to start (e.g. ONNX only), then add the others.
    **Open folder...** to load every image in a directory: a file-list panel appears
    between the sidebar and preview — click a name, or use the **← / →** (or ↑ / ↓)
    arrow keys to step through. Inference runs on each as you navigate (candidates
-   re-cached per image; conf/IoU stay live).
+   re-cached per image; conf/IoU stay live). Or **Open video...** (`.mp4/.avi/.mov/
+   .mkv`) for a transport bar under the preview: **Play/Pause** (or **Space**), a
+   **seek** slider, and a frame/fps readout. Playback is paced to the video's fps,
+   or runs at inference speed if the CPU can't keep up; **← / →** step frames while
+   paused. Each frame runs a fresh forward pass; pause to retune conf/IoU live on
+   that frame.
 3. **Conf / IoU** sliders retune live with no re-inference (candidates are cached
    at a 0.05 floor on the forward pass). **Box style / Labels** are pure redraw.
 4. Per-class counts and model/total timing show in the sidebar.

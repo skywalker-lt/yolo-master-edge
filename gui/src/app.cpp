@@ -49,6 +49,7 @@ void App::load_model() {
 }
 
 void App::load_image(const std::string& path, const Platform& plat) {
+    close_video();                       // leave video mode if we were in it
     load_err_.clear();
     cv::Mat bgr = cv::imread(path, cv::IMREAD_COLOR);
     if (bgr.empty()) { load_err_ = "cannot read image: " + path; return; }
@@ -61,6 +62,7 @@ void App::load_image(const std::string& path, const Platform& plat) {
 }
 
 void App::load_folder(const std::string& dir, const Platform& plat) {
+    close_video();
     folder_imgs_ = gather_images(dir, 0);   // sorted image paths
     folder_path_ = dir;
     if (folder_imgs_.empty()) { cur_idx_ = -1; load_err_ = "no images in: " + dir; return; }
@@ -72,6 +74,53 @@ void App::select_index(int i, const Platform& plat) {
     cur_idx_ = std::clamp(i, 0, (int)folder_imgs_.size() - 1);
     scroll_to_cur_ = true;
     load_image(folder_imgs_[cur_idx_], plat);
+}
+
+void App::close_video() {
+    if (cap_.isOpened()) cap_.release();
+    is_video_ = false; playing_ = false;
+    frame_idx_ = 0; total_frames_ = 0; play_accum_ = 0.0;
+}
+
+void App::show_frame(const cv::Mat& frame, const Platform& plat) {
+    img_bgr_ = frame.clone();            // clone: cap_ reuses its internal buffer on the next read
+    cv::Mat rgba;
+    cv::cvtColor(img_bgr_, rgba, cv::COLOR_BGR2RGBA);
+    if (!plat.upload(rgba, img_tex_)) { load_err_ = "GPU texture upload failed"; return; }
+    need_reinfer_ = (be_ != nullptr);    // reuse the still-image inference path
+}
+
+void App::open_video(const std::string& path, const Platform& plat) {
+    load_err_.clear();
+    folder_imgs_.clear(); cur_idx_ = -1;         // leave folder mode
+    if (cap_.isOpened()) cap_.release();
+    if (!cap_.open(path)) { load_err_ = "cannot open video: " + path; is_video_ = false; return; }
+    is_video_ = true; playing_ = false; play_accum_ = 0.0;
+    video_path_ = path;
+    total_frames_ = (int)cap_.get(cv::CAP_PROP_FRAME_COUNT);
+    const double fps = cap_.get(cv::CAP_PROP_FPS);
+    video_fps_ = (fps > 1.0 && fps < 1000.0) ? fps : 30.0;
+    frame_idx_ = 0;
+    cv::Mat f;
+    if (cap_.read(f) && !f.empty()) show_frame(f, plat);
+    else { load_err_ = "video has no readable frames"; close_video(); }
+}
+
+void App::seek_video(int idx, const Platform& plat) {
+    if (!cap_.isOpened()) return;
+    idx = std::clamp(idx, 0, std::max(0, total_frames_ - 1));
+    cap_.set(cv::CAP_PROP_POS_FRAMES, (double)idx);
+    cv::Mat f;
+    if (cap_.read(f) && !f.empty()) { frame_idx_ = idx; show_frame(f, plat); }
+}
+
+bool App::advance_video(const Platform& plat) {
+    if (!cap_.isOpened()) return false;
+    cv::Mat f;
+    if (!cap_.read(f) || f.empty()) return false;   // end of stream
+    frame_idx_++;
+    show_frame(f, plat);
+    return true;
 }
 
 void App::run_inference() {
@@ -105,12 +154,27 @@ void App::frame(const Platform& plat) {
     if (need_reinfer_) run_inference();
     if (need_renms_)   recompute_nms();
 
-    // keyboard navigation across a loaded folder (ignored while typing in a field).
-    if (!folder_imgs_.empty() && !ImGui::GetIO().WantTextInput) {
-        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_DownArrow))
-            select_index(cur_idx_ + 1, plat);
-        else if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_UpArrow))
-            select_index(cur_idx_ - 1, plat);
+    // video playback: advance frames paced to real time (or as fast as inference allows).
+    if (is_video_ && playing_) {
+        play_accum_ += ImGui::GetIO().DeltaTime;
+        if (play_accum_ >= 1.0 / video_fps_) {
+            play_accum_ = 0.0;                      // no backlog: run at inference speed if slower
+            if (!advance_video(plat)) playing_ = false;   // stop at end of stream
+        }
+    }
+
+    // keyboard shortcuts (ignored while typing in a field).
+    if (!ImGui::GetIO().WantTextInput) {
+        const bool fwd  = ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_DownArrow);
+        const bool back = ImGui::IsKeyPressed(ImGuiKey_LeftArrow)  || ImGui::IsKeyPressed(ImGuiKey_UpArrow);
+        if (!folder_imgs_.empty()) {
+            if (fwd)  select_index(cur_idx_ + 1, plat);
+            else if (back) select_index(cur_idx_ - 1, plat);
+        } else if (is_video_) {
+            if (ImGui::IsKeyPressed(ImGuiKey_Space)) playing_ = !playing_;
+            if (!playing_ && fwd)  seek_video(frame_idx_ + 1, plat);   // step frames while paused
+            if (!playing_ && back) seek_video(frame_idx_ - 1, plat);
+        }
     }
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -133,7 +197,7 @@ void App::frame(const Platform& plat) {
 
     ImGui::SameLine();
     ImGui::BeginChild("preview", ImVec2(0, 0), true);
-    draw_preview();
+    draw_preview(plat);
     ImGui::EndChild();
 
     ImGui::End();
@@ -177,6 +241,10 @@ void App::draw_sidebar(const Platform& plat) {
     if (ImGui::Button("Open folder...")) {
         std::string d = plat.open_folder("Select image folder");
         if (!d.empty()) load_folder(d, plat);
+    }
+    if (ImGui::Button("Open video...")) {
+        std::string p = plat.open_file("Select video", "Videos\0*.mp4;*.avi;*.mov;*.mkv\0All\0*.*\0");
+        if (!p.empty()) open_video(p, plat);
     }
     if (!img_bgr_.empty())
         ImGui::Text("%dx%d", img_bgr_.cols, img_bgr_.rows);
@@ -290,21 +358,40 @@ static void draw_box(ImDrawList* dl, const Detection& d, BoxStyle style, LabelMo
     dl->AddText(ImVec2(lp.x + pad, lp.y + pad), text_on(d.class_id), buf);
 }
 
-void App::draw_preview() {
+void App::draw_transport(const Platform& plat) {
+    if (ImGui::Button(playing_ ? "Pause" : "Play ")) playing_ = !playing_;
+    ImGui::SameLine();
+    int f = frame_idx_;
+    ImGui::SetNextItemWidth(-150);
+    if (ImGui::SliderInt("##seek", &f, 0, std::max(0, total_frames_ - 1), "frame %d")) {
+        playing_ = false; seek_video(f, plat);
+    }
+    ImGui::SameLine();
+    ImGui::Text("%d/%d  %.0ffps", frame_idx_ + 1, total_frames_, video_fps_);
+}
+
+void App::draw_preview(const Platform& plat) {
     if (!img_tex_.id) {
-        ImGui::TextDisabled("Open an image to begin.");
+        ImGui::TextDisabled(is_video_ ? "No frame." : "Open an image, folder, or video to begin.");
         return;
     }
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const float scale = std::min(avail.x / img_tex_.w, avail.y / img_tex_.h);
-    const ImVec2 disp(img_tex_.w * scale, img_tex_.h * scale);
     const ImVec2 cur = ImGui::GetCursorScreenPos();
-    const ImVec2 origin(cur.x + (avail.x - disp.x) * 0.5f, cur.y + (avail.y - disp.y) * 0.5f);
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float ctrlH = is_video_ ? ImGui::GetFrameHeightWithSpacing() : 0.f;
+    const float imgH = std::max(1.f, avail.y - ctrlH);
+    const float scale = std::min(avail.x / img_tex_.w, imgH / img_tex_.h);
+    const ImVec2 disp(img_tex_.w * scale, img_tex_.h * scale);
+    const ImVec2 origin(cur.x + (avail.x - disp.x) * 0.5f, cur.y + (imgH - disp.y) * 0.5f);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddImage((ImTextureID)img_tex_.id, origin, ImVec2(origin.x + disp.x, origin.y + disp.y));
     for (const auto& d : dets_)
         draw_box(dl, d, style_, labels_, cfg_, origin, scale);
+
+    if (is_video_) {
+        ImGui::SetCursorScreenPos(ImVec2(cur.x, cur.y + imgH));
+        draw_transport(plat);
+    }
 }
 
 } // namespace gui

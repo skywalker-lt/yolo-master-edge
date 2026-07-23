@@ -25,7 +25,7 @@ option(USE_ORT  "Build ONNXRuntime backend" ON)
 option(USE_NCNN "Build ncnn backend"        ON)
 option(USE_MNN  "Build MNN backend"         ON)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)   # imgcodecs for cv::imread
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio)   # imgcodecs: cv::imread, videoio: cv::VideoCapture
 
 # ---- sources ----
 set(SRC
@@ -105,7 +105,10 @@ list(APPEND RUNTIME_DLLS ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS})
 file(GLOB OCV_DLLS
   "${OpenCV_DIR}/x64/*/bin/opencv_world*.dll"
   "${OpenCV_DIR}/../bin/opencv_world*.dll"
-  "${OpenCV_DIR}/bin/opencv_world*.dll")
+  "${OpenCV_DIR}/bin/opencv_world*.dll"
+  "${OpenCV_DIR}/x64/*/bin/opencv_videoio_ffmpeg*.dll"   # cv::VideoCapture needs the FFmpeg plugin DLL
+  "${OpenCV_DIR}/../bin/opencv_videoio_ffmpeg*.dll"
+  "${OpenCV_DIR}/bin/opencv_videoio_ffmpeg*.dll")
 list(FILTER OCV_DLLS EXCLUDE REGEX "[0-9]d\\.dll$")   # drop the debug opencv_world*d.dll
 foreach(dll ${RUNTIME_DLLS} ${OCV_DLLS})
   add_custom_command(TARGET yolomaster_gui POST_BUILD
