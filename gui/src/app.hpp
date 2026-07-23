@@ -56,6 +56,14 @@ private:
     std::string folder_path_;
     bool        scroll_to_cur_ = false;      // request the file list to scroll the current item into view
 
+    // ---- video ----
+    cv::VideoCapture cap_;
+    bool        is_video_ = false;
+    bool        playing_ = false;
+    int         frame_idx_ = 0, total_frames_ = 0;
+    double      video_fps_ = 30.0, play_accum_ = 0.0;   // play_accum_ paces playback to real time
+    std::string video_path_;
+
     // ---- results ("forward once, tune cheap") ----
     std::vector<yolomaster::Detection> dets_;
     bool  need_reinfer_ = false;      // model/source/preprocess/threads changed
@@ -75,11 +83,17 @@ private:
     void load_image(const std::string& path, const Platform& plat);
     void load_folder(const std::string& dir, const Platform& plat);
     void select_index(int i, const Platform& plat);   // load folder_imgs_[i]
+    void open_video(const std::string& path, const Platform& plat);
+    void show_frame(const cv::Mat& frame, const Platform& plat);   // upload + flag re-infer
+    void seek_video(int idx, const Platform& plat);   // random-access seek + read
+    bool advance_video(const Platform& plat);         // sequential next frame; false at end
+    void close_video();
     void run_inference();             // full forward pass -> cache candidates
     void recompute_nms();             // cheap: nms_and_cap on cached candidates
     void draw_sidebar(const Platform& plat);
     void draw_filelist(const Platform& plat);   // folder-batch navigator panel
-    void draw_preview();
+    void draw_preview(const Platform& plat);
+    void draw_transport(const Platform& plat);  // video play/pause + scrubber
 };
 
 } // namespace gui
