@@ -60,6 +60,20 @@ void App::load_image(const std::string& path, const Platform& plat) {
     need_reinfer_ = (be_ != nullptr);
 }
 
+void App::load_folder(const std::string& dir, const Platform& plat) {
+    folder_imgs_ = gather_images(dir, 0);   // sorted image paths
+    folder_path_ = dir;
+    if (folder_imgs_.empty()) { cur_idx_ = -1; load_err_ = "no images in: " + dir; return; }
+    select_index(0, plat);
+}
+
+void App::select_index(int i, const Platform& plat) {
+    if (folder_imgs_.empty()) return;
+    cur_idx_ = std::clamp(i, 0, (int)folder_imgs_.size() - 1);
+    scroll_to_cur_ = true;
+    load_image(folder_imgs_[cur_idx_], plat);
+}
+
 void App::run_inference() {
     if (!be_ || img_bgr_.empty()) return;
     // forward once with a low conf floor so the cached candidates cover the whole
@@ -91,6 +105,14 @@ void App::frame(const Platform& plat) {
     if (need_reinfer_) run_inference();
     if (need_renms_)   recompute_nms();
 
+    // keyboard navigation across a loaded folder (ignored while typing in a field).
+    if (!folder_imgs_.empty() && !ImGui::GetIO().WantTextInput) {
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+            select_index(cur_idx_ + 1, plat);
+        else if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+            select_index(cur_idx_ - 1, plat);
+    }
+
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
@@ -101,6 +123,13 @@ void App::frame(const Platform& plat) {
     ImGui::BeginChild("sidebar", ImVec2(300, 0), true);
     draw_sidebar(plat);
     ImGui::EndChild();
+
+    if (!folder_imgs_.empty()) {
+        ImGui::SameLine();
+        ImGui::BeginChild("filelist", ImVec2(230, 0), true);
+        draw_filelist(plat);
+        ImGui::EndChild();
+    }
 
     ImGui::SameLine();
     ImGui::BeginChild("preview", ImVec2(0, 0), true);
@@ -139,7 +168,15 @@ void App::draw_sidebar(const Platform& plat) {
     ImGui::SeparatorText("Source");
     if (ImGui::Button("Open image...")) {
         std::string p = plat.open_file("Select image", "Images\0*.jpg;*.jpeg;*.png;*.bmp\0All\0*.*\0");
-        if (!p.empty()) load_image(p, plat);
+        if (!p.empty()) {
+            folder_imgs_.clear(); cur_idx_ = -1; folder_path_.clear();   // leave folder mode
+            load_image(p, plat);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Open folder...")) {
+        std::string d = plat.open_folder("Select image folder");
+        if (!d.empty()) load_folder(d, plat);
     }
     if (!img_bgr_.empty())
         ImGui::Text("%dx%d", img_bgr_.cols, img_bgr_.rows);
@@ -192,6 +229,21 @@ void App::draw_sidebar(const Platform& plat) {
     } else {
         ImGui::TextDisabled("load a model and an image");
     }
+}
+
+void App::draw_filelist(const Platform& plat) {
+    ImGui::Text("%d/%d", cur_idx_ + 1, (int)folder_imgs_.size());
+    ImGui::SameLine();
+    ImGui::TextDisabled("(<- ->)");
+    ImGui::Separator();
+    ImGui::BeginChild("files", ImVec2(0, 0), false);
+    for (int i = 0; i < (int)folder_imgs_.size(); ++i) {
+        const std::string name = folder_imgs_[i].substr(folder_imgs_[i].find_last_of("/\\") + 1);
+        const bool sel = (i == cur_idx_);
+        if (ImGui::Selectable(name.c_str(), sel) && !sel) select_index(i, plat);
+        if (sel && scroll_to_cur_) { ImGui::SetScrollHereY(0.5f); scroll_to_cur_ = false; }
+    }
+    ImGui::EndChild();
 }
 
 // draw one detection box in the chosen style onto `dl`, mapped orig-px -> screen.
