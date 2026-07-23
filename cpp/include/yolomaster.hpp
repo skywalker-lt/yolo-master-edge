@@ -23,8 +23,10 @@ struct RawDet {
 };
 
 struct LetterboxInfo {
-    float scale = 1.f;
-    int pad_x = 0, pad_y = 0, orig_w = 0, orig_h = 0;
+    float scale = 1.f;            // uniform scale (== scale_x == scale_y for letterbox)
+    float scale_x = 1.f;         // per-axis scale (differs from scale_y only in stretch mode)
+    float scale_y = 1.f;
+    int pad_x = 0, pad_y = 0, orig_w = 0, orig_h = 0;   // pad is 0 in stretch mode
 };
 
 struct Config {
@@ -33,6 +35,7 @@ struct Config {
     float iou_thresh  = 0.50f;
     int   max_det = 300;          // cap detections after NMS (ultralytics val default)
     bool  multi_label = false;    // true = one detection per class>conf per anchor (ultralytics val); false = argmax
+    bool  stretch = false;        // preprocess: false = letterbox (aspect-preserving); true = stretch to square
     std::vector<std::string> class_names;
     int num_classes() const { return static_cast<int>(class_names.size()); }
 };
@@ -40,6 +43,10 @@ struct Config {
 const std::vector<std::string>& visdrone_classes();  // 10
 const std::vector<std::string>& sku110k_classes();   // 1
 
+// Resize to imgsz x imgsz: stretch=false letterboxes (min-scale, 114-pad, centered);
+// stretch=true resizes to square ignoring aspect (per-axis scale, no pad).
+cv::Mat preprocess(const cv::Mat& img, int imgsz, bool stretch, LetterboxInfo& info);
+// Back-compat alias: aspect-preserving letterbox (== preprocess(..., stretch=false)).
 cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info);
 // Decode raw model output -> pre-NMS candidates (score >= cfg.conf_thresh; pass a low floor to cache).
 std::vector<RawDet> decode_candidates(const float* out, int feat_dim, int num_anchors,

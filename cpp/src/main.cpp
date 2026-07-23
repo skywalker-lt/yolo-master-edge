@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
     std::string device = "cpu", savetxt;
     int imgsz = 0, threads = 4, limit = 0, max_det = 300;
     float conf = 0.25f, iou = 0.50f;
-    bool no_save = false, quiet = false, multilabel = false;
+    bool no_save = false, quiet = false, multilabel = false, stretch = false;
 
     app.add_option("-m,--model", model, "model: .onnx file, or ncnn dir / .param")->required();
     app.add_option("-s,--source", source, "image / directory / video / dataset.yaml")->required();
@@ -69,6 +69,7 @@ int main(int argc, char** argv) {
     app.add_option("--out", outdir, "output dir for annotated results")->capture_default_str();
     app.add_option("--save-txt", savetxt, "dir to write per-image predictions ('class conf x1 y1 x2 y2')");
     app.add_flag("--multi-label", multilabel, "one detection per class>conf per anchor (matches ultralytics val mAP)");
+    app.add_flag("--stretch", stretch, "preprocess by stretching to square instead of aspect-preserving letterbox");
     app.add_flag("--no-save", no_save, "do not write annotated outputs");
     app.add_flag("--quiet", quiet, "suppress per-image logs");
     CLI11_PARSE(app, argc, argv);
@@ -127,6 +128,7 @@ int main(int argc, char** argv) {
     cfg.iou_thresh = iou;
     cfg.max_det = max_det;
     cfg.multi_label = multilabel;
+    cfg.stretch = stretch;
     int want = imgsz > 0 ? imgsz : (be->meta_imgsz > 0 ? be->meta_imgsz : 640);
     if (be->fixed_imgsz > 0 && want != be->fixed_imgsz) {
         std::cerr << "[warn] model requires fixed imgsz=" << be->fixed_imgsz

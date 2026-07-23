@@ -110,7 +110,7 @@ std::vector<Detection> OrtBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     // ---- preprocess: letterbox -> NCHW float RGB /255 ----
     auto t0 = clk::now();
     LetterboxInfo lb;
-    cv::Mat padded = letterbox(bgr, cfg.imgsz, lb);   // imgsz x imgsz, CV_8UC3 BGR
+    cv::Mat padded = preprocess(bgr, cfg.imgsz, cfg.stretch, lb);   // imgsz x imgsz, CV_8UC3 BGR
     // NCHW float RGB /255 (replaces cv::dnn::blobFromImage with swapRB=true)
     const int sz = cfg.imgsz, hw = sz * sz;
     std::vector<float> blob(3 * hw);

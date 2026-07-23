@@ -32,7 +32,7 @@ std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg)
     // ---- preprocess: letterbox -> ncnn RGB /255 ----
     auto t0 = clk::now();
     LetterboxInfo lb;
-    cv::Mat padded = letterbox(bgr, cfg.imgsz, lb);
+    cv::Mat padded = preprocess(bgr, cfg.imgsz, cfg.stretch, lb);
     ncnn::Mat in = ncnn::Mat::from_pixels(padded.data, ncnn::Mat::PIXEL_BGR2RGB,
                                           padded.cols, padded.rows);
     const float mean[3] = {0.f, 0.f, 0.f};
