@@ -24,6 +24,8 @@ struct Platform {
     std::function<bool(const cv::Mat& rgba, Texture& tex)> upload;
     // Native open-file dialog; returns "" if cancelled. `filter` is a platform-specific spec.
     std::function<std::string(const char* title, const char* filter)> open_file;
+    // Native folder-picker; returns "" if cancelled.
+    std::function<std::string(const char* title)> open_folder;
 };
 
 enum class BoxStyle { Hud, Solid, Neon };
@@ -48,6 +50,12 @@ private:
     Texture     img_tex_;             // uploaded to GPU once per load
     std::string img_path_, load_err_;
 
+    // ---- folder-batch ----
+    std::vector<std::string> folder_imgs_;   // sorted image paths (empty = single-image mode)
+    int         cur_idx_ = -1;               // index into folder_imgs_ of the shown image
+    std::string folder_path_;
+    bool        scroll_to_cur_ = false;      // request the file list to scroll the current item into view
+
     // ---- results ("forward once, tune cheap") ----
     std::vector<yolomaster::Detection> dets_;
     bool  need_reinfer_ = false;      // model/source/preprocess/threads changed
@@ -65,9 +73,12 @@ private:
 
     void load_model();
     void load_image(const std::string& path, const Platform& plat);
+    void load_folder(const std::string& dir, const Platform& plat);
+    void select_index(int i, const Platform& plat);   // load folder_imgs_[i]
     void run_inference();             // full forward pass -> cache candidates
     void recompute_nms();             // cheap: nms_and_cap on cached candidates
     void draw_sidebar(const Platform& plat);
+    void draw_filelist(const Platform& plat);   // folder-batch navigator panel
     void draw_preview();
 };
 

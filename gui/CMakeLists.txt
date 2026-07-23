@@ -44,7 +44,7 @@ set(INCS
   src ${CPP_ROOT}/include ${CPP_ROOT}/third_party
   ${IMGUI} ${IMGUI}/backends ${OpenCV_INCLUDE_DIRS}
 )
-set(LIBS ${OpenCV_LIBS} d3d11 dxgi comdlg32)
+set(LIBS ${OpenCV_LIBS} d3d11 dxgi comdlg32 ole32 shell32)   # ole32/shell32: IFileOpenDialog folder picker
 set(DEFS "")
 set(RUNTIME_DLLS "")
 

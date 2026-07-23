@@ -5,6 +5,7 @@
 #include "imgui_impl_dx11.h"
 #include <d3d11.h>
 #include <tchar.h>
+#include <shobjidl.h>
 #include <string>
 #include "app.hpp"
 
@@ -95,6 +96,34 @@ static std::string OpenFileDialog(const char* title, const char* filter) {
     return GetOpenFileNameA(&ofn) ? std::string(fn) : std::string();
 }
 
+static std::string OpenFolderDialog(const char* /*title*/) {
+    std::string result;
+    IFileOpenDialog* pfd = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&pfd)))) {
+        DWORD opts = 0;
+        pfd->GetOptions(&opts);
+        pfd->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        if (SUCCEEDED(pfd->Show(g_hwnd))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(pfd->GetResult(&item))) {
+                PWSTR w = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &w))) {
+                    int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+                    if (len > 1) {
+                        result.resize(len - 1);
+                        WideCharToMultiByte(CP_UTF8, 0, w, -1, &result[0], len, nullptr, nullptr);
+                    }
+                    CoTaskMemFree(w);
+                }
+                item->Release();
+            }
+        }
+        pfd->Release();
+    }
+    return result;
+}
+
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) return true;
@@ -118,6 +147,7 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);   // for IFileOpenDialog
     WNDCLASSEX wc = { sizeof(wc), CS_CLASSDC, WndProc, 0, 0, hInstance,
                       nullptr, nullptr, nullptr, nullptr, _T("YOLOMasterEdge"), nullptr };
     RegisterClassEx(&wc);
@@ -141,8 +171,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
     gui::Platform plat;
-    plat.upload    = UploadTexture;
-    plat.open_file = OpenFileDialog;
+    plat.upload      = UploadTexture;
+    plat.open_file   = OpenFileDialog;
+    plat.open_folder = OpenFolderDialog;
     gui::App app;
 
     bool running = true;
@@ -175,5 +206,6 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     CleanupDeviceD3D();
     DestroyWindow(g_hwnd);
     UnregisterClass(wc.lpszClassName, wc.hInstance);
+    CoUninitialize();
     return 0;
 }
