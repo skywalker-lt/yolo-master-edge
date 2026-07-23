@@ -73,3 +73,48 @@ just one backend to start (e.g. ONNX only), then add the others.
 
 Models live in `../models` (e.g. `esmoe_n_visdrone_sim.onnx`,
 `esmoe_n_visdrone.mnn`, the `esmoe_n_visdrone_ncnn/` dir).
+
+---
+
+## First on-device build — checklist
+
+The GUI has never been built on Windows before, so budget your first ~20–30 min for
+the **build**, not the features. Work top to bottom.
+
+### 1. DLLs that must sit next to `yolomaster_gui.exe`
+
+CMake auto-copies all of these into `build/Release/` on a successful build — just
+**verify they're actually there** before running:
+
+- [ ] `onnxruntime.dll`
+- [ ] `ncnn.dll` (+ its OpenMP dll, e.g. `libomp140.x86_64.dll` / `vcomp140.dll`)
+- [ ] `MNN.dll`
+- [ ] `opencv_world4xx.dll`
+- [ ] `opencv_videoio_ffmpeg4xx_64.dll` ← **needed for video; `Open video...` silently fails to open a file without it**
+- [ ] MSVC runtime dlls (`vcruntime140.dll`, `msvcp140.dll`, …)
+
+If any are missing, the exe either won't launch or a feature dies at runtime with no
+error. A missing `opencv_world*.dll` = no launch; a missing ffmpeg dll = video won't open.
+
+### 2. Two likely first-build snags
+
+1. **A backend is silently absent.** If a backend's `*_ROOT` path is wrong, CMake
+   **warns and skips it** rather than failing. If a backend is missing from the app,
+   re-read the CMake *configure* output for a line like `ncnn backend: OFF`.
+2. **NCNN as a folder.** The model *file* dialog can't pick a directory — type the
+   ncnn folder path straight into the **Model** field (the loader resolves
+   `model.ncnn.param` + `.bin`). The folder picker is only for image **sources**.
+
+### 3. Smoke test (do it in this order)
+
+1. **ONNX + single image** — Load an `.onnx`, *Open image...*, confirm boxes draw.
+   This one step exercises the entire runtime + D3D11 + overlay path; if it works,
+   the rest is just source plumbing.
+2. **Backend swap** — Load the `.mnn` and the ncnn dir on the same image; det counts
+   should match ONNX (parity is 27 on the sample val image).
+3. **Folder** — *Open folder...* on `../visdrone50/images/val`, arrow-key through it.
+4. **Video** — *Open video...* on `../results/test.mp4`, Play/Pause, drag the seek bar.
+5. **Live tuning** — drag **Conf/IoU** (instant, no re-infer), flip **Box style** and
+   **Labels** (pure redraw), toggle **Preprocess** letterbox↔stretch (re-infers).
+
+Paste any MSVC compile errors back and they can be turned around quickly.
