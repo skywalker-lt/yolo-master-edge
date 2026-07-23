@@ -24,14 +24,25 @@ const std::vector<std::string>& sku110k_classes() {
     return c;
 }
 
-cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info) {
+cv::Mat preprocess(const cv::Mat& img, int imgsz, bool stretch, LetterboxInfo& info) {
     info.orig_w = img.cols;
     info.orig_h = img.rows;
+    if (stretch) {
+        // resize straight to imgsz x imgsz, ignoring aspect -> per-axis scale, no pad.
+        info.scale_x = imgsz / static_cast<float>(img.cols);
+        info.scale_y = imgsz / static_cast<float>(img.rows);
+        info.scale   = info.scale_x;   // ambiguous under stretch; keep x for any legacy reader
+        info.pad_x = info.pad_y = 0;
+        cv::Mat out;
+        cv::resize(img, out, cv::Size(imgsz, imgsz));
+        return out;
+    }
+    // letterbox: min-scale aspect-preserving, 114-gray padded, centered.
     const float r = std::min(imgsz / static_cast<float>(img.cols),
                              imgsz / static_cast<float>(img.rows));
     const int nw = static_cast<int>(std::round(img.cols * r));
     const int nh = static_cast<int>(std::round(img.rows * r));
-    info.scale = r;
+    info.scale = info.scale_x = info.scale_y = r;
     info.pad_x = (imgsz - nw) / 2;
     info.pad_y = (imgsz - nh) / 2;
     cv::Mat resized;
@@ -39,6 +50,10 @@ cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info) {
     cv::Mat out(imgsz, imgsz, img.type(), cv::Scalar(114, 114, 114));
     resized.copyTo(out(cv::Rect(info.pad_x, info.pad_y, nw, nh)));
     return out;
+}
+
+cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info) {
+    return preprocess(img, imgsz, /*stretch=*/false, info);
 }
 
 // greedy per-box NMS (score-descending, IoU suppression) - replaces
@@ -80,9 +95,9 @@ std::vector<RawDet> decode_candidates(const float* out, int feat_dim, int num_an
         const float cy = out[1 * num_anchors + a];
         const float w  = out[2 * num_anchors + a];
         const float h  = out[3 * num_anchors + a];
-        const float x0 = (cx - 0.5f * w - lb.pad_x) / lb.scale;
-        const float y0 = (cy - 0.5f * h - lb.pad_y) / lb.scale;
-        RawDet d; d.box = cv::Rect2f(x0, y0, w / lb.scale, h / lb.scale); d.score = score; d.cls = cls;
+        const float x0 = (cx - 0.5f * w - lb.pad_x) / lb.scale_x;
+        const float y0 = (cy - 0.5f * h - lb.pad_y) / lb.scale_y;
+        RawDet d; d.box = cv::Rect2f(x0, y0, w / lb.scale_x, h / lb.scale_y); d.score = score; d.cls = cls;
         if (nm > 0) { d.mask_coeffs.resize(nm);
             for (int k = 0; k < nm; ++k) d.mask_coeffs[k] = out[(4 + nc + k) * num_anchors + a]; }
         cands.push_back(std::move(d));

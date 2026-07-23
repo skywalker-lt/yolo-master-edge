@@ -57,7 +57,7 @@ std::vector<Detection> MnnBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     // ---- preprocess: letterbox -> NCHW float RGB /255 (identical to ORT) ----
     auto t0 = clk::now();
     LetterboxInfo lb;
-    cv::Mat padded = letterbox(bgr, cfg.imgsz, lb);   // imgsz x imgsz, CV_8UC3 BGR
+    cv::Mat padded = preprocess(bgr, cfg.imgsz, cfg.stretch, lb);   // imgsz x imgsz, CV_8UC3 BGR
     const int sz = cfg.imgsz, hw = sz * sz;
     std::vector<float> blob(3 * hw);
     for (int y = 0; y < sz; ++y) {

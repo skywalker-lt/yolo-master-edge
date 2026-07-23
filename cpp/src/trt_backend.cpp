@@ -64,7 +64,7 @@ TrtBackend::~TrtBackend() {
 std::vector<Detection> TrtBackend::infer(const cv::Mat& bgr, const Config& cfg) {
     auto t0 = clk::now();
     LetterboxInfo lb;
-    cv::Mat padded = letterbox(bgr, in_sz_, lb);              // in_sz_ x in_sz_, BGR
+    cv::Mat padded = preprocess(bgr, in_sz_, cfg.stretch, lb);   // in_sz_ x in_sz_, BGR
     const int sz = in_sz_, hw = sz * sz;
     std::vector<float> in(3 * hw);
     for (int y = 0; y < sz; ++y) {

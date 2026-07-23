@@ -67,6 +67,8 @@ void App::run_inference() {
     Config c = cfg_;
     c.conf_thresh = std::min(conf_, kConfFloor);
     c.iou_thresh  = iou_;
+    c.stretch     = (prep_ == Preprocess::Stretch);
+    cfg_.stretch  = c.stretch;   // keep display cfg in sync (recompute_nms uses cfg_)
     try { dets_ = be_->infer(img_bgr_, c); }
     catch (const std::exception& e) { be_err_ = std::string("inference error: ") + e.what(); return; }
     pre_ms_ = be_->pre_ms; inf_ms_ = be_->infer_ms; post_ms_ = be_->post_ms;
