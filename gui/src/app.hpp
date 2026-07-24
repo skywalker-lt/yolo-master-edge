@@ -18,7 +18,8 @@ namespace gui {
 // A GPU texture handle owned by the platform layer. `id` is an ImTextureID (an SRV
 // on D3D11) stored type-erased so this header stays platform-free.
 struct Texture {
-    void* id = nullptr;
+    void* id  = nullptr;   // ImTextureID (an ID3D11ShaderResourceView* on D3D11)
+    void* tex = nullptr;   // the underlying ID3D11Texture2D*, kept for cheap in-place updates
     int   w = 0, h = 0;
 };
 

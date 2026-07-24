@@ -56,15 +56,23 @@ static void CleanupDeviceD3D() {
 // ---- platform services handed to the portable App ----
 static bool UploadTexture(const cv::Mat& rgba, gui::Texture& tex) {
     if (rgba.empty() || rgba.type() != CV_8UC4 || !g_pd3dDevice) return false;
-    if (tex.id) { ((IUnknown*)tex.id)->Release(); tex.id = nullptr; }   // free previous SRV
     cv::Mat cont = rgba.isContinuous() ? rgba : rgba.clone();
+
+    // Fast path (video/webcam): same size -> update the existing texture in place, no realloc.
+    if (tex.tex && tex.w == cont.cols && tex.h == cont.rows) {
+        g_pd3dDeviceContext->UpdateSubresource((ID3D11Texture2D*)tex.tex, 0, nullptr,
+                                               cont.data, (UINT)cont.step, 0);
+        return true;
+    }
+    if (tex.id)  { ((IUnknown*)tex.id)->Release();  tex.id = nullptr; }    // size changed -> rebuild
+    if (tex.tex) { ((IUnknown*)tex.tex)->Release(); tex.tex = nullptr; }
 
     D3D11_TEXTURE2D_DESC desc = {};
     desc.Width = cont.cols; desc.Height = cont.rows;
     desc.MipLevels = 1; desc.ArraySize = 1;
     desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     desc.SampleDesc.Count = 1;
-    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.Usage = D3D11_USAGE_DEFAULT;                  // DEFAULT allows UpdateSubresource
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     D3D11_SUBRESOURCE_DATA sub = {};
     sub.pSysMem = cont.data;
@@ -78,9 +86,9 @@ static bool UploadTexture(const cv::Mat& rgba, gui::Texture& tex) {
     srvd.Texture2D.MipLevels = 1;
     ID3D11ShaderResourceView* pSRV = nullptr;
     HRESULT hr = g_pd3dDevice->CreateShaderResourceView(pTex, &srvd, &pSRV);
-    pTex->Release();                                   // SRV keeps its own ref
-    if (FAILED(hr)) return false;
-    tex.id = pSRV; tex.w = cont.cols; tex.h = cont.rows;
+    if (FAILED(hr)) { pTex->Release(); return false; }
+    tex.id = pSRV; tex.tex = pTex;                     // keep the Texture2D for in-place updates
+    tex.w = cont.cols; tex.h = cont.rows;
     return true;
 }
 
