@@ -178,16 +178,27 @@ void App::overlay_from_cache(int idx, const Platform& plat) {
     else has_mask_ = false;
 }
 
-// decode the pixels for frame idx (sequential read when possible, else seek), display + overlay
+// Show frame `idx`: display its pixels + cached overlay. Forward jumps grab-skip the
+// intermediate frames (decode-skip, no upload) so playback stays real-time when the UI
+// can't render every frame; backward jumps seek.
 void App::render_video_frame(int idx, const Platform& plat) {
     if (!cap_.isOpened() || total_frames_ <= 0) return;
     idx = std::clamp(idx, 0, total_frames_ - 1);
-    if (idx != frame_idx_ + 1) cap_.set(cv::CAP_PROP_POS_FRAMES, (double)idx);  // seek if non-sequential
-    cv::Mat f;
-    if (!cap_.read(f) || f.empty()) { cap_.set(cv::CAP_PROP_POS_FRAMES, (double)idx);
-                                      if (!cap_.read(f) || f.empty()) return; }
-    frame_idx_ = idx;
-    show_frame(f, plat);
+    if (idx != frame_idx_) {
+        if (idx > frame_idx_ + 1) {                      // forward skip: grab (no decode-to-Mat)
+            for (int i = frame_idx_ + 1; i < idx; ++i)
+                if (!cap_.grab()) { cap_.set(cv::CAP_PROP_POS_FRAMES, (double)idx); break; }
+        } else if (idx < frame_idx_ + 1) {               // backward / wrap: seek
+            cap_.set(cv::CAP_PROP_POS_FRAMES, (double)idx);
+        }
+        cv::Mat f;
+        if (!cap_.read(f) || f.empty()) {
+            cap_.set(cv::CAP_PROP_POS_FRAMES, (double)idx);
+            if (!cap_.read(f) || f.empty()) return;
+        }
+        frame_idx_ = idx;
+        show_frame(f, plat);
+    }
     overlay_from_cache(idx, plat);
     inf_ms_ = vinfer_ms_;
 }
@@ -377,10 +388,15 @@ void App::frame(const Platform& plat) {
             if (playing_) {
                 play_accum_ += ImGui::GetIO().DeltaTime;
                 const double iv = 1.0 / video_fps_;
-                if (play_accum_ >= iv) {
-                    play_accum_ -= iv;                  // carry remainder -> real-time pacing
-                    if (frame_idx_ + 1 >= total_frames_) frame_idx_ = -1;   // loop
-                    render_video_frame(frame_idx_ + 1, plat);
+                int steps = 0;                          // how many source frames elapsed this UI tick
+                while (play_accum_ >= iv) {
+                    play_accum_ -= iv;
+                    if (++steps > (int)video_fps_) { play_accum_ = 0.0; break; }  // cap catch-up to ~1s
+                }
+                if (steps > 0) {                        // advance real-time; render_video_frame skips
+                    int next = frame_idx_ + steps;
+                    while (next >= total_frames_) next -= total_frames_;   // loop
+                    render_video_frame(next, plat);
                 }
             }
             if (need_renms_) { overlay_from_cache(frame_idx_, plat); need_renms_ = false; }
