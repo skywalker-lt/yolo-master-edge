@@ -21,7 +21,11 @@ MnnBackend::MnnBackend(const std::string& model_path, int threads, const std::st
 
     MNN::ScheduleConfig sc;
     sc.numThread = threads;
-    sc.type = (forward == "cuda") ? MNN_FORWARD_CUDA : MNN_FORWARD_CPU;
+    sc.type = forward == "opencl" ? MNN_FORWARD_OPENCL
+            : forward == "vulkan" ? MNN_FORWARD_VULKAN
+            : forward == "cuda"   ? MNN_FORWARD_CUDA
+                                  : MNN_FORWARD_CPU;
+    sc.backupType = MNN_FORWARD_CPU;   // fall back to CPU if the GPU backend is unavailable at runtime
     MNN::BackendConfig bc;
     bc.precision = MNN::BackendConfig::Precision_High;   // FP32
     bc.power     = MNN::BackendConfig::Power_High;
@@ -32,7 +36,9 @@ MnnBackend::MnnBackend(const std::string& model_path, int threads, const std::st
     input_  = interp_->getSessionInput(session_, nullptr);    // first input
     output_ = interp_->getSessionOutput(session_, nullptr);   // first output
     if (!input_ || !output_) throw std::runtime_error("MNN: could not resolve input/output tensor");
-    active_ep = (forward == "cuda") ? "MNN-CUDA" : "MNN-CPU";
+    active_ep = forward == "opencl" ? "MNN-OpenCL"
+              : forward == "vulkan" ? "MNN-Vulkan"
+              : forward == "cuda"   ? "MNN-CUDA" : "MNN-CPU";
 
     // YOLO-Master graphs bake the attention token counts at the training size -> fixed input.
     auto ishape = input_->shape();   // NCHW, e.g. {1,3,640,640}

@@ -48,10 +48,13 @@ inline std::unique_ptr<Backend> make_backend(std::string model, std::string back
         if (backend.empty()) { err = "cannot infer backend from '" + model + "'"; return nullptr; }
     }
     resolved = backend;
+    // GPU maps to each backend's native accelerator: onnx->CUDA EP, ncnn->Vulkan, mnn->OpenCL.
+    const bool want_gpu = (device == "gpu" || device == "cuda" || device == "vulkan" || device == "opencl");
     try {
         if (backend == "onnx") {
 #ifdef USE_ORT
-            return std::make_unique<OrtBackend>(model, threads, device);
+            std::string ep = want_gpu ? "cuda" : (device.empty() ? "cpu" : device);
+            return std::make_unique<OrtBackend>(model, threads, ep);
 #else
             err = "built without ONNXRuntime backend"; return nullptr;
 #endif
@@ -63,13 +66,17 @@ inline std::unique_ptr<Backend> make_backend(std::string model, std::string back
                 param = (fs::path(model) / "model.ncnn.param").string();
                 bin   = (fs::path(model) / "model.ncnn.bin").string();
             } else bin = param.substr(0, param.rfind('.')) + ".bin";
-            return std::make_unique<NcnnBackend>(param, bin, threads);
+            return std::make_unique<NcnnBackend>(param, bin, threads, want_gpu);   // want_gpu = Vulkan
 #else
             err = "built without ncnn backend"; return nullptr;
 #endif
         } else if (backend == "mnn") {
 #ifdef USE_MNN
-            return std::make_unique<MnnBackend>(model, threads, device == "cuda" ? "cuda" : "cpu");
+            std::string fwd = "cpu";
+            if (device == "vulkan") fwd = "vulkan";
+            else if (device == "cuda") fwd = "cuda";
+            else if (want_gpu) fwd = "opencl";
+            return std::make_unique<MnnBackend>(model, threads, fwd);
 #else
             err = "built without MNN backend (rebuild with -DUSE_MNN=ON)"; return nullptr;
 #endif

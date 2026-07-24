@@ -7,7 +7,8 @@ namespace yolomaster {
 
 class NcnnBackend : public Backend {
 public:
-    NcnnBackend(const std::string& param_path, const std::string& bin_path, int threads = 4);
+    NcnnBackend(const std::string& param_path, const std::string& bin_path, int threads = 4,
+                bool use_vulkan = false);
     std::vector<Detection> infer(const cv::Mat& bgr, const Config& cfg) override;
 
 private:
