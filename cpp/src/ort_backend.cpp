@@ -137,14 +137,27 @@ std::vector<Detection> OrtBackend::infer(const cv::Mat& bgr, const Config& cfg) 
                               out_names_.data(), out_names_.size());
     infer_ms = ms_since(t1);
 
-    // ---- postprocess: decode (1, feat_dim, num_anchors) ----
+    // ---- postprocess: detection is the rank-3 output [1,feat,anchors]; proto (seg) is rank-4 ----
     auto t2 = clk::now();
-    auto shape = outs.front().GetTensorTypeAndShapeInfo().GetShape();  // {1, 14, 8400}
+    int det_i = 0, proto_i = -1;
+    for (size_t i = 0; i < outs.size(); ++i) {
+        const size_t r = outs[i].GetTensorTypeAndShapeInfo().GetShape().size();
+        if (r == 4) proto_i = static_cast<int>(i);
+        else if (r == 3) det_i = static_cast<int>(i);
+    }
+    auto shape = outs[det_i].GetTensorTypeAndShapeInfo().GetShape();   // {1, feat, anchors}
     const int feat_dim = static_cast<int>(shape[1]);
     const int num_anchors = static_cast<int>(shape[2]);
-    const float* out = outs.front().GetTensorMutableData<float>();
+    const float* out = outs[det_i].GetTensorMutableData<float>();
     candidates = decode_candidates(out, feat_dim, num_anchors, cfg, lb);
-    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h;
+    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
+    proto.clear(); proto_c = proto_h = proto_w = 0;
+    if (proto_i >= 0) {                                                // segmentation model
+        auto ps = outs[proto_i].GetTensorTypeAndShapeInfo().GetShape();  // {1, nm, mh, mw}
+        proto_c = (int)ps[1]; proto_h = (int)ps[2]; proto_w = (int)ps[3];
+        const float* pd = outs[proto_i].GetTensorMutableData<float>();
+        proto.assign(pd, pd + (size_t)proto_c * proto_h * proto_w);
+    }
     auto dets = nms_and_cap(candidates, cfg, lb.orig_w, lb.orig_h);
     post_ms = ms_since(t2);
     return dets;

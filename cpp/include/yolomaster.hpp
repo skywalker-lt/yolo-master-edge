@@ -59,6 +59,15 @@ std::vector<Detection> decode(const float* out, int feat_dim, int num_anchors,
                               const Config& cfg, const LetterboxInfo& lb);
 void draw(cv::Mat& img, const std::vector<Detection>& dets, const Config& cfg);
 
+// Segmentation: composite per-detection masks (from proto x mask_coeffs) into an RGBA overlay
+// (orig_h x orig_w, CV_8UC4, transparent where no mask), per-class tinted with soft edges.
+// `lb`/`imgsz` map original px -> mask space. Empty proto -> fully transparent. mask_alpha 0..255.
+cv::Mat seg_overlay(const std::vector<Detection>& dets, const std::vector<float>& proto,
+                    int pc, int ph, int pw, const LetterboxInfo& lb, int imgsz,
+                    int orig_w, int orig_h, int mask_alpha = 165);
+// The 10-color class palette (RGB 0..1, indexed cls%10) shared by draw/overlay/GUI.
+const float* class_color(int class_id);   // returns pointer to 3 floats
+
 // ---- model metadata (ultralytics embeds names/imgsz in the model) ----
 namespace meta {
 // parse a python-dict string "{0: 'pedestrian', 1: 'people', ...}" -> ordered names
@@ -88,6 +97,11 @@ public:
     // re-run nms_and_cap(candidates,...) on conf/IoU changes without another forward pass.
     std::vector<RawDet> candidates;
     int cand_orig_w = 0, cand_orig_h = 0;
+    LetterboxInfo cand_lb;              // letterbox used for `candidates` (maps orig<->mask space for seg)
+    // segmentation prototype masks [proto_c * proto_h * proto_w], plane-major; empty for detection models.
+    std::vector<float> proto;
+    int proto_c = 0, proto_h = 0, proto_w = 0;
+    bool is_seg() const { return proto_c > 0 && !proto.empty(); }
 };
 
 } // namespace yolomaster

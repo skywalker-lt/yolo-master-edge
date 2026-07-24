@@ -15,6 +15,7 @@ private:
     int threads_;
     std::string in_blob_ = "in0";
     std::string out_blob_ = "out0";
+    std::string out_proto_ = "out1";   // segmentation proto (absent on detection models)
 };
 
 } // namespace yolomaster

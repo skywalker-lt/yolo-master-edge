@@ -163,11 +163,77 @@ std::vector<Detection> decode(const float* out, int feat_dim, int num_anchors,
     return nms_and_cap(cands, cfg, lb.orig_w, lb.orig_h);
 }
 
+// 10-color class palette (RGB 0..1), indexed cls%10 — identical to the GUI and the Mac runner.
+static const float kPalette[10][3] = {
+    {0.98f,0.26f,0.30f},{0.20f,0.71f,0.98f},{0.16f,0.85f,0.52f},{0.99f,0.79f,0.12f},
+    {0.72f,0.40f,0.98f},{0.99f,0.55f,0.18f},{0.10f,0.83f,0.80f},{0.98f,0.36f,0.66f},
+    {0.55f,0.82f,0.28f},{0.40f,0.52f,0.98f},
+};
+const float* class_color(int class_id) { return kPalette[((class_id % 10) + 10) % 10]; }
+
+static inline float smoothstep(float a, float b, float x) {
+    const float t = std::clamp((x - a) / (b - a), 0.f, 1.f);
+    return t * t * (3.f - 2.f * t);
+}
+
+cv::Mat seg_overlay(const std::vector<Detection>& dets, const std::vector<float>& proto,
+                    int pc, int ph, int pw, const LetterboxInfo& lb, int imgsz,
+                    int orig_w, int orig_h, int mask_alpha) {
+    cv::Mat rgba(orig_h, orig_w, CV_8UC4, cv::Scalar(0, 0, 0, 0));
+    if (proto.empty() || pc <= 0 || imgsz <= 0) return rgba;
+    const size_t plane = static_cast<size_t>(ph) * pw;
+    const float sx = lb.scale_x * pw / imgsz, sy = lb.scale_y * ph / imgsz;  // orig px -> mask space
+    const float ox0 = lb.pad_x * (float)pw / imgsz, oy0 = lb.pad_y * (float)ph / imgsz;
+    std::vector<float> ml(plane);
+    for (const auto& d : dets) {
+        if (static_cast<int>(d.mask_coeffs.size()) != pc) continue;   // detection-only box: skip
+        const float* co = d.mask_coeffs.data();
+        // lowres mask = sigmoid(coeffs . protos), computed once per detection
+        for (size_t i = 0; i < plane; ++i) {
+            float s = 0.f;
+            for (int c = 0; c < pc; ++c) s += co[c] * proto[c * plane + i];
+            ml[i] = 1.f / (1.f + std::exp(-s));
+        }
+        const float* col = class_color(d.class_id);
+        const int x0 = std::max(0, (int)std::floor(d.box.x));
+        const int y0 = std::max(0, (int)std::floor(d.box.y));
+        const int x1 = std::min(orig_w, (int)std::ceil(d.box.x + d.box.width));
+        const int y1 = std::min(orig_h, (int)std::ceil(d.box.y + d.box.height));
+        for (int oy = y0; oy < y1; ++oy) {
+            const float my = oy * sy + oy0;
+            const int myi = std::clamp((int)my, 0, ph - 1);
+            const int myi2 = std::min(myi + 1, ph - 1);
+            const float fy = std::clamp(my - myi, 0.f, 1.f);
+            uint8_t* dst = rgba.ptr<uint8_t>(oy);
+            for (int ox = x0; ox < x1; ++ox) {
+                const float mx = ox * sx + ox0;
+                const int mxi = std::clamp((int)mx, 0, pw - 1);
+                const int mxi2 = std::min(mxi + 1, pw - 1);
+                const float fx = std::clamp(mx - mxi, 0.f, 1.f);
+                // bilinear sample of the lowres mask
+                const float v = ml[myi * pw + mxi]   * (1 - fx) * (1 - fy)
+                              + ml[myi * pw + mxi2]  * fx       * (1 - fy)
+                              + ml[myi2 * pw + mxi]  * (1 - fx) * fy
+                              + ml[myi2 * pw + mxi2] * fx       * fy;
+                const float edge = smoothstep(0.5f - 0.14f, 0.5f + 0.14f, v);  // soft anti-aliased border
+                if (edge <= 0.f) continue;
+                const uint8_t a = (uint8_t)(edge * mask_alpha);
+                uint8_t* px = dst + ox * 4;
+                if (a > px[3]) {   // overlapping masks: keep the more opaque one
+                    px[0] = (uint8_t)(col[0] * 255); px[1] = (uint8_t)(col[1] * 255);
+                    px[2] = (uint8_t)(col[2] * 255); px[3] = a;
+                }
+            }
+        }
+    }
+    return rgba;
+}
+
 void draw(cv::Mat& img, const std::vector<Detection>& dets, const Config& cfg) {
     for (const auto& d : dets) {
         const cv::Rect r(cvRound(d.box.x), cvRound(d.box.y), cvRound(d.box.width), cvRound(d.box.height));
-        const cv::Scalar color(37 * (d.class_id + 1) % 255, 17 * (d.class_id + 3) % 255,
-                               29 * (d.class_id + 5) % 255);
+        const float* pc = class_color(d.class_id);
+        const cv::Scalar color(pc[2] * 255, pc[1] * 255, pc[0] * 255);   // RGB palette -> BGR
         cv::rectangle(img, r, color, 2);
         const std::string name = (d.class_id < cfg.num_classes()) ? cfg.class_names[d.class_id]
                                                                   : std::to_string(d.class_id);
