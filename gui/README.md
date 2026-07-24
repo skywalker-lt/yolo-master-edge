@@ -10,8 +10,10 @@ are identical.
 overlays, one unified **Open…** (autodetects image vs video), live conf/IoU
 tuning without re-inferring ("forward once, tune cheap"), stretch/letterbox
 preprocess, box styles (hud / solid / neon), label modes, per-class counts,
-timing stats. **Video/webcam infer on a background thread** so playback stays
-smooth regardless of inference speed (drops late frames).
+timing stats. **Video** pre-infers every frame once (progress bar), then plays the raw clip
+from cache at true source fps — inference is never on the playback path.
+**Webcam** infers on a background thread with drop-late-frames so the live feed
+stays smooth. Both keep conf/IoU/style tuning instant.
 
 **Device: CPU / GPU.** GPU maps to each backend's native accelerator —
 ONNX→**CUDA**, ncnn→**Vulkan**, MNN→**OpenCL**. ncnn/MNN GPU works with the

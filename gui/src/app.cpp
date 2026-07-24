@@ -26,15 +26,18 @@ static ImU32 text_on(int cls) {
     return lum > 0.6f ? IM_COL32(0,0,0,255) : IM_COL32(255,255,255,255);
 }
 
-App::~App() { stop_worker(); }
+App::~App() { close_camera(); close_video(); }   // join the webcam worker + video pre-infer thread
 
 std::string App::gpu_device_str() const {
     return device_ == Device::GPU ? "gpu" : "cpu";   // make_backend maps "gpu" per backend
 }
 
-void App::load_model() {
-    const bool streaming = is_cam_ || is_video_;   // a worker may be running on the old backend
-    stop_worker();                                  // never rebuild be_ while the worker holds it
+void App::load_model(const Platform& plat) {
+    const bool cam = is_cam_;
+    const bool vid = is_video_;
+    const std::string vpath = video_path_;
+    stop_worker();                                  // stop any camera worker holding the old backend
+    if (vid) { vinfer_cancel_ = true; if (vinfer_.joinable()) vinfer_.join(); vinfer_cancel_ = false; }
     be_.reset();
     dets_.clear();
     be_err_.clear();
@@ -53,8 +56,9 @@ void App::load_model() {
                : (be_->meta_imgsz > 0 ? be_->meta_imgsz : 640);
     cfg_.max_det = 300;
     cfg_.multi_label = false;
-    if (streaming) { start_worker(); submit_job(img_bgr_); }   // resume the stream on the new backend
-    else           need_reinfer_ = !img_bgr_.empty();
+    if (cam)                     { start_worker(); submit_job(img_bgr_); }   // resume live feed
+    else if (vid && !vpath.empty()) open_video(vpath, plat);                 // re-infer the clip
+    else                         need_reinfer_ = !img_bgr_.empty();
 }
 
 void App::open_media(const std::string& path, const Platform& plat) {
@@ -99,52 +103,97 @@ void App::select_index(int i, const Platform& plat) {
 }
 
 void App::close_video() {
-    stop_worker();
+    vinfer_cancel_ = true;                // stop any in-flight pre-inference
+    if (vinfer_.joinable()) vinfer_.join();
+    vinfer_cancel_ = false;
     if (cap_.isOpened()) cap_.release();
-    is_video_ = false; playing_ = false;
+    is_video_ = false; playing_ = false; video_ready_ = false;
     frame_idx_ = 0; total_frames_ = 0; play_accum_ = 0.0;
+    vcache_.clear(); vproto_.clear(); vprogress_ = 0; vinfer_done_ = false;
 }
 
 void App::show_frame(const cv::Mat& frame, const Platform& plat) {
     img_bgr_ = frame.clone();            // clone: cap_ reuses its internal buffer on the next read
     cv::Mat rgba;
     cv::cvtColor(img_bgr_, rgba, cv::COLOR_BGR2RGBA);
-    plat.upload(rgba, img_tex_);         // display immediately; inference is off-thread (worker)
+    plat.upload(rgba, img_tex_);
+}
+
+// Background: forward-pass EVERY frame once, caching per-frame candidates (+ proto for seg).
+// Runs on its own thread + its own capture; the UI shows a progress bar meanwhile.
+void App::video_preinfer(std::string path, Config c) {
+    cv::VideoCapture cap(path);
+    if (!cap.isOpened()) { vinfer_done_ = true; return; }
+    double sum = 0; int cnt = 0;
+    cv::Mat f;
+    while (!vinfer_cancel_ && cap.read(f) && !f.empty()) {
+        try { be_->infer(f, c); } catch (...) { break; }
+        vcache_.push_back(be_->candidates);
+        if (be_->is_seg()) {
+            if (vproto_.size() < vcache_.size() - 1) vproto_.resize(vcache_.size() - 1);
+            vproto_.push_back(be_->proto);
+            vproto_c_ = be_->proto_c; vproto_h_ = be_->proto_h; vproto_w_ = be_->proto_w;
+        }
+        vlb_ = be_->cand_lb; vorig_w_ = be_->cand_orig_w; vorig_h_ = be_->cand_orig_h;
+        sum += be_->infer_ms; cnt++;
+        vprogress_ = (int)vcache_.size();
+    }
+    total_frames_ = (int)vcache_.size();
+    vinfer_ms_ = cnt ? sum / cnt : 0.0;
+    vinfer_done_ = true;
 }
 
 void App::open_video(const std::string& path, const Platform& plat) {
     close_camera();
+    close_video();
     load_err_.clear();
     folder_imgs_.clear(); cur_idx_ = -1;         // leave folder mode
-    if (cap_.isOpened()) cap_.release();
-    if (!cap_.open(path)) { load_err_ = "cannot open video: " + path; is_video_ = false; return; }
-    is_video_ = true; playing_ = false; play_accum_ = 0.0;
+    if (!be_) { load_err_ = "load a model first"; return; }
+    if (!cap_.open(path)) { load_err_ = "cannot open video: " + path; return; }
+    is_video_ = true; playing_ = false; play_accum_ = 0.0; frame_idx_ = 0;
+    video_ready_ = false; vprogress_ = 0; vinfer_done_ = false;
     video_path_ = path;
     total_frames_ = (int)cap_.get(cv::CAP_PROP_FRAME_COUNT);
     const double fps = cap_.get(cv::CAP_PROP_FPS);
     video_fps_ = (fps > 1.0 && fps < 1000.0) ? fps : 30.0;
-    frame_idx_ = 0;
-    start_worker();
+    cv::Mat f0;                                  // show frame 0 immediately (no boxes yet)
+    if (cap_.read(f0) && !f0.empty()) show_frame(f0, plat);
+    cap_.set(cv::CAP_PROP_POS_FRAMES, 0);
+    Config c = cfg_;                             // cache to the conf floor; per-frame NMS is cheap
+    c.conf_thresh = kConfFloor; c.iou_thresh = iou_; c.stretch = (prep_ == Preprocess::Stretch);
+    vinfer_ = std::thread(&App::video_preinfer, this, path, c);
+}
+
+// re-NMS + mask for a cached frame's candidates (no decode) — used on conf/IoU change
+void App::overlay_from_cache(int idx, const Platform& plat) {
+    if (idx < 0 || idx >= (int)vcache_.size()) return;
+    seg_model_ = !vproto_.empty();
+    Config c = cfg_; c.conf_thresh = conf_; c.iou_thresh = iou_;
+    dets_ = nms_and_cap(vcache_[idx], c, vorig_w_, vorig_h_);
+    class_counts_.assign(cfg_.num_classes(), 0);
+    for (const auto& d : dets_)
+        if (d.class_id >= 0 && d.class_id < (int)class_counts_.size()) class_counts_[d.class_id]++;
+    if (seg_model_ && idx < (int)vproto_.size())
+        build_overlay(dets_, vproto_[idx], vproto_c_, vproto_h_, vproto_w_, vlb_, vorig_w_, vorig_h_, plat);
+    else has_mask_ = false;
+}
+
+// decode the pixels for frame idx (sequential read when possible, else seek), display + overlay
+void App::render_video_frame(int idx, const Platform& plat) {
+    if (!cap_.isOpened() || total_frames_ <= 0) return;
+    idx = std::clamp(idx, 0, total_frames_ - 1);
+    if (idx != frame_idx_ + 1) cap_.set(cv::CAP_PROP_POS_FRAMES, (double)idx);  // seek if non-sequential
     cv::Mat f;
-    if (cap_.read(f) && !f.empty()) { show_frame(f, plat); submit_job(img_bgr_); }  // infer 1st frame
-    else { load_err_ = "video has no readable frames"; close_video(); }
+    if (!cap_.read(f) || f.empty()) { cap_.set(cv::CAP_PROP_POS_FRAMES, (double)idx);
+                                      if (!cap_.read(f) || f.empty()) return; }
+    frame_idx_ = idx;
+    show_frame(f, plat);
+    overlay_from_cache(idx, plat);
+    inf_ms_ = vinfer_ms_;
 }
 
 void App::seek_video(int idx, const Platform& plat) {
-    if (!cap_.isOpened()) return;
-    idx = std::clamp(idx, 0, std::max(0, total_frames_ - 1));
-    cap_.set(cv::CAP_PROP_POS_FRAMES, (double)idx);
-    cv::Mat f;
-    if (cap_.read(f) && !f.empty()) { frame_idx_ = idx; show_frame(f, plat); submit_job(img_bgr_); }
-}
-
-bool App::advance_video(const Platform& plat) {
-    if (!cap_.isOpened()) return false;
-    cv::Mat f;
-    if (!cap_.read(f) || f.empty()) return false;   // end of stream
-    frame_idx_++;
-    show_frame(f, plat);
-    return true;
+    if (video_ready_) render_video_frame(idx, plat);
 }
 
 // ---------------- webcam ----------------
@@ -294,8 +343,8 @@ void App::rebuild_overlay(const Platform& plat) {
 }
 
 void App::frame(const Platform& plat) {
-    // sync inference for still image / folder (only when no stream worker owns the backend)
-    if (!async_mode_) {
+    // sync inference for still image / folder (never for video/camera — those own the backend)
+    if (!async_mode_ && !is_video_) {
         if (need_reinfer_) run_inference();
         if (need_renms_)   recompute_nms();
         if (need_overlay_) rebuild_overlay(plat);
@@ -311,23 +360,31 @@ void App::frame(const Platform& plat) {
             show_frame(f, plat);
             submit_job(img_bgr_);
         }
-    }
-
-    // video playback (async): advance at real-time fps; inference is off the playback path
-    if (is_video_ && playing_) {
-        play_accum_ += ImGui::GetIO().DeltaTime;
-        const double iv = 1.0 / video_fps_;
-        if (play_accum_ >= iv) {
-            play_accum_ -= iv;                          // carry remainder -> smoother pacing
-            if (advance_video(plat)) submit_job(img_bgr_);
-            else playing_ = false;                      // end of stream
-        }
-    }
-
-    // pull the latest worker result; conf/iou changes re-submit the current frame (cheap enough)
-    if (async_mode_) {
         consume_async(plat);
-        if (need_renms_) { submit_job(img_bgr_); need_renms_ = false; }
+        if (need_renms_) need_renms_ = false;   // camera picks up new conf/iou on the next frame
+    }
+
+    // video: pre-infer all frames (progress bar), then play the raw video from cache — NO inference
+    // on the playback path, so it runs at true source fps.
+    if (is_video_) {
+        if (!video_ready_) {
+            if (vinfer_done_) {
+                if (vinfer_.joinable()) vinfer_.join();
+                video_ready_ = true;
+                render_video_frame(0, plat);            // first frame with its cached overlay
+            }
+        } else {
+            if (playing_) {
+                play_accum_ += ImGui::GetIO().DeltaTime;
+                const double iv = 1.0 / video_fps_;
+                if (play_accum_ >= iv) {
+                    play_accum_ -= iv;                  // carry remainder -> real-time pacing
+                    if (frame_idx_ + 1 >= total_frames_) frame_idx_ = -1;   // loop
+                    render_video_frame(frame_idx_ + 1, plat);
+                }
+            }
+            if (need_renms_) { overlay_from_cache(frame_idx_, plat); need_renms_ = false; }
+        }
     }
 
     // keyboard shortcuts (ignored while typing in a field).
@@ -393,10 +450,10 @@ void App::draw_sidebar(const Platform& plat) {
     ImGui::SetNextItemWidth(64);
     if (ImGui::Combo("##device", &dv, devs, IM_ARRAYSIZE(devs)) && (Device)dv != device_) {
         device_ = (Device)dv;
-        if (be_) load_model();   // rebuild backend on the new device (onnx:CUDA / ncnn:Vulkan / mnn:OpenCL)
+        if (be_) load_model(plat);   // rebuild on the new device (onnx:CUDA / ncnn:Vulkan / mnn:OpenCL)
     }
     ImGui::SameLine();
-    if (ImGui::Button("Load##model")) load_model();
+    if (ImGui::Button("Load##model")) load_model(plat);
     if (be_) {
         ImGui::TextColored(ImVec4(0.5f,0.85f,0.4f,1), "%s | %s | nc=%d | %dpx",
                            be_name_.c_str(), be_ep_.c_str(), cfg_.num_classes(), cfg_.imgsz);
@@ -456,7 +513,11 @@ void App::draw_sidebar(const Platform& plat) {
     const char* pps[] = {"letterbox", "stretch"};
     ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("Preprocess", &pp, pps, IM_ARRAYSIZE(pps))) {
-        if ((Preprocess)pp != prep_) { prep_ = (Preprocess)pp; need_reinfer_ = true; }
+        if ((Preprocess)pp != prep_) {
+            prep_ = (Preprocess)pp;
+            if (is_video_)       open_video(video_path_, plat);   // re-infer the clip
+            else if (!is_cam_)   need_reinfer_ = true;            // camera picks it up on the next frame
+        }
     }
 
     // ---- Stats ----
@@ -598,7 +659,17 @@ void App::draw_preview(const Platform& plat) {
 
     if (is_video_) {
         ImGui::SetCursorScreenPos(ImVec2(cur.x, cur.y + imgH));
-        draw_transport(plat);
+        if (video_ready_) {
+            draw_transport(plat);
+        } else {                                    // pre-inference progress
+            const int done = vprogress_.load();
+            const int tot = total_frames_;
+            char ov[64];
+            if (tot > 0) std::snprintf(ov, sizeof(ov), "Inferring  %d / %d", done, tot);
+            else         std::snprintf(ov, sizeof(ov), "Inferring frame %d", done);
+            ImGui::ProgressBar(tot > 0 ? (float)done / tot : -1.0f * (float)ImGui::GetTime(),
+                               ImVec2(-1, 0), ov);
+        }
     }
 }
 

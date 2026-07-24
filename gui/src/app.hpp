@@ -63,13 +63,22 @@ private:
     std::string folder_path_;
     bool        scroll_to_cur_ = false;      // request the file list to scroll the current item into view
 
-    // ---- video ----
+    // ---- video (Mac model: pre-infer every frame up front, then play from cache) ----
     cv::VideoCapture cap_;
     bool        is_video_ = false;
     bool        playing_ = false;
     int         frame_idx_ = 0, total_frames_ = 0;
     double      video_fps_ = 30.0, play_accum_ = 0.0;   // play_accum_ paces playback to real time
     std::string video_path_;
+    std::vector<std::vector<yolomaster::RawDet>> vcache_;   // per-frame pre-NMS candidates
+    std::vector<std::vector<float>>              vproto_;   // per-frame proto (seg only)
+    int         vproto_c_ = 0, vproto_h_ = 0, vproto_w_ = 0;
+    yolomaster::LetterboxInfo vlb_; int vorig_w_ = 0, vorig_h_ = 0;
+    bool        video_ready_ = false;                   // pre-inference finished
+    std::thread vinfer_;
+    std::atomic<int>  vprogress_{0};
+    std::atomic<bool> vinfer_done_{false}, vinfer_cancel_{false};
+    double      vinfer_ms_ = 0.0;                       // mean model ms over the clip
 
     // ---- webcam ----
     cv::VideoCapture cam_;
@@ -119,15 +128,17 @@ private:
 
     static constexpr float kConfFloor = 0.05f;   // cache candidates down to here
 
-    void load_model();
+    void load_model(const Platform& plat);
     void load_image(const std::string& path, const Platform& plat);
     void load_folder(const std::string& dir, const Platform& plat);
     void select_index(int i, const Platform& plat);   // load folder_imgs_[i]
     void open_media(const std::string& path, const Platform& plat);   // autodetect image vs video
     void open_video(const std::string& path, const Platform& plat);
     void show_frame(const cv::Mat& frame, const Platform& plat);   // upload frame texture
-    void seek_video(int idx, const Platform& plat);   // random-access seek + read
-    bool advance_video(const Platform& plat);         // sequential next frame; false at end
+    void video_preinfer(std::string path, yolomaster::Config c);   // background: infer every frame
+    void render_video_frame(int idx, const Platform& plat);        // decode + display + overlay from cache
+    void overlay_from_cache(int idx, const Platform& plat);        // re-NMS + mask only (no decode)
+    void seek_video(int idx, const Platform& plat);   // scrub to a frame
     void close_video();
     // webcam + async worker
     void open_camera(const Platform& plat);
