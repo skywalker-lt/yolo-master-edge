@@ -184,13 +184,14 @@ void App::frame(const Platform& plat) {
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar);
 
-    ImGui::BeginChild("sidebar", ImVec2(300, 0), true);
+    const float ui = ImGui::GetFontSize() / 17.0f;   // ~DPI scale (font is 17*dpi on Windows)
+    ImGui::BeginChild("sidebar", ImVec2(300 * ui, 0), true);
     draw_sidebar(plat);
     ImGui::EndChild();
 
     if (!folder_imgs_.empty()) {
         ImGui::SameLine();
-        ImGui::BeginChild("filelist", ImVec2(230, 0), true);
+        ImGui::BeginChild("filelist", ImVec2(230 * ui, 0), true);
         draw_filelist(plat);
         ImGui::EndChild();
     }
