@@ -5,6 +5,7 @@
 #include "imgui_impl_dx11.h"
 #include <d3d11.h>
 #include <tchar.h>
+#include <commdlg.h>   // GetOpenFileNameA / OPENFILENAMEA (not pulled in under WIN32_LEAN_AND_MEAN)
 #include <shobjidl.h>
 #include <string>
 #include "app.hpp"
