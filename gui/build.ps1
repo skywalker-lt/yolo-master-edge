@@ -11,7 +11,8 @@ param(
   [string]$OnnxRoot = "C:/dev/onnxruntime",   # onnxruntime-win-x64-1.18.1  (include/ + lib/)
   [string]$NcnnRoot = "C:/dev/ncnn",          # ncnn-YYYYMMDD-windows-vs2022-shared/x64 (include/ lib/ bin/)
   [string]$MnnRoot  = "C:/dev/mnn",           # MNN Windows build          (include/ + lib/ or build/Release)
-  [string]$OpenCVDir= "C:/dev/opencv/build"   # OpenCV build dir (has OpenCVConfig.cmake + x64/vc16/bin)
+  [string]$OpenCVDir= "C:/dev/opencv/build",  # OpenCV build dir (has OpenCVConfig.cmake + x64/vc16/bin)
+  [string]$Generator= ""                      # e.g. "Visual Studio 18 2026"; "" = CMake auto-picks newest VS
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,7 +21,10 @@ $build = Join-Path $root "build"
 
 if ($Clean -and (Test-Path $build)) { Remove-Item -Recurse -Force $build }
 
-cmake -S $root -B $build -G "Visual Studio 17 2022" -A x64 `
+# Leave -G unset so CMake selects the newest installed Visual Studio (2022/2026/...);
+# pass -Generator only to force a specific one. -A x64 works with any VS generator.
+$genArgs = if ($Generator) { @("-G", $Generator) } else { @() }
+cmake -S $root -B $build @genArgs -A x64 `
   "-DONNXRUNTIME_ROOT=$OnnxRoot" `
   "-DNCNN_ROOT=$NcnnRoot" `
   "-DMNN_ROOT=$MnnRoot" `
