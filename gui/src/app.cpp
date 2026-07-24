@@ -148,11 +148,22 @@ void App::recompute_nms() {
     for (const auto& d : dets_)
         if (d.class_id >= 0 && d.class_id < (int)class_counts_.size()) class_counts_[d.class_id]++;
     need_renms_ = false;
+    need_overlay_ = true;   // dets changed -> seg overlay is stale
+}
+
+void App::rebuild_overlay(const Platform& plat) {
+    need_overlay_ = false;
+    has_mask_ = false;
+    if (!be_ || !be_->is_seg() || dets_.empty()) return;
+    cv::Mat ov = seg_overlay(dets_, be_->proto, be_->proto_c, be_->proto_h, be_->proto_w,
+                             be_->cand_lb, cfg_.imgsz, be_->cand_orig_w, be_->cand_orig_h);
+    if (plat.upload(ov, mask_tex_)) has_mask_ = true;
 }
 
 void App::frame(const Platform& plat) {
     if (need_reinfer_) run_inference();
     if (need_renms_)   recompute_nms();
+    if (need_overlay_) rebuild_overlay(plat);
 
     // video playback: advance frames paced to real time (or as fast as inference allows).
     if (is_video_ && playing_) {
@@ -261,6 +272,13 @@ void App::draw_sidebar(const Platform& plat) {
 
     // ---- Appearance (free: pure redraw) ----
     ImGui::SeparatorText("Appearance");
+    if (be_ && be_->is_seg()) {                     // segmentation: masks / boxes / both
+        int ov = (int)overlay_;
+        const char* ovs[] = {"both", "masks", "boxes"};
+        ImGui::SetNextItemWidth(-1);
+        ImGui::Combo("Overlay", &ov, ovs, IM_ARRAYSIZE(ovs));
+        overlay_ = (Overlay)ov;
+    }
     int st = (int)style_;
     const char* styles[] = {"hud", "solid", "neon"};
     ImGui::SetNextItemWidth(-1);
@@ -384,10 +402,18 @@ void App::draw_preview(const Platform& plat) {
     const ImVec2 disp(img_tex_.w * scale, img_tex_.h * scale);
     const ImVec2 origin(cur.x + (avail.x - disp.x) * 0.5f, cur.y + (imgH - disp.y) * 0.5f);
 
+    const bool seg = be_ && be_->is_seg();
+    const bool show_masks = seg && overlay_ != Overlay::Boxes && has_mask_;
+    const bool show_boxes = !seg || overlay_ != Overlay::Masks;
+
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddImage((ImTextureID)img_tex_.id, origin, ImVec2(origin.x + disp.x, origin.y + disp.y));
-    for (const auto& d : dets_)
-        draw_box(dl, d, style_, labels_, cfg_, origin, scale);
+    const ImVec2 br(origin.x + disp.x, origin.y + disp.y);
+    dl->AddImage((ImTextureID)img_tex_.id, origin, br);
+    if (show_masks)   // seg overlay is same dims as the image -> same rect, alpha-blended by ImGui
+        dl->AddImage((ImTextureID)mask_tex_.id, origin, br);
+    if (show_boxes)
+        for (const auto& d : dets_)
+            draw_box(dl, d, style_, labels_, cfg_, origin, scale);
 
     if (is_video_) {
         ImGui::SetCursorScreenPos(ImVec2(cur.x, cur.y + imgH));
