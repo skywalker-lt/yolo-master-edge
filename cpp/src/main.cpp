@@ -171,6 +171,21 @@ int main(int argc, char** argv) {
                       << "  infer=" << be->infer_ms << "ms\n";
         if (!no_save) {
             cv::Mat vis = img.clone();
+            if (be->is_seg()) {                       // alpha-composite segmentation masks under the boxes
+                cv::Mat ov = seg_overlay(dets, be->proto, be->proto_c, be->proto_h, be->proto_w,
+                                         be->cand_lb, cfg.imgsz, img.cols, img.rows);
+                for (int y = 0; y < vis.rows; ++y) {
+                    const uint8_t* o = ov.ptr<uint8_t>(y);
+                    uint8_t* v = vis.ptr<uint8_t>(y);
+                    for (int x = 0; x < vis.cols; ++x) {
+                        const float a = o[x * 4 + 3] / 255.f;
+                        if (a <= 0) continue;
+                        v[x * 3 + 0] = (uint8_t)(v[x * 3 + 0] * (1 - a) + o[x * 4 + 2] * a);  // B<-B
+                        v[x * 3 + 1] = (uint8_t)(v[x * 3 + 1] * (1 - a) + o[x * 4 + 1] * a);  // G<-G
+                        v[x * 3 + 2] = (uint8_t)(v[x * 3 + 2] * (1 - a) + o[x * 4 + 0] * a);  // R<-R
+                    }
+                }
+            }
             draw(vis, dets, cfg);
             imwrite_jpg((fs::path(outdir) / (fs::path(tag).stem().string() + ".jpg")).string(), vis);
         }

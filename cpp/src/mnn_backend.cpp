@@ -40,10 +40,13 @@ MnnBackend::MnnBackend(const std::string& model_path, int threads, const std::st
         fixed_imgsz = ishape[2];
         meta_imgsz  = ishape[2];
     }
-    // MNN has no built-in metadata map -> read an optional class-name sidecar next to the model.
-    const std::string dir = std::filesystem::path(model_path).parent_path().string();
+    // MNN has no built-in metadata map -> read an optional class-name sidecar. Prefer a per-model
+    // "<model>.metadata.yaml" (so several .mnn can share a dir); fall back to "metadata.yaml".
+    const std::filesystem::path mp(model_path);
+    const std::string per_model = (mp.parent_path() / (mp.stem().string() + ".metadata.yaml")).string();
+    const std::string shared    = (mp.parent_path() / "metadata.yaml").string();
     std::vector<std::string> nm; int mi = 0;
-    if (meta::read_ncnn_yaml(dir + "/metadata.yaml", nm, mi)) {
+    if (meta::read_ncnn_yaml(per_model, nm, mi) || meta::read_ncnn_yaml(shared, nm, mi)) {
         meta_names = nm;
         if (mi > 0) { meta_imgsz = mi; if (fixed_imgsz == 0) fixed_imgsz = mi; }
     }
@@ -89,30 +92,44 @@ std::vector<Detection> MnnBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     interp_->runSession(session_);
     infer_ms = ms_since(t1);
 
-    // ---- postprocess: pull output to host, present channel-major [feat_dim, num_anchors] ----
+    // ---- postprocess: detection = rank-3 output [1,feat,anchors]; proto (seg) = rank-4 [1,nm,mh,mw] ----
     auto t2 = clk::now();
-    MNN::Tensor outHost(output_, MNN::Tensor::CAFFE);
-    output_->copyToHostTensor(&outHost);
-    const auto os = outHost.shape();                    // expect {1, feat, anchors}
-    const int feat = 4 + cfg.num_classes();
-    const float* raw = outHost.host<float>();
-    int feat_dim = feat, num_anchors = 0;
+    auto all = interp_->getSessionOutputAll(session_);
+    MNN::Tensor* detT = nullptr; MNN::Tensor* protoT = nullptr;
+    for (auto& kv : all) {
+        if (kv.second->shape().size() == 4) protoT = kv.second;
+        else                                detT   = kv.second;
+    }
+    if (!detT) detT = output_;                          // detection-only safety
+    MNN::Tensor detHost(detT, MNN::Tensor::CAFFE);
+    detT->copyToHostTensor(&detHost);
+    const auto os = detHost.shape();
+    const float* raw = detHost.host<float>();
+    int feat_dim = 0, num_anchors = 0;
     const float* dec = raw;
     std::vector<float> buf;
-    if (os.size() == 3 && os[1] == feat) {              // [1, feat, anchors] channel-major (expected)
-        feat_dim = os[1]; num_anchors = os[2];
-    } else if (os.size() == 3 && os[2] == feat) {       // [1, anchors, feat] -> transpose
-        num_anchors = os[1];
-        buf.resize(static_cast<size_t>(feat) * num_anchors);
-        for (int a = 0; a < num_anchors; ++a)
-            for (int f = 0; f < feat; ++f)
-                buf[static_cast<size_t>(f) * num_anchors + a] = raw[static_cast<size_t>(a) * feat + f];
-        dec = buf.data();
-    } else {                                            // fallback: assume channel-major, infer anchor count
-        num_anchors = static_cast<int>(outHost.elementSize() / feat);
+    if (os.size() == 3) {
+        if (os[1] <= os[2]) { feat_dim = os[1]; num_anchors = os[2]; }   // channel-major (expected)
+        else {                                                          // [1,anchors,feat] -> transpose
+            feat_dim = os[2]; num_anchors = os[1];
+            buf.resize(static_cast<size_t>(feat_dim) * num_anchors);
+            for (int a = 0; a < num_anchors; ++a)
+                for (int f = 0; f < feat_dim; ++f)
+                    buf[static_cast<size_t>(f) * num_anchors + a] = raw[static_cast<size_t>(a) * feat_dim + f];
+            dec = buf.data();
+        }
     }
     candidates = decode_candidates(dec, feat_dim, num_anchors, cfg, lb);
-    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h;
+    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
+    proto.clear(); proto_c = proto_h = proto_w = 0;
+    if (protoT) {                                       // segmentation proto
+        MNN::Tensor protoHost(protoT, MNN::Tensor::CAFFE);
+        protoT->copyToHostTensor(&protoHost);
+        const auto ps = protoHost.shape();              // {1, nm, mh, mw}
+        proto_c = (int)ps[1]; proto_h = (int)ps[2]; proto_w = (int)ps[3];
+        const float* pp = protoHost.host<float>();
+        proto.assign(pp, pp + (size_t)proto_c * proto_h * proto_w);
+    }
     auto dets = nms_and_cap(candidates, cfg, lb.orig_w, lb.orig_h);
     post_ms = ms_since(t2);
     return dets;
