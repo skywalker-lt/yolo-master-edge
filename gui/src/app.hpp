@@ -31,6 +31,7 @@ struct Platform {
 enum class BoxStyle { Hud, Solid, Neon };
 enum class LabelMode { Full, Min, Off };
 enum class Preprocess { Letterbox, Stretch };
+enum class Overlay { Both, Masks, Boxes };   // segmentation: what to show (masks / boxes / both)
 
 class App {
 public:
@@ -66,8 +67,11 @@ private:
 
     // ---- results ("forward once, tune cheap") ----
     std::vector<yolomaster::Detection> dets_;
+    Texture mask_tex_;                // segmentation overlay (RGBA), rebuilt when dets change
+    bool  has_mask_ = false;
     bool  need_reinfer_ = false;      // model/source/preprocess/threads changed
     bool  need_renms_   = false;      // conf/iou changed (cheap: re-run nms on cached candidates)
+    bool  need_overlay_ = false;      // dets changed -> recomposite the seg mask overlay
     double pre_ms_ = 0, inf_ms_ = 0, post_ms_ = 0;
     std::vector<int> class_counts_;
 
@@ -76,6 +80,7 @@ private:
     BoxStyle   style_ = BoxStyle::Hud;
     LabelMode  labels_ = LabelMode::Full;
     Preprocess prep_ = Preprocess::Letterbox;
+    Overlay    overlay_ = Overlay::Both;
 
     static constexpr float kConfFloor = 0.05f;   // cache candidates down to here
 
@@ -90,6 +95,7 @@ private:
     void close_video();
     void run_inference();             // full forward pass -> cache candidates
     void recompute_nms();             // cheap: nms_and_cap on cached candidates
+    void rebuild_overlay(const Platform& plat);   // recomposite seg masks -> mask_tex_
     void draw_sidebar(const Platform& plat);
     void draw_filelist(const Platform& plat);   // folder-batch navigator panel
     void draw_preview(const Platform& plat);
