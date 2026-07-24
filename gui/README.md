@@ -6,12 +6,18 @@ MNN** CPU backends. It reuses the exact same C++ runtime as the CLI (`../cpp`), 
 preprocessing (letterbox, RGB /255), decode, per-class NMS, and the class palette
 are identical.
 
-**Stage 1 (this build):** single-image + folder-batch + video inference, live
-conf/IoU tuning without re-inferring ("forward once, tune cheap"),
-stretch/letterbox preprocess, box styles (hud / solid / neon), label modes,
-per-class counts, timing stats. CPU only. Detection models.
+**Now:** image + folder-batch + video + **live webcam**, segmentation mask
+overlays, one unified **Open…** (autodetects image vs video), live conf/IoU
+tuning without re-inferring ("forward once, tune cheap"), stretch/letterbox
+preprocess, box styles (hud / solid / neon), label modes, per-class counts,
+timing stats. **Video/webcam infer on a background thread** so playback stays
+smooth regardless of inference speed (drops late frames).
 
-**Later:** webcam, segmentation overlays, CUDA.
+**Device: CPU / GPU.** GPU maps to each backend's native accelerator —
+ONNX→**CUDA**, ncnn→**Vulkan**, MNN→**OpenCL**. ncnn/MNN GPU works with the
+prebuilts you already have (Vulkan/OpenCL are compiled in; needs GPU drivers).
+ONNX CUDA additionally needs the **GPU** ONNX Runtime build + CUDA + cuDNN (the
+`onnxruntime-win-x64-gpu-*` package, not the CPU one).
 
 ---
 

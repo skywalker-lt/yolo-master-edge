@@ -6,6 +6,10 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <condition_variable>
 #include <opencv2/opencv.hpp>
 #include "yolomaster.hpp"
 
@@ -32,9 +36,11 @@ enum class BoxStyle { Hud, Solid, Neon };
 enum class LabelMode { Full, Min, Off };
 enum class Preprocess { Letterbox, Stretch };
 enum class Overlay { Both, Masks, Boxes };   // segmentation: what to show (masks / boxes / both)
+enum class Device { CPU, GPU };              // GPU = onnx:CUDA, ncnn:Vulkan, mnn:OpenCL/Vulkan
 
 class App {
 public:
+    ~App();
     void frame(const Platform& plat);   // draw one ImGui frame (sidebar + preview)
 
 private:
@@ -65,6 +71,34 @@ private:
     double      video_fps_ = 30.0, play_accum_ = 0.0;   // play_accum_ paces playback to real time
     std::string video_path_;
 
+    // ---- webcam ----
+    cv::VideoCapture cam_;
+    bool        is_cam_ = false;
+    bool        cam_mirror_ = true;
+    double      cam_fps_ema_ = 0.0, cam_ms_ema_ = 0.0;  // EMA-smoothed feed fps / inference ms
+
+    // ---- async inference worker (video + webcam): decode/display on main, infer off-thread ----
+    std::thread worker_;
+    std::mutex  job_mtx_;
+    std::condition_variable job_cv_;
+    cv::Mat     job_frame_;
+    yolomaster::Config job_cfg_;
+    bool        job_pending_ = false, worker_quit_ = false;
+    std::atomic<bool> worker_busy_{false};
+    std::mutex  res_mtx_;
+    struct AsyncResult {
+        std::vector<yolomaster::Detection> dets;
+        std::vector<yolomaster::RawDet>    cands;        // for cheap re-NMS when paused
+        std::vector<float> proto; int pc = 0, ph = 0, pw = 0;
+        yolomaster::LetterboxInfo lb; int ow = 0, oh = 0;
+        double inf_ms = 0;
+        bool seg = false;
+    };
+    AsyncResult ares_;
+    bool        ares_dirty_ = false;
+    bool        async_mode_ = false;   // true while a video/webcam worker owns the backend
+    bool        seg_model_ = false;    // stable is_seg() flag (safe to read from the main thread)
+
     // ---- results ("forward once, tune cheap") ----
     std::vector<yolomaster::Detection> dets_;
     Texture mask_tex_;                // segmentation overlay (RGBA), rebuilt when dets change
@@ -81,6 +115,7 @@ private:
     LabelMode  labels_ = LabelMode::Full;
     Preprocess prep_ = Preprocess::Letterbox;
     Overlay    overlay_ = Overlay::Both;
+    Device     device_ = Device::CPU;
 
     static constexpr float kConfFloor = 0.05f;   // cache candidates down to here
 
@@ -88,11 +123,24 @@ private:
     void load_image(const std::string& path, const Platform& plat);
     void load_folder(const std::string& dir, const Platform& plat);
     void select_index(int i, const Platform& plat);   // load folder_imgs_[i]
+    void open_media(const std::string& path, const Platform& plat);   // autodetect image vs video
     void open_video(const std::string& path, const Platform& plat);
-    void show_frame(const cv::Mat& frame, const Platform& plat);   // upload + flag re-infer
+    void show_frame(const cv::Mat& frame, const Platform& plat);   // upload frame texture
     void seek_video(int idx, const Platform& plat);   // random-access seek + read
     bool advance_video(const Platform& plat);         // sequential next frame; false at end
     void close_video();
+    // webcam + async worker
+    void open_camera(const Platform& plat);
+    void close_camera();
+    void start_worker();
+    void stop_worker();
+    void worker_loop();
+    void submit_job(const cv::Mat& frame);            // non-blocking; drops if worker busy
+    void consume_async(const Platform& plat);         // pull latest result -> dets_ / overlay
+    void build_overlay(const std::vector<yolomaster::Detection>& dets, const std::vector<float>& proto,
+                       int pc, int ph, int pw, const yolomaster::LetterboxInfo& lb,
+                       int ow, int oh, const Platform& plat);
+    std::string gpu_device_str() const;               // backend-specific GPU token for the Device
     void run_inference();             // full forward pass -> cache candidates
     void recompute_nms();             // cheap: nms_and_cap on cached candidates
     void rebuild_overlay(const Platform& plat);   // recomposite seg masks -> mask_tex_
@@ -100,6 +148,7 @@ private:
     void draw_filelist(const Platform& plat);   // folder-batch navigator panel
     void draw_preview(const Platform& plat);
     void draw_transport(const Platform& plat);  // video play/pause + scrubber
+    void draw_camera_hud();                     // webcam fps/latency/objects overlay
 };
 
 } // namespace gui

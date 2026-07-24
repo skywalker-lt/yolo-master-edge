@@ -11,9 +11,12 @@ static double ms_since(const clk::time_point& t) {
     return std::chrono::duration<double, std::milli>(clk::now() - t).count();
 }
 
-NcnnBackend::NcnnBackend(const std::string& param_path, const std::string& bin_path, int threads)
+NcnnBackend::NcnnBackend(const std::string& param_path, const std::string& bin_path, int threads,
+                         bool use_vulkan)
     : threads_(threads) {
     net_.opt.num_threads = threads;
+    net_.opt.use_vulkan_compute = use_vulkan;   // GPU path (the -shared prebuilt is Vulkan-enabled)
+    active_ep = use_vulkan ? "ncnn-Vulkan" : "cpu";
     if (net_.load_param(param_path.c_str()) != 0)
         throw std::runtime_error("ncnn: failed to load param " + param_path);
     if (net_.load_model(bin_path.c_str()) != 0)
