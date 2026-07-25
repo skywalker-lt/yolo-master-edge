@@ -448,15 +448,43 @@ void App::frame(const Platform& plat) {
     if (show_about_) draw_about(plat);
 }
 
+// A rounded, padded, bordered "card" section — mirrors the macOS runner's grouped panels.
+static void begin_card(const char* title) {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.155f, 0.166f, 0.198f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Border,  ImVec4(1.0f, 1.0f, 1.0f, 0.05f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 11.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14, 12));
+    ImGui::BeginChild(title, ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.56f, 0.61f, 0.68f, 1.0f));   // section header
+    ImGui::TextUnformatted(title);
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
+}
+static void end_card() {
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    ImGui::Dummy(ImVec2(0, 5));   // gap between cards
+}
+// small dim caption above a full-width control
+static void field_label(const char* t) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.60f, 0.64f, 0.70f, 1.0f));
+    ImGui::TextUnformatted(t);
+    ImGui::PopStyleColor();
+}
+
 void App::draw_sidebar(const Platform& plat) {
+    const float ui = ImGui::GetFontSize() / 17.0f;   // DPI scale for fixed pixel offsets
+    // ---- header ----
     ImGui::TextUnformatted("YOLO-Master Edge");
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight());
     if (ImGui::Button("?", ImVec2(ImGui::GetFrameHeight(), 0))) show_about_ = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("About / Licenses");
-    ImGui::Separator();
+    ImGui::TextDisabled("Edge runner - ONNX / ncnn / MNN");
+    ImGui::Dummy(ImVec2(0, 6));
 
-    // ---- Model (auto-loads on pick / Enter / backend / device change — no Load button) ----
-    ImGui::SeparatorText("Model");
+    // ---- MODEL (auto-loads; no Load button) ----
+    begin_card("MODEL");
     ImGui::SetNextItemWidth(-1);
     if (ImGui::InputTextWithHint("##model", ".onnx / ncnn dir / .mnn", model_path_, sizeof(model_path_),
                                  ImGuiInputTextFlags_EnterReturnsTrue))
@@ -465,107 +493,128 @@ void App::draw_sidebar(const Platform& plat) {
         std::string p = plat.open_file("Select model", "Models\0*.onnx;*.mnn;*.param\0All\0*.*\0");
         if (!p.empty()) { std::snprintf(model_path_, sizeof(model_path_), "%s", p.c_str()); load_model(plat); }
     }
-    // backend + device on their own row, widths proportional to the panel (DPI-safe, no arrow clipping)
+    field_label("Backend");
     const char* backends[] = {"auto", "onnx", "ncnn", "mnn"};
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
+    ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##backend", &backend_sel_, backends, IM_ARRAYSIZE(backends)) && model_path_[0])
         load_model(plat);
-    ImGui::SameLine();
+    if (be_) {
+        ImGui::TextColored(ImVec4(0.5f,0.85f,0.4f,1), "%s  \xc2\xb7  %s  \xc2\xb7  nc %d  \xc2\xb7  %dpx",
+                           be_name_.c_str(), be_ep_.c_str(), cfg_.num_classes(), cfg_.imgsz);
+        if (!be_note_.empty())
+            ImGui::TextWrapped("%s", be_note_.c_str());
+    } else if (!be_err_.empty()) {
+        ImGui::TextColored(ImVec4(0.98f,0.4f,0.4f,1), "%s", be_err_.c_str());
+    }
+    end_card();
+
+    // ---- SOURCE ----
+    begin_card("SOURCE");
+    if (ImGui::Button("Open image / video...", ImVec2(-1, 0))) {   // autodetect by extension
+        std::string p = plat.open_file("Open image or video",
+            "Media\0*.jpg;*.jpeg;*.png;*.bmp;*.mp4;*.avi;*.mov;*.mkv\0All\0*.*\0");
+        if (!p.empty()) open_media(p, plat);
+    }
+    if (ImGui::Button("Open folder...", ImVec2(-1, 0))) {
+        std::string d = plat.open_folder("Select image folder");
+        if (!d.empty()) load_folder(d, plat);
+    }
+    if (is_cam_) {
+        if (ImGui::Button("Stop Camera", ImVec2(-1, 0))) close_camera();
+        ImGui::Checkbox("Mirror", &cam_mirror_);
+    } else if (ImGui::Button("Live Webcam", ImVec2(-1, 0))) {
+        open_camera(plat);
+    }
+    if (!img_bgr_.empty())
+        ImGui::TextDisabled("%d x %d%s", img_bgr_.cols, img_bgr_.rows, is_cam_ ? "   live" : "");
+    if (!load_err_.empty())
+        ImGui::TextColored(ImVec4(0.98f,0.4f,0.4f,1), "%s", load_err_.c_str());
+    end_card();
+
+    // ---- PREPROCESS ----
+    begin_card("PREPROCESS");
+    field_label("Input fit");
+    int pp = (int)prep_;
+    const char* pps[] = {"letterbox", "stretch"};
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("##prep", &pp, pps, IM_ARRAYSIZE(pps)) && (Preprocess)pp != prep_) {
+        prep_ = (Preprocess)pp;
+        if (is_video_)     open_video(video_path_, plat);   // re-infer the clip
+        else if (!is_cam_) need_reinfer_ = true;
+    }
+    end_card();
+
+    // ---- DETECTION ----
+    begin_card("DETECTION");
+    field_label("Confidence");
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::SliderFloat("##conf", &conf_, 0.05f, 0.95f, "%.2f")) need_renms_ = true;
+    field_label("IoU (NMS)");
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::SliderFloat("##iou", &iou_, 0.10f, 0.90f, "%.2f")) need_renms_ = true;
+    end_card();
+
+    // ---- APPEARANCE ----
+    begin_card("APPEARANCE");
+    if (seg_model_) {
+        field_label("Overlay");
+        int ov = (int)overlay_;
+        const char* ovs[] = {"both", "masks", "boxes"};
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("##overlay", &ov, ovs, IM_ARRAYSIZE(ovs))) overlay_ = (Overlay)ov;
+    }
+    field_label("Box style");
+    int st = (int)style_;
+    const char* styles[] = {"hud", "solid", "neon"};
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("##style", &st, styles, IM_ARRAYSIZE(styles))) style_ = (BoxStyle)st;
+    field_label("Labels");
+    int lm = (int)labels_;
+    const char* lms[] = {"full", "min", "off"};
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("##labels", &lm, lms, IM_ARRAYSIZE(lms))) labels_ = (LabelMode)lm;
+    end_card();
+
+    // ---- DEVICE ----
+    begin_card("DEVICE");
+    field_label("Compute");
     int dv = (int)device_;
     const char* devs[] = {"CPU", "GPU"};
     ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##device", &dv, devs, IM_ARRAYSIZE(devs)) && (Device)dv != device_) {
         device_ = (Device)dv;
-        if (be_ || model_path_[0]) load_model(plat);   // onnx:CUDA / ncnn:Vulkan / mnn:OpenCL
+        if (be_ || model_path_[0]) load_model(plat);
     }
-    if (be_) {
-        ImGui::TextColored(ImVec4(0.5f,0.85f,0.4f,1), "%s | %s | nc=%d | %dpx",
-                           be_name_.c_str(), be_ep_.c_str(), cfg_.num_classes(), cfg_.imgsz);
-        if (!be_note_.empty())                       // e.g. why CUDA fell back to CPU
-            ImGui::TextWrapped("%s", be_note_.c_str());
-    } else if (!be_err_.empty()) {
-        ImGui::TextColored(ImVec4(0.98f,0.4f,0.4f,1), "%s", be_err_.c_str());
-    }
+    ImGui::TextDisabled("GPU: onnx CUDA \xc2\xb7 ncnn Vulkan \xc2\xb7 mnn OpenCL");
+    end_card();
 
-    // ---- Source ----
-    ImGui::SeparatorText("Source");
-    if (ImGui::Button("Open...")) {   // one picker: image or video, autodetected by extension
-        std::string p = plat.open_file("Open image or video",
-            "Media\0*.jpg;*.jpeg;*.png;*.bmp;*.mp4;*.avi;*.mov;*.mkv\0All\0*.*\0");
-        if (!p.empty()) open_media(p, plat);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Open folder...")) {
-        std::string d = plat.open_folder("Select image folder");
-        if (!d.empty()) load_folder(d, plat);
-    }
-    ImGui::SameLine();
-    if (is_cam_) {
-        if (ImGui::Button("Stop Camera")) close_camera();
-    } else if (ImGui::Button("Webcam")) {
-        open_camera(plat);
-    }
-    if (is_cam_) ImGui::Checkbox("Mirror", &cam_mirror_);
-    if (!img_bgr_.empty())
-        ImGui::Text("%dx%d%s", img_bgr_.cols, img_bgr_.rows, is_cam_ ? "  (live)" : "");
-    if (!load_err_.empty())
-        ImGui::TextColored(ImVec4(0.98f,0.4f,0.4f,1), "%s", load_err_.c_str());
-
-    // ---- Tuning (cheap: conf/iou only re-run NMS) ----
-    ImGui::SeparatorText("Detection");
-    if (ImGui::SliderFloat("Conf", &conf_, 0.05f, 0.95f, "%.2f")) need_renms_ = true;
-    if (ImGui::SliderFloat("IoU",  &iou_,  0.10f, 0.90f, "%.2f")) need_renms_ = true;
-
-    // ---- Appearance (free: pure redraw) ----
-    ImGui::SeparatorText("Appearance");
-    if (seg_model_) {                               // segmentation: masks / boxes / both
-        int ov = (int)overlay_;
-        const char* ovs[] = {"both", "masks", "boxes"};
-        ImGui::SetNextItemWidth(-1);
-        ImGui::Combo("Overlay", &ov, ovs, IM_ARRAYSIZE(ovs));
-        overlay_ = (Overlay)ov;
-    }
-    int st = (int)style_;
-    const char* styles[] = {"hud", "solid", "neon"};
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::Combo("Box style", &st, styles, IM_ARRAYSIZE(styles))) style_ = (BoxStyle)st;
-    int lm = (int)labels_;
-    const char* lms[] = {"full", "min", "off"};
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::Combo("Labels", &lm, lms, IM_ARRAYSIZE(lms))) labels_ = (LabelMode)lm;
-    int pp = (int)prep_;
-    const char* pps[] = {"letterbox", "stretch"};
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::Combo("Preprocess", &pp, pps, IM_ARRAYSIZE(pps))) {
-        if ((Preprocess)pp != prep_) {
-            prep_ = (Preprocess)pp;
-            if (is_video_)       open_video(video_path_, plat);   // re-infer the clip
-            else if (!is_cam_)   need_reinfer_ = true;            // camera picks it up on the next frame
-        }
-    }
-
-    // ---- Stats ----
-    ImGui::SeparatorText("Inference");
+    // ---- INFERENCE ----
+    begin_card("INFERENCE");
     if (be_ && !img_bgr_.empty()) {
         const double total = pre_ms_ + inf_ms_ + post_ms_;
-        ImGui::Text("model  %.1f ms", inf_ms_);
-        ImGui::Text("total  %.1f ms  (%.0f fps)", total, total > 0 ? 1000.0 / total : 0.0);
-        ImGui::Text("dets   %d", (int)dets_.size());
+        ImGui::Text("Model");   ImGui::SameLine(110 * ui); ImGui::TextDisabled("%.1f ms", inf_ms_);
+        ImGui::Text("Overall"); ImGui::SameLine(110 * ui);
+        ImGui::TextDisabled("%.1f ms  \xc2\xb7  %.0f fps", total, total > 0 ? 1000.0 / total : 0.0);
+        ImGui::Text("Detections"); ImGui::SameLine(110 * ui); ImGui::TextDisabled("%d", (int)dets_.size());
         if (!class_counts_.empty()) {
-            ImGui::Separator();
+            ImGui::Spacing();
             for (int i = 0; i < (int)class_counts_.size(); ++i) {
                 if (!class_counts_[i]) continue;
                 const float* c = kPalette[i % 10];
                 ImGui::ColorButton("##c", ImVec4(c[0],c[1],c[2],1),
-                    ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(12,12));
+                    ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(11*ui,11*ui));
                 ImGui::SameLine();
                 const char* nm = i < cfg_.num_classes() ? cfg_.class_names[i].c_str() : "?";
-                ImGui::Text("%-14s %d", nm, class_counts_[i]);
+                ImGui::Text("%s", nm); ImGui::SameLine(110 * ui); ImGui::TextDisabled("%d", class_counts_[i]);
             }
         }
     } else {
-        ImGui::TextDisabled("load a model and an image");
+        ImGui::TextDisabled("Load a model and a source to see stats.");
     }
+    end_card();
+
+    ImGui::Dummy(ImVec2(0, 2));
+    ImGui::TextDisabled("(c) 2026 Thomas Li");
 }
 
 void App::draw_filelist(const Platform& plat) {

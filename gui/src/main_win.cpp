@@ -159,13 +159,14 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 // A clean dark theme: rounded corners, breathing room, a calm blue accent.
 static void ApplyStyle() {
     ImGuiStyle& s = ImGui::GetStyle();
-    s.WindowRounding = 7.f; s.ChildRounding = 7.f; s.FrameRounding = 5.f;
-    s.PopupRounding = 5.f;  s.GrabRounding = 4.f;  s.TabRounding = 5.f;
-    s.ScrollbarRounding = 6.f;
-    s.WindowPadding = ImVec2(12, 12); s.FramePadding = ImVec2(10, 6);
-    s.ItemSpacing = ImVec2(9, 8); s.ItemInnerSpacing = ImVec2(7, 6);
-    s.ScrollbarSize = 13.f; s.GrabMinSize = 11.f;
-    s.WindowBorderSize = 0.f; s.FrameBorderSize = 0.f; s.ChildBorderSize = 0.f;
+    s.WindowRounding = 9.f;  s.ChildRounding = 11.f; s.FrameRounding = 7.f;
+    s.PopupRounding = 8.f;   s.GrabRounding = 7.f;   s.TabRounding = 7.f;
+    s.ScrollbarRounding = 8.f;
+    s.WindowPadding = ImVec2(16, 14); s.FramePadding = ImVec2(12, 9);   // roomy, macOS-like
+    s.ItemSpacing = ImVec2(10, 10); s.ItemInnerSpacing = ImVec2(8, 7);
+    s.ScrollbarSize = 12.f; s.GrabMinSize = 12.f;
+    s.WindowBorderSize = 0.f; s.FrameBorderSize = 0.f; s.ChildBorderSize = 1.f;
+    s.SeparatorTextBorderSize = 1.f; s.SeparatorTextPadding = ImVec2(0, 6);
 
     ImVec4* c = s.Colors;
     c[ImGuiCol_Text]                 = ImVec4(0.92f, 0.93f, 0.95f, 1.00f);
