@@ -449,28 +449,29 @@ void App::draw_sidebar(const Platform& plat) {
     ImGui::TextUnformatted("YOLO-Master Edge");
     ImGui::Separator();
 
-    // ---- Model ----
+    // ---- Model (auto-loads on pick / Enter / backend / device change — no Load button) ----
     ImGui::SeparatorText("Model");
     ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##model", ".onnx / ncnn dir / .mnn", model_path_, sizeof(model_path_));
+    if (ImGui::InputTextWithHint("##model", ".onnx / ncnn dir / .mnn", model_path_, sizeof(model_path_),
+                                 ImGuiInputTextFlags_EnterReturnsTrue))
+        load_model(plat);
     if (ImGui::Button("Browse##model")) {
         std::string p = plat.open_file("Select model", "Models\0*.onnx;*.mnn;*.param\0All\0*.*\0");
-        if (!p.empty()) { std::snprintf(model_path_, sizeof(model_path_), "%s", p.c_str()); }
+        if (!p.empty()) { std::snprintf(model_path_, sizeof(model_path_), "%s", p.c_str()); load_model(plat); }
     }
     ImGui::SameLine();
     const char* backends[] = {"auto", "onnx", "ncnn", "mnn"};
     ImGui::SetNextItemWidth(80);
-    ImGui::Combo("##backend", &backend_sel_, backends, IM_ARRAYSIZE(backends));
+    if (ImGui::Combo("##backend", &backend_sel_, backends, IM_ARRAYSIZE(backends)) && model_path_[0])
+        load_model(plat);
     ImGui::SameLine();
     int dv = (int)device_;
     const char* devs[] = {"CPU", "GPU"};
     ImGui::SetNextItemWidth(64);
     if (ImGui::Combo("##device", &dv, devs, IM_ARRAYSIZE(devs)) && (Device)dv != device_) {
         device_ = (Device)dv;
-        if (be_) load_model(plat);   // rebuild on the new device (onnx:CUDA / ncnn:Vulkan / mnn:OpenCL)
+        if (be_ || model_path_[0]) load_model(plat);   // onnx:CUDA / ncnn:Vulkan / mnn:OpenCL
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Load##model")) load_model(plat);
     if (be_) {
         ImGui::TextColored(ImVec4(0.5f,0.85f,0.4f,1), "%s | %s | nc=%d | %dpx",
                            be_name_.c_str(), be_ep_.c_str(), cfg_.num_classes(), cfg_.imgsz);
@@ -508,8 +509,6 @@ void App::draw_sidebar(const Platform& plat) {
     ImGui::SeparatorText("Detection");
     if (ImGui::SliderFloat("Conf", &conf_, 0.05f, 0.95f, "%.2f")) need_renms_ = true;
     if (ImGui::SliderFloat("IoU",  &iou_,  0.10f, 0.90f, "%.2f")) need_renms_ = true;
-    ImGui::SetNextItemWidth(120);
-    if (ImGui::SliderInt("Threads", &threads_, 1, 16)) { /* applied on next Load */ }
 
     // ---- Appearance (free: pure redraw) ----
     ImGui::SeparatorText("Appearance");
@@ -638,15 +637,41 @@ void App::draw_transport(const Platform& plat) {
 void App::draw_camera_hud() {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 wp = ImGui::GetWindowPos();
-    const ImVec2 p(wp.x + 14, wp.y + 12);
-    char buf[128];
-    std::snprintf(buf, sizeof(buf), "%.0f fps   %.0f ms   %d obj",
-                  cam_fps_ema_, cam_ms_ema_, (int)dets_.size());
-    const ImVec2 ts = ImGui::CalcTextSize(buf);
-    dl->AddRectFilled(ImVec2(p.x - 7, p.y - 5), ImVec2(p.x + ts.x + 9, p.y + ts.y + 6),
-                      IM_COL32(0, 0, 0, 140), 6.f);
-    dl->AddCircleFilled(ImVec2(p.x + 3, p.y + ts.y * 0.5f), 4.f, IM_COL32(240, 70, 70, 255));  // LIVE dot
-    dl->AddText(ImVec2(p.x + 12, p.y), IM_COL32(255, 255, 255, 255), buf);
+    const float th = ImGui::GetTextLineHeight();
+    const float padX = 12.f, padY = 7.f, gap = th * 0.9f, kern = 4.f;
+    const float x0 = wp.x + 16, y0 = wp.y + 16;   // top-left inset
+
+    char fps[16], ms[16], obj[16];
+    std::snprintf(fps, sizeof(fps), "%.0f", cam_fps_ema_);
+    std::snprintf(ms,  sizeof(ms),  "%.0f", cam_ms_ema_);
+    std::snprintf(obj, sizeof(obj), "%d",  (int)dets_.size());
+    auto w = [](const char* s) { return ImGui::CalcTextSize(s).x; };
+
+    const float dotR = th * 0.22f, dotAdv = dotR * 2 + 7;
+    const float total = dotAdv + w("LIVE") + gap
+                      + w(fps) + kern + w("fps") + gap
+                      + w(ms)  + kern + w("ms")  + gap
+                      + w(obj) + kern + w("obj");
+
+    // pill background
+    dl->AddRectFilled(ImVec2(x0 - padX, y0 - padY),
+                      ImVec2(x0 + total + padX, y0 + th + padY),
+                      IM_COL32(15, 17, 20, 205), (th + 2 * padY) * 0.5f);
+
+    const ImU32 white  = IM_COL32(236, 239, 243, 255), dim = IM_COL32(146, 152, 160, 255);
+    const ImU32 green  = IM_COL32(88, 214, 128, 255),  cyan   = IM_COL32(64, 206, 218, 255);
+    const ImU32 orange = IM_COL32(250, 162, 74, 255),  red    = IM_COL32(244, 76, 76, 255);
+
+    float x = x0;
+    dl->AddCircleFilled(ImVec2(x + dotR, y0 + th * 0.5f), dotR, red);
+    x += dotAdv;
+    dl->AddText(ImVec2(x, y0), white, "LIVE");                 x += w("LIVE") + gap;
+    dl->AddText(ImVec2(x, y0), green,  fps); x += w(fps) + kern;
+    dl->AddText(ImVec2(x, y0), dim,    "fps");                 x += w("fps") + gap;
+    dl->AddText(ImVec2(x, y0), cyan,   ms);  x += w(ms) + kern;
+    dl->AddText(ImVec2(x, y0), dim,    "ms");                  x += w("ms") + gap;
+    dl->AddText(ImVec2(x, y0), orange, obj); x += w(obj) + kern;
+    dl->AddText(ImVec2(x, y0), dim,    "obj");
 }
 
 void App::draw_preview(const Platform& plat) {
