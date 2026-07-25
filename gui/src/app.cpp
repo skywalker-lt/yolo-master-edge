@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "imgui.h"
+#include "about.hpp"
 #include "backend_factory.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -443,10 +444,15 @@ void App::frame(const Platform& plat) {
     ImGui::EndChild();
 
     ImGui::End();
+
+    if (show_about_) draw_about(plat);
 }
 
 void App::draw_sidebar(const Platform& plat) {
     ImGui::TextUnformatted("YOLO-Master Edge");
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight());
+    if (ImGui::Button("?", ImVec2(ImGui::GetFrameHeight(), 0))) show_about_ = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("About / Licenses");
     ImGui::Separator();
 
     // ---- Model (auto-loads on pick / Enter / backend / device change — no Load button) ----
@@ -455,19 +461,19 @@ void App::draw_sidebar(const Platform& plat) {
     if (ImGui::InputTextWithHint("##model", ".onnx / ncnn dir / .mnn", model_path_, sizeof(model_path_),
                                  ImGuiInputTextFlags_EnterReturnsTrue))
         load_model(plat);
-    if (ImGui::Button("Browse##model")) {
+    if (ImGui::Button("Browse...", ImVec2(-1, 0))) {
         std::string p = plat.open_file("Select model", "Models\0*.onnx;*.mnn;*.param\0All\0*.*\0");
         if (!p.empty()) { std::snprintf(model_path_, sizeof(model_path_), "%s", p.c_str()); load_model(plat); }
     }
-    ImGui::SameLine();
+    // backend + device on their own row, widths proportional to the panel (DPI-safe, no arrow clipping)
     const char* backends[] = {"auto", "onnx", "ncnn", "mnn"};
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
     if (ImGui::Combo("##backend", &backend_sel_, backends, IM_ARRAYSIZE(backends)) && model_path_[0])
         load_model(plat);
     ImGui::SameLine();
     int dv = (int)device_;
     const char* devs[] = {"CPU", "GPU"};
-    ImGui::SetNextItemWidth(64);
+    ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##device", &dv, devs, IM_ARRAYSIZE(devs)) && (Device)dv != device_) {
         device_ = (Device)dv;
         if (be_ || model_path_[0]) load_model(plat);   // onnx:CUDA / ncnn:Vulkan / mnn:OpenCL
@@ -672,6 +678,52 @@ void App::draw_camera_hud() {
     dl->AddText(ImVec2(x, y0), dim,    "ms");                  x += w("ms") + gap;
     dl->AddText(ImVec2(x, y0), orange, obj); x += w(obj) + kern;
     dl->AddText(ImVec2(x, y0), dim,    "obj");
+}
+
+void App::draw_about(const Platform& plat) {
+    const float ui = ImGui::GetFontSize() / 17.0f;
+    ImGui::SetNextWindowSize(ImVec2(560 * ui, 620 * ui), ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::Begin("About", &show_about_, ImGuiWindowFlags_NoCollapse)) {
+        auto link = [&](const char* label, const char* url) {
+            ImGui::TextColored(ImVec4(0.37f, 0.64f, 0.88f, 1.f), "%s", label);
+            if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (ImGui::IsItemClicked() && plat.open_url) plat.open_url(url);
+        };
+
+        ImGui::TextUnformatted(kAppName);
+        ImGui::TextDisabled("Version %s", kAppVersion);
+        ImGui::TextWrapped("%s", kAppTagline);
+        ImGui::Spacing();
+        ImGui::Text("%s", kAuthor);
+        ImGui::TextDisabled("%s", kAuthorAffil);
+        link("github.com/skywalker-lt", kAuthorUrl);
+        link("Source - github.com/skywalker-lt/yolo-master-edge", kSourceUrl);
+
+        ImGui::Dummy(ImVec2(0, 6 * ui));
+        ImGui::SeparatorText("Acknowledgements");
+        for (const auto& a : kAcks) {
+            ImGui::Bullet(); ImGui::SameLine();
+            ImGui::TextUnformatted(a.name);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::TextWrapped("%s", a.blurb);
+            ImGui::PopStyleColor();
+            link(a.repo, a.repo);
+            ImGui::Spacing();
+        }
+
+        ImGui::Dummy(ImVec2(0, 4 * ui));
+        if (ImGui::CollapsingHeader("License (AGPL-3.0)")) {
+            ImGui::BeginChild("lic", ImVec2(0, 240 * ui), true,
+                              ImGuiWindowFlags_HorizontalScrollbar);
+            ImGui::TextUnformatted(kLicenseText);
+            ImGui::EndChild();
+        }
+
+        ImGui::Dummy(ImVec2(0, 4 * ui));
+        if (ImGui::Button("Close", ImVec2(-1, 0))) show_about_ = false;
+    }
+    ImGui::End();
 }
 
 void App::draw_preview(const Platform& plat) {

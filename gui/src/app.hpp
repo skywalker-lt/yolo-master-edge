@@ -31,6 +31,8 @@ struct Platform {
     std::function<std::string(const char* title, const char* filter)> open_file;
     // Native folder-picker; returns "" if cancelled.
     std::function<std::string(const char* title)> open_folder;
+    // Open a URL in the default browser.
+    std::function<void(const char* url)> open_url;
 };
 
 enum class BoxStyle { Hud, Solid, Neon };
@@ -161,6 +163,8 @@ private:
     void draw_preview(const Platform& plat);
     void draw_transport(const Platform& plat);  // video play/pause + scrubber
     void draw_camera_hud();                     // webcam fps/latency/objects overlay
+    void draw_about(const Platform& plat);      // About / Acknowledgements / License window
+    bool show_about_ = false;
 };
 
 } // namespace gui

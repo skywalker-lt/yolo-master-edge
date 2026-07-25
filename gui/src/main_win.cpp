@@ -7,6 +7,7 @@
 #include <tchar.h>
 #include <commdlg.h>   // GetOpenFileNameA / OPENFILENAMEA (not pulled in under WIN32_LEAN_AND_MEAN)
 #include <shobjidl.h>
+#include <shellapi.h>
 #include <string>
 #include "app.hpp"
 
@@ -235,6 +236,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     plat.upload      = UploadTexture;
     plat.open_file   = OpenFileDialog;
     plat.open_folder = OpenFolderDialog;
+    plat.open_url    = [](const char* url) { ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL); };
     gui::App app;
 
     bool running = true;
