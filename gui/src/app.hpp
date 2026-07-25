@@ -50,7 +50,7 @@ private:
     int         backend_sel_ = 0;       // 0 auto,1 onnx,2 ncnn,3 mnn
     int         threads_ = 4;
     std::unique_ptr<yolomaster::Backend> be_;
-    std::string be_name_, be_err_, be_ep_;
+    std::string be_name_, be_err_, be_ep_, be_note_;
     yolomaster::Config cfg_;            // display config (real conf/iou live here)
 
     // ---- source image ----

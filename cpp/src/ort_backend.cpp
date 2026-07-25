@@ -57,6 +57,7 @@ OrtBackend::OrtBackend(const std::string& model_path, int threads, const std::st
         } catch (const std::exception& e) {
             std::cerr << "[ort] CUDA EP unavailable (" << e.what() << "); using CPU\n";
             active_ep = "CPU";
+            ep_note = std::string("CUDA EP failed: ") + e.what();
         }
     } else if (device == "coreml") {
         // Apple CoreML EP (macOS): ORT partitions the graph, runs supported subgraphs on ANE/GPU
