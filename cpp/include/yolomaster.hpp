@@ -92,6 +92,7 @@ public:
     int meta_imgsz = 0;                    // auto-read (0 = unknown)
     int fixed_imgsz = 0;                   // hard input constraint (0 = flexible)
     std::string active_ep = "cpu";         // execution provider actually in use
+    std::string ep_note;                   // why a requested GPU/accelerator EP fell back (for the UI)
     double pre_ms = 0, infer_ms = 0, post_ms = 0;
     // "forward once, tune cheap": each infer() also stashes the pre-NMS candidates so a GUI can
     // re-run nms_and_cap(candidates,...) on conf/IoU changes without another forward pass.

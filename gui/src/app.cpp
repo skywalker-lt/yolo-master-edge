@@ -48,6 +48,7 @@ void App::load_model(const Platform& plat) {
     be_ = std::move(be);
     be_name_ = resolved;
     be_ep_ = be_->active_ep;
+    be_note_ = be_->ep_note;
 
     // resolve config: model metadata > visdrone fallback (mirrors the CLI).
     if (!be_->meta_names.empty()) cfg_.class_names = be_->meta_names;
@@ -473,6 +474,8 @@ void App::draw_sidebar(const Platform& plat) {
     if (be_) {
         ImGui::TextColored(ImVec4(0.5f,0.85f,0.4f,1), "%s | %s | nc=%d | %dpx",
                            be_name_.c_str(), be_ep_.c_str(), cfg_.num_classes(), cfg_.imgsz);
+        if (!be_note_.empty())                       // e.g. why CUDA fell back to CPU
+            ImGui::TextWrapped("%s", be_note_.c_str());
     } else if (!be_err_.empty()) {
         ImGui::TextColored(ImVec4(0.98f,0.4f,0.4f,1), "%s", be_err_.c_str());
     }
