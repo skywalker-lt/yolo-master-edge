@@ -28,7 +28,7 @@ static ImU32 text_on(int cls) {
     return lum > 0.6f ? IM_COL32(0,0,0,255) : IM_COL32(255,255,255,255);
 }
 
-App::~App() { close_camera(); close_video(); }   // join the webcam worker + video pre-infer thread
+App::~App() { close_camera(); close_video(); close_folder(); }   // join all background threads
 
 std::string App::gpu_device_str() const {
     return device_ == Device::GPU ? "gpu" : "cpu";   // make_backend maps "gpu" per backend
@@ -37,9 +37,11 @@ std::string App::gpu_device_str() const {
 void App::load_model(const Platform& plat) {
     const bool cam = is_cam_;
     const bool vid = is_video_;
-    const std::string vpath = video_path_;
+    const bool fold = !folder_imgs_.empty();
+    const std::string vpath = video_path_, fdir = folder_path_;
     stop_worker();                                  // stop any camera worker holding the old backend
-    if (vid) { vinfer_cancel_ = true; if (vinfer_.joinable()) vinfer_.join(); vinfer_cancel_ = false; }
+    if (vid)  { vinfer_cancel_ = true; if (vinfer_.joinable()) vinfer_.join(); vinfer_cancel_ = false; }
+    if (fold) { finfer_cancel_ = true; if (finfer_.joinable()) finfer_.join(); finfer_cancel_ = false; }
     be_.reset();
     dets_.clear();
     be_err_.clear();
@@ -61,6 +63,7 @@ void App::load_model(const Platform& plat) {
     cfg_.multi_label = false;
     if (cam)                     { start_worker(); submit_job(img_bgr_); }   // resume live feed
     else if (vid && !vpath.empty()) open_video(vpath, plat);                 // re-infer the clip
+    else if (fold && !fdir.empty()) load_folder(fdir, plat);                 // re-infer the folder
     else                         need_reinfer_ = !img_bgr_.empty();
 }
 
@@ -69,15 +72,15 @@ void App::open_media(const std::string& path, const Platform& plat) {
         case SourceKind::Video: open_video(path, plat); break;
         case SourceKind::Dir:   load_folder(path, plat); break;
         case SourceKind::Image:
-            folder_imgs_.clear(); cur_idx_ = -1; folder_path_.clear();
-            load_image(path, plat); break;
+            load_image(path, plat); break;   // load_image exits folder/video/camera mode
         default: load_err_ = "unsupported file type: " + path;
     }
 }
 
 void App::load_image(const std::string& path, const Platform& plat) {
     close_camera();
-    close_video();                       // leave video/camera mode if we were in it
+    close_video();                       // leave video/camera/folder mode if we were in it
+    close_folder();
     load_err_.clear();
     cv::Mat bgr = cv::imread(path, cv::IMREAD_COLOR);
     if (bgr.empty()) { load_err_ = "cannot read image: " + path; return; }
@@ -89,20 +92,86 @@ void App::load_image(const std::string& path, const Platform& plat) {
     need_reinfer_ = (be_ != nullptr);
 }
 
+void App::close_folder() {
+    finfer_cancel_ = true;
+    if (finfer_.joinable()) finfer_.join();
+    finfer_cancel_ = false;
+    folder_imgs_.clear(); fcache_.clear();
+    cur_idx_ = -1; folder_ready_ = false; fprogress_ = 0; finfer_done_ = false;
+}
+
+// Background: forward-pass EVERY image once, caching per-image candidates (+ proto for seg).
+void App::folder_preinfer(std::vector<std::string> paths, Config c) {
+    for (int i = 0; i < (int)paths.size() && !finfer_cancel_; ++i) {
+        cv::Mat bgr = cv::imread(paths[i], cv::IMREAD_COLOR);
+        if (!bgr.empty()) {
+            try {
+                be_->infer(bgr, c);
+                FolderItem it;
+                it.cands = be_->candidates; it.lb = be_->cand_lb;
+                it.ow = be_->cand_orig_w;   it.oh = be_->cand_orig_h;
+                if (be_->is_seg()) { it.proto = be_->proto; it.pc = be_->proto_c;
+                                     it.ph = be_->proto_h; it.pw = be_->proto_w; }
+                it.done = true;
+                fcache_[i] = std::move(it);
+            } catch (...) {}
+        }
+        fprogress_ = i + 1;
+    }
+    finfer_done_ = true;
+}
+
 void App::load_folder(const std::string& dir, const Platform& plat) {
     close_camera();
     close_video();
+    close_folder();
+    load_err_.clear();
     folder_imgs_ = gather_images(dir, 0);   // sorted image paths
     folder_path_ = dir;
     if (folder_imgs_.empty()) { cur_idx_ = -1; load_err_ = "no images in: " + dir; return; }
-    select_index(0, plat);
+    if (!be_) { folder_imgs_.clear(); load_err_ = "load a model first"; return; }
+    fcache_.assign(folder_imgs_.size(), FolderItem{});
+    folder_ready_ = false; fprogress_ = 0; finfer_done_ = false;
+    cur_idx_ = 0; scroll_to_cur_ = true;
+    show_folder_item(0, plat);              // show first image now; boxes appear when pre-infer finishes
+    Config c = cfg_;
+    c.conf_thresh = kConfFloor; c.iou_thresh = iou_; c.stretch = (prep_ == Preprocess::Stretch);
+    finfer_ = std::thread(&App::folder_preinfer, this, folder_imgs_, c);
+}
+
+// re-NMS + mask for a cached image (no decode) - used on conf/IoU change
+void App::overlay_folder_item(int idx, const Platform& plat) {
+    if (idx < 0 || idx >= (int)fcache_.size() || !fcache_[idx].done) {
+        dets_.clear(); class_counts_.clear(); has_mask_ = false; return;
+    }
+    const FolderItem& it = fcache_[idx];
+    seg_model_ = !it.proto.empty();
+    Config c = cfg_; c.conf_thresh = conf_; c.iou_thresh = iou_;
+    dets_ = nms_and_cap(it.cands, c, it.ow, it.oh);
+    class_counts_.assign(cfg_.num_classes(), 0);
+    for (const auto& d : dets_)
+        if (d.class_id >= 0 && d.class_id < (int)class_counts_.size()) class_counts_[d.class_id]++;
+    if (seg_model_) build_overlay(dets_, it.proto, it.pc, it.ph, it.pw, it.lb, it.ow, it.oh, plat);
+    else has_mask_ = false;
+}
+
+// decode the image pixels + show cached overlay (if the pre-infer has finished)
+void App::show_folder_item(int idx, const Platform& plat) {
+    if (idx < 0 || idx >= (int)folder_imgs_.size()) return;
+    cv::Mat bgr = cv::imread(folder_imgs_[idx], cv::IMREAD_COLOR);
+    if (bgr.empty()) { load_err_ = "cannot read: " + folder_imgs_[idx]; return; }
+    img_bgr_ = bgr; img_path_ = folder_imgs_[idx];
+    cv::Mat rgba; cv::cvtColor(bgr, rgba, cv::COLOR_BGR2RGBA);
+    plat.upload(rgba, img_tex_);
+    if (folder_ready_) overlay_folder_item(idx, plat);
+    else { dets_.clear(); has_mask_ = false; }
 }
 
 void App::select_index(int i, const Platform& plat) {
     if (folder_imgs_.empty()) return;
     cur_idx_ = std::clamp(i, 0, (int)folder_imgs_.size() - 1);
     scroll_to_cur_ = true;
-    load_image(folder_imgs_[cur_idx_], plat);
+    show_folder_item(cur_idx_, plat);
 }
 
 void App::close_video() {
@@ -149,8 +218,8 @@ void App::video_preinfer(std::string path, Config c) {
 void App::open_video(const std::string& path, const Platform& plat) {
     close_camera();
     close_video();
+    close_folder();                              // leave folder mode
     load_err_.clear();
-    folder_imgs_.clear(); cur_idx_ = -1;         // leave folder mode
     if (!be_) { load_err_ = "load a model first"; return; }
     if (!cap_.open(path)) { load_err_ = "cannot open video: " + path; return; }
     is_video_ = true; playing_ = false; play_accum_ = 0.0; frame_idx_ = 0;
@@ -214,7 +283,7 @@ void App::seek_video(int idx, const Platform& plat) {
 void App::open_camera(const Platform& plat) {
     load_err_.clear();
     close_video();
-    folder_imgs_.clear(); cur_idx_ = -1;
+    close_folder();
     if (!be_) { load_err_ = "load a model first"; return; }
     if (!cam_.open(0)) { load_err_ = "cannot open webcam (device 0)"; return; }
     cam_.set(cv::CAP_PROP_FRAME_WIDTH, 1280);      // 720p is plenty; we downscale to imgsz anyway
@@ -357,11 +426,25 @@ void App::rebuild_overlay(const Platform& plat) {
 }
 
 void App::frame(const Platform& plat) {
-    // sync inference for still image / folder (never for video/camera - those own the backend)
-    if (!async_mode_ && !is_video_) {
+    // sync inference for a single still image only (video/camera/folder own the backend elsewhere)
+    if (!async_mode_ && !is_video_ && folder_imgs_.empty()) {
         if (need_reinfer_) run_inference();
         if (need_renms_)   recompute_nms();
         if (need_overlay_) rebuild_overlay(plat);
+    }
+
+    // folder: pre-infer every image (progress bar), then browse instantly from cache
+    if (!folder_imgs_.empty()) {
+        if (!folder_ready_) {
+            if (finfer_done_) {
+                if (finfer_.joinable()) finfer_.join();
+                folder_ready_ = true;
+                overlay_folder_item(cur_idx_, plat);   // reveal boxes for the shown image
+            }
+        } else if (need_renms_) {
+            overlay_folder_item(cur_idx_, plat);       // conf/IoU re-NMS from cache
+            need_renms_ = false;
+        }
     }
 
     // webcam: grab + display every UI frame at feed rate; infer off-thread (drops late frames)
@@ -541,8 +624,9 @@ void App::draw_sidebar(const Platform& plat) {
     ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##prep", &pp, pps, IM_ARRAYSIZE(pps)) && (Preprocess)pp != prep_) {
         prep_ = (Preprocess)pp;
-        if (is_video_)     open_video(video_path_, plat);   // re-infer the clip
-        else if (!is_cam_) need_reinfer_ = true;
+        if (is_video_)                  open_video(video_path_, plat);   // re-infer the clip
+        else if (!folder_imgs_.empty()) load_folder(folder_path_, plat); // re-infer the folder
+        else if (!is_cam_)              need_reinfer_ = true;            // camera: next frame
     }
     end_card();
 
@@ -620,9 +704,15 @@ void App::draw_sidebar(const Platform& plat) {
 }
 
 void App::draw_filelist(const Platform& plat) {
-    ImGui::Text("%d/%d", cur_idx_ + 1, (int)folder_imgs_.size());
-    ImGui::SameLine();
-    ImGui::TextDisabled("(<- ->)");
+    if (!folder_ready_) {                        // pre-inference progress
+        const int done = fprogress_.load(), tot = (int)folder_imgs_.size();
+        ImGui::Text("Inferring %d / %d", done, tot);
+        ImGui::ProgressBar(tot ? (float)done / tot : 0.f, ImVec2(-1, 0));
+    } else {
+        ImGui::Text("%d/%d", cur_idx_ + 1, (int)folder_imgs_.size());
+        ImGui::SameLine();
+        ImGui::TextDisabled("(<- ->)");
+    }
     ImGui::Separator();
     ImGui::BeginChild("files", ImVec2(0, 0), false);
     for (int i = 0; i < (int)folder_imgs_.size(); ++i) {
