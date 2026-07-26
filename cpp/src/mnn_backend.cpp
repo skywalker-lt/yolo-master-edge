@@ -26,8 +26,10 @@ MnnBackend::MnnBackend(const std::string& model_path, int threads, const std::st
             : forward == "cuda"   ? MNN_FORWARD_CUDA
                                   : MNN_FORWARD_CPU;
     sc.backupType = MNN_FORWARD_CPU;   // fall back to CPU if the GPU backend is unavailable at runtime
+    const bool gpu = (sc.type != MNN_FORWARD_CPU);
     MNN::BackendConfig bc;
-    bc.precision = MNN::BackendConfig::Precision_High;   // FP32
+    // fp16 on GPU (OpenCL/Vulkan/CUDA) for a large speedup; fp32 on CPU for accuracy/parity.
+    bc.precision = gpu ? MNN::BackendConfig::Precision_Low : MNN::BackendConfig::Precision_High;
     bc.power     = MNN::BackendConfig::Power_High;
     sc.backendConfig = &bc;
 

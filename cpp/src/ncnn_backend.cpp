@@ -16,6 +16,11 @@ NcnnBackend::NcnnBackend(const std::string& param_path, const std::string& bin_p
     : threads_(threads) {
     net_.opt.num_threads = threads;
     net_.opt.use_vulkan_compute = use_vulkan;   // GPU path (the -shared prebuilt is Vulkan-enabled)
+    if (use_vulkan) {                           // fp16 on the GPU: big speedup, negligible accuracy loss
+        net_.opt.use_fp16_packed = true;
+        net_.opt.use_fp16_storage = true;
+        net_.opt.use_fp16_arithmetic = true;
+    }
     active_ep = use_vulkan ? "ncnn-Vulkan" : "cpu";
     if (net_.load_param(param_path.c_str()) != 0)
         throw std::runtime_error("ncnn: failed to load param " + param_path);
