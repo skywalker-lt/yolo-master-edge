@@ -477,11 +477,11 @@ static void field_label(const char* t) {
 void App::draw_sidebar(const Platform& plat) {
     const float ui = ImGui::GetFontSize() / 17.0f;   // DPI scale for fixed pixel offsets
     // ---- header ----
-    ImGui::TextUnformatted("YOLO-Master Edge");
+    ImGui::TextUnformatted("YOLO-Master");
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight());
     if (ImGui::Button("?", ImVec2(ImGui::GetFrameHeight(), 0))) show_about_ = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("About / Licenses");
-    ImGui::TextDisabled("Edge runner - ONNX / ncnn / MNN");
+    ImGui::TextDisabled("Windows runner (GUI) - ONNX / ncnn / MNN");
     ImGui::Dummy(ImVec2(0, 6));
 
     // ---- MODEL (auto-loads; no Load button) ----
