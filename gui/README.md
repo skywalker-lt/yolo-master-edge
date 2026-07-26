@@ -94,8 +94,10 @@ just one backend to start (e.g. ONNX only), then add the others.
    at a 0.05 floor on the forward pass). **Box style / Labels** are pure redraw.
 4. Per-class counts and model/total timing show in the sidebar.
 
-Models live in `../models` (e.g. `esmoe_n_visdrone_sim.onnx`,
-`esmoe_n_visdrone.mnn`, the `esmoe_n_visdrone_ncnn/` dir).
+Models live in `../models`. The bundled default is **`v0.1-seg-n.onnx`**
+(segmentation, COCO-80), which the app auto-loads on launch; `v0.1-seg-n.mnn` and
+`v0.1-seg-n_ncnn/` are the same model for the other backends. Any other
+`.onnx` / `.mnn` / ncnn model in that folder can be loaded via *Browse*.
 
 ---
 
