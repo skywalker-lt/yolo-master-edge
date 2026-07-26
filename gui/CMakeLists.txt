@@ -115,3 +115,9 @@ foreach(dll ${RUNTIME_DLLS} ${OCV_DLLS})
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll}" "$<TARGET_FILE_DIR:yolomaster_gui>"
     COMMENT "copying ${dll}")
 endforeach()
+
+# bundle assets/ (About-page logos + author avatar) next to the exe
+add_custom_command(TARGET yolomaster_gui POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:yolomaster_gui>/assets"
+  COMMENT "copying assets/")

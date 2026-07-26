@@ -4,6 +4,7 @@
 #include "backend_factory.hpp"
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <cmath>
 
 using namespace yolomaster;
@@ -729,36 +730,93 @@ void App::draw_camera_hud() {
     dl->AddText(ImVec2(x, y0), dim,    "obj");
 }
 
+void App::load_about_assets(const Platform& plat) {
+    assets_loaded_ = true;   // attempt once; missing files just leave a placeholder
+    auto load = [&](const char* name, Texture& tex) {
+        const std::string path = plat.exe_dir + "/assets/ack/" + name + ".png";
+        cv::Mat img = cv::imread(path, cv::IMREAD_UNCHANGED);
+        if (img.empty()) return;
+        cv::Mat rgba;
+        if (img.channels() == 4)      cv::cvtColor(img, rgba, cv::COLOR_BGRA2RGBA);
+        else if (img.channels() == 3) cv::cvtColor(img, rgba, cv::COLOR_BGR2RGBA);
+        else if (img.channels() == 1) cv::cvtColor(img, rgba, cv::COLOR_GRAY2RGBA);
+        else return;
+        plat.upload(rgba, tex);
+    };
+    load("skywalker-lt", avatar_tex_);
+    load("tencent",      tencent_tex_);
+    load("ultralytics",  ultra_tex_);
+}
+
 void App::draw_about(const Platform& plat) {
+    if (!assets_loaded_) load_about_assets(plat);
     const float ui = ImGui::GetFontSize() / 17.0f;
-    ImGui::SetNextWindowSize(ImVec2(560 * ui, 620 * ui), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(560 * ui, 640 * ui), ImGuiCond_Appearing);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::Begin("About", &show_about_, ImGuiWindowFlags_NoCollapse)) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
         auto link = [&](const char* label, const char* url) {
             ImGui::TextColored(ImVec4(0.37f, 0.64f, 0.88f, 1.f), "%s", label);
             if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             if (ImGui::IsItemClicked() && plat.open_url) plat.open_url(url);
         };
+        auto logo_of = [&](const char* key) -> Texture* {
+            if (!key) return nullptr;
+            if (!std::strcmp(key, "tencent"))     return &tencent_tex_;
+            if (!std::strcmp(key, "ultralytics")) return &ultra_tex_;
+            return nullptr;
+        };
 
         ImGui::TextUnformatted(kAppName);
         ImGui::TextDisabled("Version %s", kAppVersion);
         ImGui::TextWrapped("%s", kAppTagline);
-        ImGui::Spacing();
-        ImGui::Text("%s", kAuthor);
+
+        ImGui::Dummy(ImVec2(0, 6 * ui));
+        // author: round avatar + name/affiliation/link
+        const float av = 64 * ui;
+        if (avatar_tex_.id) {
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            dl->AddImageRounded((ImTextureID)avatar_tex_.id, p, ImVec2(p.x + av, p.y + av),
+                                ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, av * 0.5f);
+            dl->AddCircle(ImVec2(p.x + av * 0.5f, p.y + av * 0.5f), av * 0.5f, IM_COL32(255, 255, 255, 45), 0, 1.5f);
+            ImGui::Dummy(ImVec2(av + 10 * ui, av));
+            ImGui::SameLine();
+        }
+        ImGui::BeginGroup();
+        ImGui::TextUnformatted(kAuthor);
         ImGui::TextDisabled("%s", kAuthorAffil);
         link("github.com/skywalker-lt", kAuthorUrl);
+        ImGui::EndGroup();
         link("Source - github.com/skywalker-lt/yolo-master-edge", kSourceUrl);
 
         ImGui::Dummy(ImVec2(0, 6 * ui));
         ImGui::SeparatorText("Acknowledgements");
         for (const auto& a : kAcks) {
-            ImGui::Bullet(); ImGui::SameLine();
+            const float ls = 40 * ui;
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            Texture* lt = logo_of(a.logo);
+            if (lt && lt->id) {
+                dl->AddImageRounded((ImTextureID)lt->id, p, ImVec2(p.x + ls, p.y + ls),
+                                    ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 7 * ui);
+            } else {   // lettered placeholder tile
+                dl->AddRectFilled(p, ImVec2(p.x + ls, p.y + ls), IM_COL32(58, 64, 76, 255), 7 * ui);
+                const char L[2] = { a.name[0], 0 };
+                const ImVec2 tz = ImGui::CalcTextSize(L);
+                dl->AddText(ImVec2(p.x + (ls - tz.x) * 0.5f, p.y + (ls - tz.y) * 0.5f),
+                            IM_COL32(176, 182, 192, 255), L);
+            }
+            ImGui::Dummy(ImVec2(ls + 10 * ui, ls));
+            ImGui::SameLine();
+            ImGui::BeginGroup();
             ImGui::TextUnformatted(a.name);
             ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            ImGui::PushTextWrapPos(0.0f);
             ImGui::TextWrapped("%s", a.blurb);
+            ImGui::PopTextWrapPos();
             ImGui::PopStyleColor();
             link(a.repo, a.repo);
-            ImGui::Spacing();
+            ImGui::EndGroup();
+            ImGui::Dummy(ImVec2(0, 6 * ui));
         }
 
         ImGui::Dummy(ImVec2(0, 4 * ui));

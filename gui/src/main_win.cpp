@@ -238,6 +238,13 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     plat.open_file   = OpenFileDialog;
     plat.open_folder = OpenFolderDialog;
     plat.open_url    = [](const char* url) { ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL); };
+    {   // directory of the running exe, for loading bundled assets/
+        char exe[MAX_PATH] = "";
+        GetModuleFileNameA(nullptr, exe, MAX_PATH);
+        std::string s(exe);
+        const size_t slash = s.find_last_of("\\/");
+        plat.exe_dir = (slash == std::string::npos) ? "." : s.substr(0, slash);
+    }
     gui::App app;
 
     bool running = true;
