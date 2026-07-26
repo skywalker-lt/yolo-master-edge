@@ -258,10 +258,10 @@ Inference performed on full 548 VisDrone validation images against the PyTorch o
 | Inference Backend         | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
 | :------------------------ | :------- | :----------- | :------ | :---- |
 | ONNX (CPU)                | 0.2034   | −0.02%       | 40 ms   | 25.0  |
-| ONNX CUDA (H200)          | 0.2033   | −0.03%       | 7.8 ms  | ~128  |
-| ONNX CUDA (RTX 5070Ti Laptop) | 0.2033 | −0.03%     | 9.0 ms  | ~111  |
+| ONNX CUDA (H200)          | 0.2033   | −0.03%       | 7.8 ms  | 128   |
+| ONNX CUDA (RTX 5070Ti Laptop) | 0.2033 | −0.03%     | 9.0 ms  | 111   |
 | NCNN (CPU)                | 0.2034   | −0.02%       | 80 ms   | 12.5  |
-| NCNN (Vulkan)             | 0.2034   | −0.02%       | 20.2 ms | ~111  | 
+| NCNN (Vulkan)             | 0.2034   | −0.02%       | 20.2 ms | 111   | 
 | MNN (CPU)                 | 0.2034   | −0.02%       | 74 ms   | 13.5  |
 | MNN (OpenCL)              | 0.2034   | −0.02%       | 19.1    | 52.4  | 
 | INT8 mixed (CPU)¹         | 0.1952   | −0.84%       | 137 ms  | 7.2   |
