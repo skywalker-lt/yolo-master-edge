@@ -62,11 +62,22 @@ private:
     Texture     img_tex_;             // uploaded to GPU once per load
     std::string img_path_, load_err_;
 
-    // ---- folder-batch ----
+    // ---- folder-batch (pre-infer every image up front, then browse from cache) ----
     std::vector<std::string> folder_imgs_;   // sorted image paths (empty = single-image mode)
     int         cur_idx_ = -1;               // index into folder_imgs_ of the shown image
     std::string folder_path_;
     bool        scroll_to_cur_ = false;      // request the file list to scroll the current item into view
+    struct FolderItem {                      // cached inference result for one image
+        std::vector<yolomaster::RawDet> cands;
+        std::vector<float> proto; int pc = 0, ph = 0, pw = 0;
+        yolomaster::LetterboxInfo lb; int ow = 0, oh = 0;
+        bool done = false;
+    };
+    std::vector<FolderItem> fcache_;
+    bool        folder_ready_ = false;
+    std::thread finfer_;
+    std::atomic<int>  fprogress_{0};
+    std::atomic<bool> finfer_done_{false}, finfer_cancel_{false};
 
     // ---- video (Mac model: pre-infer every frame up front, then play from cache) ----
     cv::VideoCapture cap_;
@@ -136,7 +147,11 @@ private:
     void load_model(const Platform& plat);
     void load_image(const std::string& path, const Platform& plat);
     void load_folder(const std::string& dir, const Platform& plat);
-    void select_index(int i, const Platform& plat);   // load folder_imgs_[i]
+    void select_index(int i, const Platform& plat);   // show folder_imgs_[i] from cache
+    void folder_preinfer(std::vector<std::string> paths, yolomaster::Config c);  // background: infer all
+    void show_folder_item(int idx, const Platform& plat);     // decode pixels + cached overlay
+    void overlay_folder_item(int idx, const Platform& plat);  // re-NMS + mask from cache (no decode)
+    void close_folder();
     void open_media(const std::string& path, const Platform& plat);   // autodetect image vs video
     void open_video(const std::string& path, const Platform& plat);
     void show_frame(const cv::Mat& frame, const Platform& plat);   // upload frame texture
