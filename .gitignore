@@ -3,6 +3,8 @@
 /third_party/
 # build + runtime outputs
 cpp/build*/
+gui/build*/
+gui/dist/
 runs_edge/
 preds_*/
 results/
