@@ -34,6 +34,8 @@ struct Platform {
     std::function<std::string(const char* title)> open_folder;
     // Open a URL in the default browser.
     std::function<void(const char* url)> open_url;
+    // Free a texture's GPU resources (safe on an empty Texture).
+    std::function<void(Texture& tex)> release;
     std::string exe_dir;   // directory of the running exe (for loading bundled assets/)
 };
 
@@ -41,7 +43,8 @@ enum class BoxStyle { Hud, Solid, Neon };
 enum class LabelMode { Full, Min, Off };
 enum class Preprocess { Letterbox, Stretch };
 enum class Overlay { Both, Masks, Boxes };   // segmentation: what to show (masks / boxes / both)
-enum class Device { CPU, GPU };              // GPU = onnx:CUDA, ncnn:Vulkan, mnn:OpenCL/Vulkan
+enum class Device { CPU, GPU };              // GPU = onnx:CUDA, ncnn:Vulkan, mnn:OpenCL
+enum class FinderMode { Icons, List };       // folder navigator: thumbnail grid or filename list/Vulkan
 
 class App {
 public:
@@ -67,6 +70,9 @@ private:
     int         cur_idx_ = -1;               // index into folder_imgs_ of the shown image
     std::string folder_path_;
     bool        scroll_to_cur_ = false;      // request the file list to scroll the current item into view
+    FinderMode  finder_mode_ = FinderMode::Icons;
+    float       icon_size_ = 108.f;          // 64..200, like the Mac runner
+    std::map<int, Texture> thumbs_;          // lazily decoded thumbnails, keyed by image index
     struct FolderItem {                      // cached inference result for one image
         std::vector<yolomaster::RawDet> cands;
         std::vector<float> proto; int pc = 0, ph = 0, pw = 0;
@@ -155,7 +161,7 @@ private:
     void folder_preinfer(std::vector<std::string> paths, yolomaster::Config c);  // background: infer all
     void show_folder_item(int idx, const Platform& plat);     // decode pixels + cached overlay
     void overlay_folder_item(int idx, const Platform& plat);  // re-NMS + mask from cache (no decode)
-    void close_folder();
+    void close_folder(const Platform* plat = nullptr);
     void open_media(const std::string& path, const Platform& plat);   // autodetect image vs video
     void open_video(const std::string& path, const Platform& plat);
     void show_frame(const cv::Mat& frame, const Platform& plat);   // upload frame texture
@@ -181,6 +187,10 @@ private:
     void rebuild_overlay(const Platform& plat);   // recomposite seg masks -> mask_tex_
     void draw_sidebar(const Platform& plat);
     void draw_filelist(const Platform& plat);   // folder-batch navigator panel
+    void draw_finder_icons(const Platform& plat);
+    void draw_finder_list(const Platform& plat);
+    Texture* ensure_thumb(int idx, const Platform& plat, int& budget);
+    void free_thumbs(const Platform& plat);
     void draw_preview(const Platform& plat);
     void draw_transport(const Platform& plat);  // video play/pause + scrubber
     void draw_camera_hud();                     // webcam fps/latency/objects overlay
