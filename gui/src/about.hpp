@@ -47,7 +47,8 @@ Copyright (C) 2026 (Thomas) RUIHENG LI
 (Author affiliated with The Hong Kong University of Science and
 Technology)
 
-YOLO-Master Edge is a cross-platform toolchain for running
+YOLO-Master Windows Runner (GUI) is part of a cross-platform
+toolchain for running
 YOLO-Master models on-device via ONNX Runtime, ncnn, and MNN
 (CPU and GPU: CUDA / Vulkan / OpenCL).
 

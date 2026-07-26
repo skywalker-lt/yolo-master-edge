@@ -1,4 +1,4 @@
-# YOLO-Master Edge — Windows GUI
+# YOLO-Master Windows Runner (GUI)
 
 A native Windows GUI (Dear ImGui + Direct3D 11) for the YOLO-Master edge runtime.
 Mirrors the macOS CoreML runner's frontend, but runs on **ONNX Runtime, NCNN, and

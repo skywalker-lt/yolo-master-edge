@@ -1,4 +1,4 @@
-# Build the YOLO-Master Edge Windows GUI (Dear ImGui + D3D11, CPU backends).
+# Build the YOLO-Master Windows Runner (GUI) (Dear ImGui + D3D11).
 # Usage (from a "x64 Native Tools Command Prompt for VS" or plain PowerShell with CMake on PATH):
 #   ./build.ps1                       # configure + build Release
 #   ./build.ps1 -Run                  # build then launch

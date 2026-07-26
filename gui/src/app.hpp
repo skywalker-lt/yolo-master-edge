@@ -36,6 +36,7 @@ struct Platform {
     std::function<void(const char* url)> open_url;
     // Free a texture's GPU resources (safe on an empty Texture).
     std::function<void(Texture& tex)> release;
+    void* heading_font = nullptr;   // ImFont* (type-erased): larger face for the sidebar title
     std::string exe_dir;   // directory of the running exe (for loading bundled assets/)
 };
 
@@ -72,6 +73,7 @@ private:
     bool        scroll_to_cur_ = false;      // request the file list to scroll the current item into view
     FinderMode  finder_mode_ = FinderMode::Icons;
     float       icon_size_ = 108.f;          // 64..200, like the Mac runner
+    int         finder_cols_ = 3;            // columns in icon view (drives grid arrow-key nav)
     std::map<int, Texture> thumbs_;          // lazily decoded thumbnails, keyed by image index
     struct FolderItem {                      // cached inference result for one image
         std::vector<yolomaster::RawDet> cands;
