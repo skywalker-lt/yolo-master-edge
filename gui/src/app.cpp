@@ -79,7 +79,7 @@ void App::open_media(const std::string& path, const Platform& plat) {
 }
 
 void App::load_image(const std::string& path, const Platform& plat) {
-    close_camera();
+    close_camera(&plat);
     close_video();                       // leave video/camera/folder mode if we were in it
     close_folder(&plat);
     load_err_.clear();
@@ -138,7 +138,7 @@ void App::folder_preinfer(std::vector<std::string> paths, Config c) {
 }
 
 void App::load_folder(const std::string& dir, const Platform& plat) {
-    close_camera();
+    close_camera(&plat);
     close_video();
     close_folder(&plat);
     load_err_.clear();
@@ -233,7 +233,7 @@ void App::video_preinfer(std::string path, Config c) {
 }
 
 void App::open_video(const std::string& path, const Platform& plat) {
-    close_camera();
+    close_camera(&plat);
     close_video();
     close_folder(&plat);                         // leave folder mode
     load_err_.clear();
@@ -309,10 +309,26 @@ void App::open_camera(const Platform& plat) {
     start_worker();
 }
 
-void App::close_camera() {
+// Blank the preview and drop any stale detections/masks (so stopping a source
+// leaves an empty canvas rather than a frozen last frame).
+void App::clear_preview(const Platform* plat) {
+    if (plat && plat->release) { plat->release(img_tex_); plat->release(mask_tex_); }
+    else { img_tex_ = Texture{}; mask_tex_ = Texture{}; }
+    img_bgr_.release();
+    img_path_.clear();
+    dets_.clear();
+    class_counts_.clear();
+    has_mask_ = false; seg_model_ = false;
+    inf_ms_ = pre_ms_ = post_ms_ = 0;
+}
+
+void App::close_camera(const Platform* plat) {
+    const bool was_cam = is_cam_;
     stop_worker();
     if (cam_.isOpened()) cam_.release();
     is_cam_ = false;
+    cam_fps_ema_ = cam_ms_ema_ = 0.0;
+    if (was_cam) clear_preview(plat);   // no frozen last frame
 }
 
 // ---------------- async inference worker (video + webcam) ----------------
@@ -625,7 +641,7 @@ void App::draw_sidebar(const Platform& plat) {
         if (!d.empty()) load_folder(d, plat);
     }
     if (is_cam_) {
-        if (ImGui::Button("Stop Camera", ImVec2(-1, 0))) close_camera();
+        if (ImGui::Button("Stop Camera", ImVec2(-1, 0))) close_camera(&plat);
         ImGui::Checkbox("Mirror", &cam_mirror_);
     } else if (ImGui::Button("Live Webcam", ImVec2(-1, 0))) {
         open_camera(plat);
@@ -693,7 +709,6 @@ void App::draw_sidebar(const Platform& plat) {
         device_ = (Device)dv;
         if (be_ || model_path_[0]) load_model(plat);
     }
-    ImGui::TextDisabled("GPU: onnx CUDA \xc2\xb7 ncnn Vulkan \xc2\xb7 mnn OpenCL");
     end_card();
 
     // ---- INFERENCE ----
@@ -1096,7 +1111,8 @@ void App::draw_about(const Platform& plat) {
 
 void App::draw_preview(const Platform& plat) {
     if (!img_tex_.id) {
-        ImGui::TextDisabled(is_video_ ? "No frame." : "Open an image, folder, or video to begin.");
+        ImGui::TextDisabled(is_video_ ? "No frame."
+                                      : "Open an image, folder, or video - or start the webcam.");
         return;
     }
     const ImVec2 cur = ImGui::GetCursorScreenPos();
