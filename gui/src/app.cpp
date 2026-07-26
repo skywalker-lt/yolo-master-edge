@@ -477,6 +477,7 @@ static void field_label(const char* t) {
 void App::draw_sidebar(const Platform& plat) {
     const float ui = ImGui::GetFontSize() / 17.0f;   // DPI scale for fixed pixel offsets
     // ---- header ----
+    ImGui::AlignTextToFramePadding();   // vertically center the title against the "?" button
     ImGui::TextUnformatted("YOLO-Master");
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight());
     if (ImGui::Button("?", ImVec2(ImGui::GetFrameHeight(), 0))) show_about_ = true;
