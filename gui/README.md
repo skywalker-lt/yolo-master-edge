@@ -60,8 +60,23 @@ equivalents, which are not subject to execution policy:
 build.cmd              :: configure + build Release
 build.cmd run          :: build then launch
 build.cmd clean        :: wipe build\ first
-package.cmd 1.0.0      :: build the redistributable zip
+package.cmd 1.0.0      :: redistributable zip, lean (~150 MB)
+package-cuda.cmd 1.0.0 :: redistributable zip, ONNX+CUDA (~2 GB)
 ```
+
+### Two redistributables
+
+| Script | Size | ONNX on GPU | ncnn / MNN on GPU |
+|---|---|---|---|
+| `package.cmd` | ~150 MB | no (CPU only) | yes - Vulkan / OpenCL |
+| `package-cuda.cmd` | ~2 GB | **yes - CUDA** | yes - Vulkan / OpenCL |
+
+Both are self-contained and need only an NVIDIA driver on the target machine.
+The CUDA build additionally bundles ONNX Runtime's CUDA provider plus the cuDNN
+and CUDA runtime DLLs it loads, which is where the extra gigabytes go - it needs
+the *GPU* ONNX Runtime package and matching CUDA/cuDNN installs to build.
+`package-cuda.cmd 1.0.0 full` adds the rarely-needed CUDA libs as a fallback if
+the minimal set fails on a clean machine.
 
 Both `.cmd` scripts have the SDK paths at the top - edit them to match your
 machine. `build.cmd` also kills a running yolomaster_gui.exe first, since the
