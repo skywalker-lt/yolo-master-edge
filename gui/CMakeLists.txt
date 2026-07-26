@@ -117,8 +117,10 @@ foreach(dll ${RUNTIME_DLLS} ${OCV_DLLS})
     COMMENT "copying ${dll}")
 endforeach()
 
-# bundle assets/ (About-page logos + author avatar) next to the exe
+# bundle assets/ (About-page logos + author avatar) next to the exe.
+# wipe first so removed/renamed logos never linger and new ones always land.
 add_custom_command(TARGET yolomaster_gui POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:yolomaster_gui>/assets"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:yolomaster_gui>/assets"
-  COMMENT "copying assets/")
+  COMMENT "refreshing assets/")
