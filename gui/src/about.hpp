@@ -1,4 +1,4 @@
-// About / Acknowledgements / License content for the About window — mirrors the Mac runner's
+// About / Acknowledgements / License content for the About window - mirrors the Mac runner's
 // Info + License pages, with the third-party list adapted to the Windows runtime (ONNX/ncnn/MNN/OpenCV/ImGui).
 #pragma once
 
