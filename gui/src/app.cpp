@@ -81,7 +81,7 @@ void App::open_media(const std::string& path, const Platform& plat) {
 void App::load_image(const std::string& path, const Platform& plat) {
     close_camera();
     close_video();                       // leave video/camera/folder mode if we were in it
-    close_folder();
+    close_folder(&plat);
     load_err_.clear();
     cv::Mat bgr = cv::imread(path, cv::IMREAD_COLOR);
     if (bgr.empty()) { load_err_ = "cannot read image: " + path; return; }
@@ -93,12 +93,15 @@ void App::load_image(const std::string& path, const Platform& plat) {
     need_reinfer_ = (be_ != nullptr);
 }
 
-void App::close_folder() {
+void App::close_folder(const Platform* plat) {
     finfer_cancel_ = true;
     if (finfer_.joinable()) finfer_.join();
     finfer_cancel_ = false;
+    if (plat) free_thumbs(*plat);   // release thumbnail textures for the old folder
+    else thumbs_.clear();
     folder_imgs_.clear(); fcache_.clear();
     cur_idx_ = -1; folder_ready_ = false; fprogress_ = 0; finfer_done_ = false;
+    fmean_ms_ = fmin_ms_ = fmax_ms_ = fwall_s_ = 0; fcount_ = 0;
 }
 
 // Background: forward-pass EVERY image once, caching per-image candidates (+ proto for seg)
@@ -137,7 +140,7 @@ void App::folder_preinfer(std::vector<std::string> paths, Config c) {
 void App::load_folder(const std::string& dir, const Platform& plat) {
     close_camera();
     close_video();
-    close_folder();
+    close_folder(&plat);
     load_err_.clear();
     folder_imgs_ = gather_images(dir, 0);   // sorted image paths
     folder_path_ = dir;
@@ -232,7 +235,7 @@ void App::video_preinfer(std::string path, Config c) {
 void App::open_video(const std::string& path, const Platform& plat) {
     close_camera();
     close_video();
-    close_folder();                              // leave folder mode
+    close_folder(&plat);                         // leave folder mode
     load_err_.clear();
     if (!be_) { load_err_ = "load a model first"; return; }
     if (!cap_.open(path)) { load_err_ = "cannot open video: " + path; return; }
@@ -297,7 +300,7 @@ void App::seek_video(int idx, const Platform& plat) {
 void App::open_camera(const Platform& plat) {
     load_err_.clear();
     close_video();
-    close_folder();
+    close_folder(&plat);
     if (!be_) { load_err_ = "load a model first"; return; }
     if (!cam_.open(0)) { load_err_ = "cannot open webcam (device 0)"; return; }
     cam_.set(cv::CAP_PROP_FRAME_WIDTH, 1280);      // 720p is plenty; we downscale to imgsz anyway
@@ -531,7 +534,10 @@ void App::frame(const Platform& plat) {
 
     if (!folder_imgs_.empty()) {
         ImGui::SameLine();
-        ImGui::BeginChild("filelist", ImVec2(230 * ui, 0), true);
+        // icon view needs room for a few columns; list view stays narrow
+        const float fw = (finder_mode_ == FinderMode::Icons)
+                       ? std::max(260.f * ui, icon_size_ * 2.6f) : 250.f * ui;
+        ImGui::BeginChild("filelist", ImVec2(fw, 0), true);
         draw_filelist(plat);
         ImGui::EndChild();
     }
@@ -737,24 +743,147 @@ void App::draw_sidebar(const Platform& plat) {
     ImGui::TextDisabled("(c) 2026 Thomas Li");
 }
 
+void App::free_thumbs(const Platform& plat) {
+    if (plat.release) for (auto& kv : thumbs_) plat.release(kv.second);
+    thumbs_.clear();
+}
+
+// Lazily decode + upload a thumbnail for image `idx`. `budget` caps decodes per frame so
+// scrolling never hitches. Returns nullptr while not yet available.
+Texture* App::ensure_thumb(int idx, const Platform& plat, int& budget) {
+    auto it = thumbs_.find(idx);
+    if (it != thumbs_.end()) return it->second.id ? &it->second : nullptr;
+    if (budget <= 0) return nullptr;
+    --budget;
+    Texture tex;
+    // REDUCED_COLOR_8 decodes at 1/8 size: far cheaper than a full decode of a large JPEG
+    cv::Mat small = cv::imread(folder_imgs_[idx], cv::IMREAD_REDUCED_COLOR_8);
+    if (small.empty()) small = cv::imread(folder_imgs_[idx], cv::IMREAD_REDUCED_COLOR_4);
+    if (!small.empty()) {
+        const int maxw = 256;
+        if (small.cols > maxw) {
+            const double s = (double)maxw / small.cols;
+            cv::resize(small, small, cv::Size(), s, s, cv::INTER_AREA);
+        }
+        cv::Mat rgba; cv::cvtColor(small, rgba, cv::COLOR_BGR2RGBA);
+        plat.upload(rgba, tex);
+    }
+    thumbs_[idx] = tex;                       // cache even on failure, so we retry only once
+    return tex.id ? &thumbs_[idx] : nullptr;
+}
+
+void App::draw_finder_icons(const Platform& plat) {
+    const int n = (int)folder_imgs_.size();
+    const float cell = icon_size_;
+    const float thumbH = cell * 0.72f;
+    const float capH = ImGui::GetTextLineHeight();
+    const float cellH = thumbH + 4.f + capH;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + spacing) / (cell + spacing)));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    int budget = 3;                            // decode at most 3 thumbnails per frame
+
+    for (int i = 0; i < n; ++i) {
+        if (i % cols) ImGui::SameLine();
+        ImGui::PushID(i);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const bool sel = (i == cur_idx_);
+        if (ImGui::InvisibleButton("##cell", ImVec2(cell, cellH)) && !sel) select_index(i, plat);
+        const bool hov = ImGui::IsItemHovered();
+        if (hov) ImGui::SetTooltip("%s", folder_imgs_[i].substr(folder_imgs_[i].find_last_of("/\\") + 1).c_str());
+
+        // cell background: selected = accent, hovered = subtle
+        if (sel)      dl->AddRectFilled(p, ImVec2(p.x + cell, p.y + cellH), IM_COL32(52, 110, 168, 210), 7.f);
+        else if (hov) dl->AddRectFilled(p, ImVec2(p.x + cell, p.y + cellH), IM_COL32(255, 255, 255, 18), 7.f);
+
+        // thumbnail, aspect-fit inside the thumb area
+        const ImVec2 tp(p.x + 4, p.y + 4);
+        const ImVec2 ts(cell - 8, thumbH - 4);
+        Texture* th = ensure_thumb(i, plat, budget);
+        if (th) {
+            const float s = std::min(ts.x / th->w, ts.y / th->h);
+            const ImVec2 d(th->w * s, th->h * s);
+            const ImVec2 o(tp.x + (ts.x - d.x) * 0.5f, tp.y + (ts.y - d.y) * 0.5f);
+            dl->AddImageRounded((ImTextureID)th->id, o, ImVec2(o.x + d.x, o.y + d.y),
+                                ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 4.f);
+        } else {   // placeholder while decoding
+            dl->AddRectFilled(tp, ImVec2(tp.x + ts.x, tp.y + ts.y), IM_COL32(38, 42, 50, 255), 4.f);
+        }
+
+        // filename caption, clipped to the cell
+        const std::string nm = folder_imgs_[i].substr(folder_imgs_[i].find_last_of("/\\") + 1);
+        const ImVec2 cp(p.x + 4, p.y + thumbH + 2);
+        dl->PushClipRect(ImVec2(p.x + 2, cp.y), ImVec2(p.x + cell - 2, cp.y + capH), true);
+        dl->AddText(cp, sel ? IM_COL32(255, 255, 255, 255) : IM_COL32(168, 175, 185, 255), nm.c_str());
+        dl->PopClipRect();
+
+        if (sel && scroll_to_cur_) { ImGui::SetScrollHereY(0.5f); scroll_to_cur_ = false; }
+        ImGui::PopID();
+    }
+}
+
+void App::draw_finder_list(const Platform& plat) {
+    int budget = 3;
+    const float rowH = ImGui::GetTextLineHeight() * 1.9f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (int i = 0; i < (int)folder_imgs_.size(); ++i) {
+        ImGui::PushID(i);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float w = ImGui::GetContentRegionAvail().x;
+        const bool sel = (i == cur_idx_);
+        if (ImGui::InvisibleButton("##row", ImVec2(w, rowH)) && !sel) select_index(i, plat);
+        const bool hov = ImGui::IsItemHovered();
+        if (sel)      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rowH), IM_COL32(52, 110, 168, 210), 6.f);
+        else if (hov) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rowH), IM_COL32(255, 255, 255, 18), 6.f);
+
+        // small thumbnail on the left
+        const float th = rowH - 8, tw = th * 1.4f;
+        const ImVec2 tp(p.x + 4, p.y + 4);
+        Texture* t = ensure_thumb(i, plat, budget);
+        if (t) {
+            const float s = std::min(tw / t->w, th / t->h);
+            const ImVec2 d(t->w * s, t->h * s);
+            const ImVec2 o(tp.x + (tw - d.x) * 0.5f, tp.y + (th - d.y) * 0.5f);
+            dl->AddImageRounded((ImTextureID)t->id, o, ImVec2(o.x + d.x, o.y + d.y),
+                                ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 3.f);
+        } else {
+            dl->AddRectFilled(tp, ImVec2(tp.x + tw, tp.y + th), IM_COL32(38, 42, 50, 255), 3.f);
+        }
+
+        const std::string nm = folder_imgs_[i].substr(folder_imgs_[i].find_last_of("/\\") + 1);
+        const float tx = p.x + tw + 12;
+        dl->PushClipRect(ImVec2(tx, p.y), ImVec2(p.x + w - 4, p.y + rowH), true);
+        dl->AddText(ImVec2(tx, p.y + (rowH - ImGui::GetTextLineHeight()) * 0.5f),
+                    sel ? IM_COL32(255, 255, 255, 255) : IM_COL32(200, 206, 214, 255), nm.c_str());
+        dl->PopClipRect();
+
+        if (sel && scroll_to_cur_) { ImGui::SetScrollHereY(0.5f); scroll_to_cur_ = false; }
+        ImGui::PopID();
+    }
+}
+
 void App::draw_filelist(const Platform& plat) {
-    if (!folder_ready_) {                        // pre-inference progress
+    const float ui = ImGui::GetFontSize() / 17.0f;
+    // ---- header: view toggle + count (or progress) + icon-size slider ----
+    if (!folder_ready_) {
         const int done = fprogress_.load(), tot = (int)folder_imgs_.size();
         ImGui::Text("Inferring %d / %d", done, tot);
         ImGui::ProgressBar(tot ? (float)done / tot : 0.f, ImVec2(-1, 0));
     } else {
-        ImGui::Text("%d/%d", cur_idx_ + 1, (int)folder_imgs_.size());
+        const bool icons = finder_mode_ == FinderMode::Icons;
+        if (ImGui::Button(icons ? "List" : "Icons"))
+            finder_mode_ = icons ? FinderMode::List : FinderMode::Icons;
         ImGui::SameLine();
-        ImGui::TextDisabled("(<- ->)");
+        ImGui::TextDisabled("%d images", (int)folder_imgs_.size());
+        if (icons) {
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##iconsize", &icon_size_, 64.f, 200.f, "size %.0f");
+        }
     }
     ImGui::Separator();
     ImGui::BeginChild("files", ImVec2(0, 0), false);
-    for (int i = 0; i < (int)folder_imgs_.size(); ++i) {
-        const std::string name = folder_imgs_[i].substr(folder_imgs_[i].find_last_of("/\\") + 1);
-        const bool sel = (i == cur_idx_);
-        if (ImGui::Selectable(name.c_str(), sel) && !sel) select_index(i, plat);
-        if (sel && scroll_to_cur_) { ImGui::SetScrollHereY(0.5f); scroll_to_cur_ = false; }
-    }
+    if (finder_mode_ == FinderMode::Icons) draw_finder_icons(plat);
+    else                                   draw_finder_list(plat);
     ImGui::EndChild();
 }
 

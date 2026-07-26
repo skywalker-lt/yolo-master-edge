@@ -106,6 +106,12 @@ static std::string OpenFileDialog(const char* title, const char* filter) {
     return GetOpenFileNameA(&ofn) ? std::string(fn) : std::string();
 }
 
+static void ReleaseTexture(gui::Texture& tex) {
+    if (tex.id)  { ((IUnknown*)tex.id)->Release();  tex.id = nullptr; }
+    if (tex.tex) { ((IUnknown*)tex.tex)->Release(); tex.tex = nullptr; }
+    tex.w = tex.h = 0;
+}
+
 static std::string OpenFolderDialog(const char* /*title*/) {
     std::string result;
     IFileOpenDialog* pfd = nullptr;
@@ -216,7 +222,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // NOTE: ImGui keyboard nav is deliberately OFF. The app handles arrow keys itself
+    // (folder / video navigation); with nav on, arrows also moved ImGui's internal focus
+    // rect, producing a second "ghost" highlight that flashed around the file list.
     io.IniFilename = nullptr;   // don't leave an imgui.ini next to the exe
 
     const float dpi = GetDpiForWindow(g_hwnd) / 96.0f;   // 1.0 at 96 DPI, 1.5 at 150%, ...
@@ -237,6 +245,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     plat.upload      = UploadTexture;
     plat.open_file   = OpenFileDialog;
     plat.open_folder = OpenFolderDialog;
+    plat.release     = ReleaseTexture;
     plat.open_url    = [](const char* url) { ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL); };
     {   // directory of the running exe, for loading bundled assets/
         char exe[MAX_PATH] = "";
