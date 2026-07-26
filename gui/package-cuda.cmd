@@ -25,15 +25,12 @@ set "VERSION=%~1"
 if "%VERSION%"=="" set "VERSION=1.0.0"
 set "FULL=%~2"
 
-rem ---- edit these to match your machine -------------------------------------
-set "ONNX_ROOT=C:/dev/onnxruntime-win-x64-gpu_cuda12-1.27.1"
-set "NCNN_ROOT=C:/dev/ncnn-20260526-windows-vs2022-shared/x64"
-set "MNN_ROOT=C:/dev/mnn_3.6.1_windows_x64_cpu_opencl_vulkan_avx512"
-set "OPENCV_DIR=C:/dev/opencv/build/x64/vc16/lib"
-set "CUDNN_DIR=C:/Program Files/NVIDIA/CUDNN/v9.12/bin/12.9"
-set "CUDA_BIN_DIR=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/bin"
-set "MODELS_DIR=..\models"
-rem ---------------------------------------------------------------------------
+rem SDK paths come from your own sdk-paths.cmd (see sdk-paths.example.cmd),
+rem or from environment variables of the same names. ONNX_ROOT must be the *GPU*
+rem ONNX Runtime package here, and CUDNN_DIR / CUDA_BIN_DIR must be set.
+if exist "%~dp0sdk-paths.cmd" call "%~dp0sdk-paths.cmd"
+if "%MODELS_DIR%"=="" set "MODELS_DIR=..\models"
+if "%OPENCV_DIR%"=="" ( echo ERROR: OPENCV_DIR not set ^(copy sdk-paths.example.cmd to sdk-paths.cmd^) & exit /b 1 )
 
 set "ROOT=%~dp0"
 set "BUILD=%ROOT%build-cuda"

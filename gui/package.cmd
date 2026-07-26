@@ -15,11 +15,17 @@ rem ============================================================================
 set "VERSION=%~1"
 if "%VERSION%"=="" set "VERSION=1.0.0"
 
-set "ONNX_ROOT=C:/dev/onnxruntime-win-x64-1.18.1"
-set "NCNN_ROOT=C:/dev/ncnn-20260526-windows-vs2022-shared/x64"
-set "MNN_ROOT=C:/dev/mnn_3.6.1_windows_x64_cpu_opencl_vulkan_avx512"
-set "OPENCV_DIR=C:/dev/opencv/build/x64/vc16/lib"
-set "MODELS_DIR=..\models"
+rem SDK paths come from your own sdk-paths.cmd (see sdk-paths.example.cmd),
+rem or from environment variables of the same names.
+if exist "%~dp0sdk-paths.cmd" call "%~dp0sdk-paths.cmd"
+if "%MODELS_DIR%"=="" set "MODELS_DIR=..\models"
+if "%OPENCV_DIR%"=="" ( echo ERROR: OPENCV_DIR not set ^(copy sdk-paths.example.cmd to sdk-paths.cmd^) & exit /b 1 )
+rem NOTE: for this lean bundle ONNX_ROOT should be the *CPU* ONNX Runtime.
+rem Override just for this run:  set "ONNX_ROOT=C:/dev/onnxruntime-win-x64-1.18.1"
+if exist "%ONNX_ROOT%\lib\onnxruntime_providers_cuda.dll" (
+  echo [warn] ONNX_ROOT looks like the GPU package; the CUDA provider will be
+  echo        stripped from this bundle. Use package-cuda.cmd for a CUDA build.
+)
 
 set "ROOT=%~dp0"
 set "BUILD=%ROOT%build-dist"
