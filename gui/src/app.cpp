@@ -618,10 +618,12 @@ void App::draw_sidebar(const Platform& plat) {
     if (hf) ImGui::PopFont();
     const float titleH = ImGui::GetItemRectSize().y;
     // right-align the About button, vertically centred against the (taller) title
-    ImGui::SameLine(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight());
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (titleH - ImGui::GetFrameHeight()) * 0.5f);
-    if (ImGui::Button("?", ImVec2(ImGui::GetFrameHeight(), 0))) show_about_ = true;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("About / Licenses");
+    const float btnW = ImGui::CalcTextSize("About").x + ImGui::GetStyle().FramePadding.x * 2.f;
+    finder_hdr_pad_ = std::max(0.f, (titleH - ImGui::GetFrameHeight()) * 0.5f);
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - btnW);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + finder_hdr_pad_);
+    if (ImGui::Button("About", ImVec2(btnW, 0))) show_about_ = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("About / Acknowledgements / License");
     ImGui::TextDisabled("Windows runner (GUI) - ONNX / ncnn / MNN");
     ImGui::Dummy(ImVec2(0, 6));
 
@@ -924,14 +926,18 @@ void App::draw_filelist(const Platform& plat) {
     const float ui = ImGui::GetFontSize() / 17.0f;
     // ---- header: view toggle + count (or progress) + icon-size slider ----
     if (!folder_ready_) {
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + finder_hdr_pad_);   // level with About
         const int done = fprogress_.load(), tot = (int)folder_imgs_.size();
         ImGui::Text("Inferring %d / %d", done, tot);
         ImGui::ProgressBar(tot ? (float)done / tot : 0.f, ImVec2(-1, 0));
     } else {
+        // nudge down so this row sits level with the sidebar's About button
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + finder_hdr_pad_);
         const bool icons = finder_mode_ == FinderMode::Icons;
         if (ImGui::Button(icons ? "List" : "Icons"))
             finder_mode_ = icons ? FinderMode::List : FinderMode::Icons;
         ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%d images", (int)folder_imgs_.size());
         if (icons) {
             ImGui::SetNextItemWidth(-1);

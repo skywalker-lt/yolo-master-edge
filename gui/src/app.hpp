@@ -74,6 +74,7 @@ private:
     FinderMode  finder_mode_ = FinderMode::Icons;
     float       icon_size_ = 108.f;          // 64..200, like the Mac runner
     int         finder_cols_ = 3;            // columns in icon view (drives grid arrow-key nav)
+    float       finder_hdr_pad_ = 0.f;       // y-offset so the Icons/List button lines up with About
     std::map<int, Texture> thumbs_;          // lazily decoded thumbnails, keyed by image index
     struct FolderItem {                      // cached inference result for one image
         std::vector<yolomaster::RawDet> cands;
