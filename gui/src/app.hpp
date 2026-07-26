@@ -158,6 +158,8 @@ private:
     static constexpr float kConfFloor = 0.05f;   // cache candidates down to here
 
     void load_model(const Platform& plat);
+    void load_default_model(const Platform& plat);   // bundled model, auto-loaded on first frame
+    bool tried_default_ = false;
     void load_image(const std::string& path, const Platform& plat);
     void load_folder(const std::string& dir, const Platform& plat);
     void select_index(int i, const Platform& plat);   // show folder_imgs_[i] from cache

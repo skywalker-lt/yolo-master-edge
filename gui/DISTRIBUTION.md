@@ -39,17 +39,20 @@ What is in the bundle
   opencv_videoio_ffmpeg*.dll    video decode (mp4/avi/mov/mkv)
   vcruntime140*.dll, msvcp140.dll, vcomp140.dll   MSVC runtime (app-local)
   assets\                       About-page logos + avatar
-  models\                       a default model so it runs out of the box
+  models\                       bundled models (v0.1-seg-N segmentation is the
+                                default and auto-loads on launch)
 
 Getting started
 ---------------
 1. Unzip.
-2. Run yolomaster_gui.exe.
-3. Browse to a model in models\ (or your own .onnx / .mnn / ncnn folder).
-4. Open image / video / folder, or Live Webcam. Set Device -> GPU for ncnn/MNN.
+2. Run yolomaster_gui.exe. The bundled YOLO-Master v0.1-seg-N (segmentation,
+   COCO-80) loads automatically - the MODEL card should show it on startup.
+3. Open image / video / folder, or Live Webcam.
+4. Optional: Browse to a different model (.onnx / .mnn / ncnn folder), and set
+   Device -> GPU (use the ncnn or MNN model for GPU in this bundle).
 
 Notes
 -----
 - First launch may show a Windows SmartScreen prompt because the exe is not code-
   signed ("More info" -> "Run anyway"). Signing requires a code-signing certificate.
-- License: AGPL-3.0. See the About page (?) for full terms and acknowledgements.
+- License: AGPL-3.0. See the About page for full terms and acknowledgements.

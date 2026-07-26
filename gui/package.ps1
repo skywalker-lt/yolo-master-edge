@@ -58,6 +58,11 @@ foreach ($m in $Models) {
   if (Test-Path $src) { Copy-Item $src $md -Recurse -Force }
   else { Write-Warning "model not found, skipping: $src" }
 }
+# the app auto-loads models/v0.1-seg-n.onnx on launch -- fail loudly if it is missing,
+# otherwise the shipped bundle opens with no model.
+if (-not (Test-Path (Join-Path $md "v0.1-seg-n.onnx"))) {
+  throw "default model models/v0.1-seg-n.onnx is missing from the bundle (looked in $ModelsDir)"
+}
 Copy-Item (Join-Path $root "DISTRIBUTION.md") (Join-Path $stage "README.txt") -Force
 
 Write-Host "== 5/5  zip ==" -ForegroundColor Cyan
