@@ -524,11 +524,24 @@ void App::frame(const Platform& plat) {
 
     // keyboard shortcuts (ignored while typing in a field).
     if (!ImGui::GetIO().WantTextInput) {
-        const bool fwd  = ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_DownArrow);
-        const bool back = ImGui::IsKeyPressed(ImGuiKey_LeftArrow)  || ImGui::IsKeyPressed(ImGuiKey_UpArrow);
+        const bool kR = ImGui::IsKeyPressed(ImGuiKey_RightArrow);
+        const bool kL = ImGui::IsKeyPressed(ImGuiKey_LeftArrow);
+        const bool kD = ImGui::IsKeyPressed(ImGuiKey_DownArrow);
+        const bool kU = ImGui::IsKeyPressed(ImGuiKey_UpArrow);
+        const bool fwd = kR || kD, back = kL || kU;
         if (!folder_imgs_.empty()) {
-            if (fwd)  select_index(cur_idx_ + 1, plat);
-            else if (back) select_index(cur_idx_ - 1, plat);
+            const int n = (int)folder_imgs_.size();
+            if (finder_mode_ == FinderMode::Icons && finder_cols_ > 1) {
+                // macOS Finder grid semantics: left/right stay in the row, up/down in the column
+                const int col = cur_idx_ % finder_cols_;
+                if      (kR && col < finder_cols_ - 1 && cur_idx_ + 1 < n) select_index(cur_idx_ + 1, plat);
+                else if (kL && col > 0)                                    select_index(cur_idx_ - 1, plat);
+                else if (kD && cur_idx_ + finder_cols_ < n)                select_index(cur_idx_ + finder_cols_, plat);
+                else if (kU && cur_idx_ - finder_cols_ >= 0)               select_index(cur_idx_ - finder_cols_, plat);
+            } else {                                   // list view: linear
+                if (fwd)       select_index(cur_idx_ + 1, plat);
+                else if (back) select_index(cur_idx_ - 1, plat);
+            }
         } else if (is_video_) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space)) playing_ = !playing_;
             if (!playing_ && fwd)  seek_video(frame_idx_ + 1, plat);   // step frames while paused
@@ -550,9 +563,12 @@ void App::frame(const Platform& plat) {
 
     if (!folder_imgs_.empty()) {
         ImGui::SameLine();
-        // icon view needs room for a few columns; list view stays narrow
+        // icon view: size the panel for exactly 3 columns; list view stays narrow
+        const ImGuiStyle& st = ImGui::GetStyle();
         const float fw = (finder_mode_ == FinderMode::Icons)
-                       ? std::max(260.f * ui, icon_size_ * 2.6f) : 250.f * ui;
+                       ? 3.f * icon_size_ + 2.f * st.ItemSpacing.x + 2.f * st.WindowPadding.x
+                         + st.ScrollbarSize + 6.f
+                       : 250.f * ui;
         ImGui::BeginChild("filelist", ImVec2(fw, 0), true);
         draw_filelist(plat);
         ImGui::EndChild();
@@ -596,16 +612,26 @@ static void field_label(const char* t) {
 void App::draw_sidebar(const Platform& plat) {
     const float ui = ImGui::GetFontSize() / 17.0f;   // DPI scale for fixed pixel offsets
     // ---- header ----
-    ImGui::AlignTextToFramePadding();   // vertically center the title against the "?" button
+    ImFont* hf = (ImFont*)plat.heading_font;
+    if (hf) ImGui::PushFont(hf);
     ImGui::TextUnformatted("YOLO-Master");
+    if (hf) ImGui::PopFont();
+    const float titleH = ImGui::GetItemRectSize().y;
+    // right-align the About button, vertically centred against the (taller) title
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight());
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (titleH - ImGui::GetFrameHeight()) * 0.5f);
     if (ImGui::Button("?", ImVec2(ImGui::GetFrameHeight(), 0))) show_about_ = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("About / Licenses");
     ImGui::TextDisabled("Windows runner (GUI) - ONNX / ncnn / MNN");
     ImGui::Dummy(ImVec2(0, 6));
 
+    // While the webcam is live, everything except APPEARANCE is locked (matches the Mac runner):
+    // the model/source/preprocess/device all define the running stream.
+    const bool lock = is_cam_;
+
     // ---- MODEL (auto-loads; no Load button) ----
     begin_card("MODEL");
+    ImGui::BeginDisabled(lock);
     ImGui::SetNextItemWidth(-1);
     if (ImGui::InputTextWithHint("##model", ".onnx / ncnn dir / .mnn", model_path_, sizeof(model_path_),
                                  ImGuiInputTextFlags_EnterReturnsTrue))
@@ -627,10 +653,12 @@ void App::draw_sidebar(const Platform& plat) {
     } else if (!be_err_.empty()) {
         ImGui::TextColored(ImVec4(0.98f,0.4f,0.4f,1), "%s", be_err_.c_str());
     }
+    ImGui::EndDisabled();
     end_card();
 
     // ---- SOURCE ----
     begin_card("SOURCE");
+    ImGui::BeginDisabled(lock);   // can't switch source mid-stream; Stop Camera stays enabled
     if (ImGui::Button("Open image / video...", ImVec2(-1, 0))) {   // autodetect by extension
         std::string p = plat.open_file("Open image or video",
             "Media\0*.jpg;*.jpeg;*.png;*.bmp;*.mp4;*.avi;*.mov;*.mkv\0All\0*.*\0");
@@ -640,6 +668,7 @@ void App::draw_sidebar(const Platform& plat) {
         std::string d = plat.open_folder("Select image folder");
         if (!d.empty()) load_folder(d, plat);
     }
+    ImGui::EndDisabled();
     if (is_cam_) {
         if (ImGui::Button("Stop Camera", ImVec2(-1, 0))) close_camera(&plat);
         ImGui::Checkbox("Mirror", &cam_mirror_);
@@ -654,6 +683,7 @@ void App::draw_sidebar(const Platform& plat) {
 
     // ---- PREPROCESS ----
     begin_card("PREPROCESS");
+    ImGui::BeginDisabled(lock);
     field_label("Input fit");
     int pp = (int)prep_;
     const char* pps[] = {"letterbox", "stretch"};
@@ -664,16 +694,19 @@ void App::draw_sidebar(const Platform& plat) {
         else if (!folder_imgs_.empty()) load_folder(folder_path_, plat); // re-infer the folder
         else if (!is_cam_)              need_reinfer_ = true;            // camera: next frame
     }
+    ImGui::EndDisabled();
     end_card();
 
     // ---- DETECTION ----
     begin_card("DETECTION");
+    ImGui::BeginDisabled(lock);
     field_label("Confidence");
     ImGui::SetNextItemWidth(-1);
     if (ImGui::SliderFloat("##conf", &conf_, 0.05f, 0.95f, "%.2f")) need_renms_ = true;
     field_label("IoU (NMS)");
     ImGui::SetNextItemWidth(-1);
     if (ImGui::SliderFloat("##iou", &iou_, 0.10f, 0.90f, "%.2f")) need_renms_ = true;
+    ImGui::EndDisabled();
     end_card();
 
     // ---- APPEARANCE ----
@@ -701,6 +734,7 @@ void App::draw_sidebar(const Platform& plat) {
 
     // ---- DEVICE ----
     begin_card("DEVICE");
+    ImGui::BeginDisabled(lock);
     field_label("Compute");
     int dv = (int)device_;
     const char* devs[] = {"CPU", "GPU"};
@@ -709,6 +743,7 @@ void App::draw_sidebar(const Platform& plat) {
         device_ = (Device)dv;
         if (be_ || model_path_[0]) load_model(plat);
     }
+    ImGui::EndDisabled();
     end_card();
 
     // ---- INFERENCE ----
@@ -795,6 +830,7 @@ void App::draw_finder_icons(const Platform& plat) {
     const float cellH = thumbH + 4.f + capH;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + spacing) / (cell + spacing)));
+    finder_cols_ = cols;                       // published for grid arrow-key navigation
     ImDrawList* dl = ImGui::GetWindowDrawList();
     int budget = 3;                            // decode at most 3 thumbnails per frame
 
@@ -1041,8 +1077,9 @@ void App::draw_about(const Platform& plat) {
             return (it != logos_.end() && it->second.id) ? &it->second : nullptr;
         };
 
-        ImGui::TextUnformatted(kAppName);
-        ImGui::SameLine();
+        if (ImFont* hf = (ImFont*)plat.heading_font) {
+            ImGui::PushFont(hf); ImGui::TextUnformatted(kAppName); ImGui::PopFont();
+        } else ImGui::TextUnformatted(kAppName);
         ImGui::TextDisabled("%s", kAppSubtitle);
         ImGui::TextDisabled("Version %s", kAppVersion);
         ImGui::TextWrapped("%s", kAppTagline);

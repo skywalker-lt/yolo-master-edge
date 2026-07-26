@@ -208,7 +208,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     WNDCLASSEX wc = { sizeof(wc), CS_CLASSDC, WndProc, 0, 0, hInstance,
                       nullptr, nullptr, nullptr, nullptr, _T("YOLOMasterEdge"), nullptr };
     RegisterClassEx(&wc);
-    g_hwnd = CreateWindow(wc.lpszClassName, _T("YOLO-Master Edge"), WS_OVERLAPPEDWINDOW,
+    g_hwnd = CreateWindow(wc.lpszClassName, _T("YOLO-Master Windows Runner (GUI)"), WS_OVERLAPPEDWINDOW,
                           100, 100, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
 
     if (!CreateDeviceD3D(g_hwnd)) {
@@ -231,8 +231,16 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
     // Real anti-aliased Segoe UI instead of the pixelated default bitmap font.
     ImFontConfig fc; fc.OversampleH = 3; fc.OversampleV = 2;
-    if (GetFileAttributesA("C:\\Windows\\Fonts\\segoeui.ttf") != INVALID_FILE_ATTRIBUTES)
+    auto have = [](const char* p) { return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES; };
+    if (have("C:\\Windows\\Fonts\\segoeui.ttf"))
         io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17.0f * dpi, &fc);
+    // larger semibold face for the sidebar title (falls back through bold -> regular)
+    ImFont* headingFont = nullptr;
+    for (const char* f : {"C:\\Windows\\Fonts\\seguisb.ttf",
+                          "C:\\Windows\\Fonts\\segoeuib.ttf",
+                          "C:\\Windows\\Fonts\\segoeui.ttf"}) {
+        if (have(f)) { headingFont = io.Fonts->AddFontFromFileTTF(f, 24.0f * dpi, &fc); break; }
+    }
 
     ImGui::StyleColorsDark();
     ApplyStyle();
@@ -246,6 +254,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     plat.open_file   = OpenFileDialog;
     plat.open_folder = OpenFolderDialog;
     plat.release     = ReleaseTexture;
+    plat.heading_font = headingFont;
     plat.open_url    = [](const char* url) { ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL); };
     {   // directory of the running exe, for loading bundled assets/
         char exe[MAX_PATH] = "";
