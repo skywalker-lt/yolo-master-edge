@@ -625,9 +625,12 @@ void App::draw_sidebar(const Platform& plat) {
     ImGui::TextDisabled("Windows runner (GUI) - ONNX / ncnn / MNN");
     ImGui::Dummy(ImVec2(0, 6));
 
-    // While the webcam is live, everything except APPEARANCE is locked (matches the Mac runner):
-    // the model/source/preprocess/device all define the running stream.
-    const bool lock = is_cam_;
+    // Lock the controls that define/redo the whole run: while the webcam is live, and while a
+    // folder/video pre-inference pass is still going (matches the Mac runner's "busy" rule).
+    // APPEARANCE and DETECTION (conf/IoU) stay live throughout - both are cheap re-renders.
+    const bool busy = (is_video_ && !video_ready_) ||
+                      (!folder_imgs_.empty() && !folder_ready_);
+    const bool lock = is_cam_ || busy;
 
     // ---- MODEL (auto-loads; no Load button) ----
     begin_card("MODEL");
@@ -669,9 +672,15 @@ void App::draw_sidebar(const Platform& plat) {
         if (!d.empty()) load_folder(d, plat);
     }
     ImGui::EndDisabled();
-    if (is_cam_) {
+    if (is_cam_) {                       // always live: the way out of camera mode
         if (ImGui::Button("Stop Camera", ImVec2(-1, 0))) close_camera(&plat);
         ImGui::Checkbox("Mirror", &cam_mirror_);
+    } else if (busy) {                   // always live: the way out of a long pre-inference
+        if (ImGui::Button("Cancel", ImVec2(-1, 0))) {
+            if (is_video_) close_video();
+            else           close_folder(&plat);
+            clear_preview(&plat);
+        }
     } else if (ImGui::Button("Live Webcam", ImVec2(-1, 0))) {
         open_camera(plat);
     }
@@ -698,15 +707,13 @@ void App::draw_sidebar(const Platform& plat) {
     end_card();
 
     // ---- DETECTION ----
-    begin_card("DETECTION");
-    ImGui::BeginDisabled(lock);
+    begin_card("DETECTION");   // always live: conf/IoU are cheap re-NMS, even on a running camera
     field_label("Confidence");
     ImGui::SetNextItemWidth(-1);
     if (ImGui::SliderFloat("##conf", &conf_, 0.05f, 0.95f, "%.2f")) need_renms_ = true;
     field_label("IoU (NMS)");
     ImGui::SetNextItemWidth(-1);
     if (ImGui::SliderFloat("##iou", &iou_, 0.10f, 0.90f, "%.2f")) need_renms_ = true;
-    ImGui::EndDisabled();
     end_card();
 
     // ---- APPEARANCE ----
