@@ -56,8 +56,43 @@ if(USE_ORT AND EXISTS "${ONNXRUNTIME_ROOT}/include/onnxruntime_cxx_api.h")
   list(APPEND RUNTIME_DLLS ${ORT_DLLS})
   list(APPEND DEFS USE_ORT)
   message(STATUS "ONNXRuntime backend: ON (${ONNXRUNTIME_ROOT})")
+  if(EXISTS "${ONNXRUNTIME_ROOT}/lib/onnxruntime_providers_cuda.dll")
+    message(STATUS "  ONNX CUDA EP: present (needs cuDNN + CUDA runtime DLLs at runtime)")
+  endif()
 else()
   message(WARNING "ONNXRuntime backend: OFF (set -DONNXRUNTIME_ROOT)")
+endif()
+
+# ---- ONNX CUDA EP runtime deps (cuDNN + CUDA runtime) ----------------------------------
+# ORT's CUDA provider dlopens cuDNN and the CUDA runtime; if they are not next to the exe
+# (or on PATH) it fails with "failed to load shared library". Set these so they are bundled
+# automatically and survive a clean rebuild:
+#   -DCUDNN_DIR="C:/Program Files/NVIDIA/CUDNN/v9.12/bin/12.9"
+#   -DCUDA_BIN_DIR="C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/bin"
+set(CUDNN_DIR    "" CACHE PATH "cuDNN bin dir holding cudnn*.dll (match your CUDA major version)")
+set(CUDA_BIN_DIR "" CACHE PATH "CUDA toolkit bin dir holding cudart64_*.dll / cublas*64_*.dll")
+if(CUDNN_DIR)
+  # cudnn_adv* is RNN/attention-only: a CNN detector never loads it, so skip the ~200MB.
+  file(GLOB CUDNN_DLLS "${CUDNN_DIR}/cudnn*.dll")
+  list(FILTER CUDNN_DLLS EXCLUDE REGEX "cudnn_adv")
+  if(CUDNN_DLLS)
+    list(APPEND RUNTIME_DLLS ${CUDNN_DLLS})
+    message(STATUS "cuDNN DLLs: bundling from ${CUDNN_DIR}")
+  else()
+    message(WARNING "CUDNN_DIR set but no cudnn*.dll found in ${CUDNN_DIR}")
+  endif()
+endif()
+if(CUDA_BIN_DIR)
+  # only what a conv net needs: runtime + cuBLAS(+Lt). Skip cufft/curand/cusparse/cusolver.
+  file(GLOB CUDA_DLLS "${CUDA_BIN_DIR}/cudart64_*.dll"
+                      "${CUDA_BIN_DIR}/cublas64_*.dll"
+                      "${CUDA_BIN_DIR}/cublasLt64_*.dll")
+  if(CUDA_DLLS)
+    list(APPEND RUNTIME_DLLS ${CUDA_DLLS})
+    message(STATUS "CUDA runtime DLLs: bundling from ${CUDA_BIN_DIR}")
+  else()
+    message(WARNING "CUDA_BIN_DIR set but no cudart/cublas DLLs found in ${CUDA_BIN_DIR}")
+  endif()
 endif()
 
 if(USE_NCNN AND EXISTS "${NCNN_ROOT}/include/ncnn/net.h")
