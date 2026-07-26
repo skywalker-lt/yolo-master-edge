@@ -71,9 +71,13 @@ private:
         std::vector<yolomaster::RawDet> cands;
         std::vector<float> proto; int pc = 0, ph = 0, pw = 0;
         yolomaster::LetterboxInfo lb; int ow = 0, oh = 0;
+        double ms = 0;                       // model-only inference time for this image
         bool done = false;
     };
     std::vector<FolderItem> fcache_;
+    double      fmean_ms_ = 0, fmin_ms_ = 0, fmax_ms_ = 0;   // model-only, over the folder
+    double      fwall_s_ = 0;                                // wall clock for the whole pass
+    int         fcount_ = 0;                                 // images actually inferred
     bool        folder_ready_ = false;
     std::thread finfer_;
     std::atomic<int>  fprogress_{0};

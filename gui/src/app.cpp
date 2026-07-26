@@ -3,6 +3,7 @@
 #include "about.hpp"
 #include "backend_factory.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -100,8 +101,12 @@ void App::close_folder() {
     cur_idx_ = -1; folder_ready_ = false; fprogress_ = 0; finfer_done_ = false;
 }
 
-// Background: forward-pass EVERY image once, caching per-image candidates (+ proto for seg).
+// Background: forward-pass EVERY image once, caching per-image candidates (+ proto for seg)
+// and timings (per-image model ms, plus folder mean/min/max and wall clock).
 void App::folder_preinfer(std::vector<std::string> paths, Config c) {
+    using clk = std::chrono::steady_clock;
+    const auto t_start = clk::now();
+    double sum = 0, lo = 0, hi = 0; int n = 0;
     for (int i = 0; i < (int)paths.size() && !finfer_cancel_; ++i) {
         cv::Mat bgr = cv::imread(paths[i], cv::IMREAD_COLOR);
         if (!bgr.empty()) {
@@ -112,12 +117,20 @@ void App::folder_preinfer(std::vector<std::string> paths, Config c) {
                 it.ow = be_->cand_orig_w;   it.oh = be_->cand_orig_h;
                 if (be_->is_seg()) { it.proto = be_->proto; it.pc = be_->proto_c;
                                      it.ph = be_->proto_h; it.pw = be_->proto_w; }
+                it.ms = be_->infer_ms;
                 it.done = true;
                 fcache_[i] = std::move(it);
+                sum += be_->infer_ms; ++n;
+                if (n == 1 || be_->infer_ms < lo) lo = be_->infer_ms;
+                if (n == 1 || be_->infer_ms > hi) hi = be_->infer_ms;
+                fmean_ms_ = sum / n;              // publish live so the UI can show progress stats
+                fmin_ms_ = lo; fmax_ms_ = hi; fcount_ = n;
+                fwall_s_ = std::chrono::duration<double>(clk::now() - t_start).count();
             } catch (...) {}
         }
         fprogress_ = i + 1;
     }
+    fwall_s_ = std::chrono::duration<double>(clk::now() - t_start).count();
     finfer_done_ = true;
 }
 
@@ -146,6 +159,7 @@ void App::overlay_folder_item(int idx, const Platform& plat) {
     }
     const FolderItem& it = fcache_[idx];
     seg_model_ = !it.proto.empty();
+    inf_ms_ = it.ms; pre_ms_ = 0; post_ms_ = 0;   // this image's model-only time
     Config c = cfg_; c.conf_thresh = conf_; c.iou_thresh = iou_;
     dets_ = nms_and_cap(it.cands, c, it.ow, it.oh);
     class_counts_.assign(cfg_.num_classes(), 0);
@@ -649,11 +663,13 @@ void App::draw_sidebar(const Platform& plat) {
         ImGui::SetNextItemWidth(-1);
         if (ImGui::Combo("##overlay", &ov, ovs, IM_ARRAYSIZE(ovs))) overlay_ = (Overlay)ov;
     }
-    field_label("Box style");
-    int st = (int)style_;
-    const char* styles[] = {"hud", "solid", "neon"};
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::Combo("##style", &st, styles, IM_ARRAYSIZE(styles))) style_ = (BoxStyle)st;
+    if (!(seg_model_ && overlay_ == Overlay::Masks)) {   // box style is irrelevant in masks-only
+        field_label("Box style");
+        int st = (int)style_;
+        const char* styles[] = {"hud", "solid", "neon"};
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("##style", &st, styles, IM_ARRAYSIZE(styles))) style_ = (BoxStyle)st;
+    }
     field_label("Labels");
     int lm = (int)labels_;
     const char* lms[] = {"full", "min", "off"};
@@ -677,10 +693,28 @@ void App::draw_sidebar(const Platform& plat) {
     // ---- INFERENCE ----
     begin_card("INFERENCE");
     if (be_ && !img_bgr_.empty()) {
-        const double total = pre_ms_ + inf_ms_ + post_ms_;
-        ImGui::Text("Model");   ImGui::SameLine(110 * ui); ImGui::TextDisabled("%.1f ms", inf_ms_);
-        ImGui::Text("Overall"); ImGui::SameLine(110 * ui);
-        ImGui::TextDisabled("%.1f ms  \xc2\xb7  %.0f fps", total, total > 0 ? 1000.0 / total : 0.0);
+        const bool folder = !folder_imgs_.empty();
+        // "This image / frame" model-only time
+        ImGui::Text(folder ? "This image" : "Model");
+        ImGui::SameLine(110 * ui); ImGui::TextDisabled("%.1f ms", inf_ms_);
+        if (folder) {
+            // folder-wide: mean model ms + throughput (images/sec), plus min/max and wall time
+            ImGui::Text("Folder avg"); ImGui::SameLine(110 * ui);
+            ImGui::TextDisabled("%.1f ms  \xc2\xb7  %.1f img/s", fmean_ms_,
+                                fmean_ms_ > 0 ? 1000.0 / fmean_ms_ : 0.0);
+            ImGui::Text("Throughput"); ImGui::SameLine(110 * ui);
+            ImGui::TextDisabled("%.1f img/s  (wall)", fwall_s_ > 0 ? fcount_ / fwall_s_ : 0.0);
+            if (fcount_ > 1) {
+                ImGui::Text("Min / max"); ImGui::SameLine(110 * ui);
+                ImGui::TextDisabled("%.1f / %.1f ms", fmin_ms_, fmax_ms_);
+                ImGui::Text("Total"); ImGui::SameLine(110 * ui);
+                ImGui::TextDisabled("%d imgs  \xc2\xb7  %.2f s", fcount_, fwall_s_);
+            }
+        } else {
+            const double total = pre_ms_ + inf_ms_ + post_ms_;
+            ImGui::Text("Overall"); ImGui::SameLine(110 * ui);
+            ImGui::TextDisabled("%.1f ms  \xc2\xb7  %.0f fps", total, total > 0 ? 1000.0 / total : 0.0);
+        }
         ImGui::Text("Detections"); ImGui::SameLine(110 * ui); ImGui::TextDisabled("%d", (int)dets_.size());
         if (!class_counts_.empty()) {
             ImGui::Spacing();
@@ -724,16 +758,19 @@ void App::draw_filelist(const Platform& plat) {
     ImGui::EndChild();
 }
 
-// draw one detection box in the chosen style onto `dl`, mapped orig-px -> screen.
+// Draw one detection onto `dl`, mapped orig-px -> screen. `draw_shape=false` skips the box
+// outline and draws only the label (masks-only overlay mode).
 static void draw_box(ImDrawList* dl, const Detection& d, BoxStyle style, LabelMode labels,
-                     const Config& cfg, ImVec2 origin, float scale) {
+                     const Config& cfg, ImVec2 origin, float scale, bool draw_shape = true) {
     const float x0 = origin.x + d.box.x * scale;
     const float y0 = origin.y + d.box.y * scale;
     const float x1 = x0 + d.box.width  * scale;
     const float y1 = y0 + d.box.height * scale;
     const ImU32 col = col_of(d.class_id);
 
-    if (style == BoxStyle::Solid) {
+    if (!draw_shape) {
+        // no box outline; fall through to the label block below
+    } else if (style == BoxStyle::Solid) {
         dl->AddRect(ImVec2(x0,y0), ImVec2(x1,y1), col, 2.f, 0, 2.f);
     } else if (style == BoxStyle::Neon) {
         dl->AddRect(ImVec2(x0-1,y0-1), ImVec2(x1+1,y1+1), col_of(d.class_id, 0.35f), 3.f, 0, 5.f);
@@ -942,16 +979,16 @@ void App::draw_preview(const Platform& plat) {
     const ImVec2 origin(cur.x + (avail.x - disp.x) * 0.5f, cur.y + (imgH - disp.y) * 0.5f);
 
     const bool show_masks = seg_model_ && overlay_ != Overlay::Boxes && has_mask_;
-    const bool show_boxes = !seg_model_ || overlay_ != Overlay::Masks;
+    // masks-only hides the box outline but keeps the labels
+    const bool box_shape  = !seg_model_ || overlay_ != Overlay::Masks;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 br(origin.x + disp.x, origin.y + disp.y);
     dl->AddImage((ImTextureID)img_tex_.id, origin, br);
     if (show_masks)   // seg overlay is same dims as the image -> same rect, alpha-blended by ImGui
         dl->AddImage((ImTextureID)mask_tex_.id, origin, br);
-    if (show_boxes)
-        for (const auto& d : dets_)
-            draw_box(dl, d, style_, labels_, cfg_, origin, scale);
+    for (const auto& d : dets_)
+        draw_box(dl, d, style_, labels_, cfg_, origin, scale, box_shape);
 
     if (is_cam_) draw_camera_hud();
 
