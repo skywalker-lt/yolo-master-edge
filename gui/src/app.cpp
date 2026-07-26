@@ -3,6 +3,7 @@
 #include "about.hpp"
 #include "backend_factory.hpp"
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -1161,8 +1162,17 @@ void App::draw_about(const Platform& plat) {
 
 void App::draw_preview(const Platform& plat) {
     if (!img_tex_.id) {
-        ImGui::TextDisabled(is_video_ ? "No frame."
-                                      : "Open an image, folder, or video - or start the webcam.");
+        // empty state: centred both ways, slightly larger than body text
+        const char* msg = is_video_ ? "No frame."
+                                    : "Open an image, folder, or video - or start the webcam.";
+        ImFont* f = ImGui::GetFont();
+        const float fs = ImGui::GetFontSize() * 1.2f;
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        const ImVec2 ts = f->CalcTextSizeA(fs, FLT_MAX, 0.0f, msg);
+        const ImVec2 pos(p0.x + (avail.x - ts.x) * 0.5f, p0.y + (avail.y - ts.y) * 0.5f);
+        ImGui::GetWindowDrawList()->AddText(f, fs, pos,
+                                           ImGui::GetColorU32(ImGuiCol_TextDisabled), msg);
         return;
     }
     const ImVec2 cur = ImGui::GetCursorScreenPos();
