@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <chrono>
+#include <filesystem>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -67,6 +68,28 @@ void App::load_model(const Platform& plat) {
     else if (vid && !vpath.empty()) open_video(vpath, plat);                 // re-infer the clip
     else if (fold && !fdir.empty()) load_folder(fdir, plat);                 // re-infer the folder
     else                         need_reinfer_ = !img_bgr_.empty();
+}
+
+// Load the bundled default model so the app is useful the moment it opens (mirrors the Mac
+// runner shipping v0.1-seg-N). Searched next to the exe first (shipped layout), then up the
+// tree at the repo's models/ (dev builds run from gui/build/Release).
+void App::load_default_model(const Platform& plat) {
+    tried_default_ = true;
+    namespace fs = std::filesystem;
+    const char* names[] = { "v0.1-seg-n.onnx", "esmoe_n_visdrone_sim.onnx" };
+    const fs::path exe(plat.exe_dir.empty() ? "." : plat.exe_dir);
+    const fs::path roots[] = { exe / "models", exe / ".." / ".." / ".." / "models" };
+    std::error_code ec;
+    for (const auto& r : roots)
+        for (const char* n : names) {
+            const fs::path p = r / n;
+            if (fs::exists(p, ec)) {
+                std::snprintf(model_path_, sizeof(model_path_), "%s",
+                              p.lexically_normal().string().c_str());
+                load_model(plat);
+                return;
+            }
+        }
 }
 
 void App::open_media(const std::string& path, const Platform& plat) {
@@ -460,6 +483,8 @@ void App::rebuild_overlay(const Platform& plat) {
 }
 
 void App::frame(const Platform& plat) {
+    if (!tried_default_) load_default_model(plat);   // bundled model, once at startup
+
     // sync inference for a single still image only (video/camera/folder own the backend elsewhere)
     if (!async_mode_ && !is_video_ && folder_imgs_.empty()) {
         if (need_reinfer_) run_inference();
