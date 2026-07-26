@@ -4,6 +4,23 @@
 
 This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML (NEW!)](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, and MacOS; supports CPU, [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), and [Apple Metal Performance Shaders](https://developer.apple.com/documentation/metalperformanceshaders). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
 
+---
+
+## ✨ Update (27-07-2026): YOLO-Master Windows 10/11 Runner (**GUI**) on ONNX/ncnn/MNN backends with **GPU Acceleration**
+**Download the [CPU runner](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-windows/YOLO-Master-Windows-1.0.0.zip) / [CUDA runner](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-windows/YOLO-Master-Windows-CUDA-1.0.0.zip).**
+
+Now the Windows C++ edge runner has an improved backend and dedicated GUI! **YOLO-Master Windows Runner GUI** provides a refined C++ edge inference backend that bundles [ONNX](https://onnxruntime.ai/), [ncnn](https://github.com/Tencent/ncnn) and [MNN](https://github.com/alibaba/MNN) with **GPU acceleration**, + a polished frontend built with [Dear ImGui](https://github.com/ocornut/imgui) with all functionalities from the MacOS Core ML Runner below. It also bundles a default `YOLO-Master-v0.1-seg-N` segmentation model as the Mac runner. 
+
+<img width="400" alt="48 2" src="https://github.com/user-attachments/assets/fa96097b-1014-46c0-8692-2c3656f4f763" />  <img width="400" alt="50 2" src="https://github.com/user-attachments/assets/db1e2194-584e-4898-b2b3-e7370fa325c5" />
+<img width="800" alt="49 2" src="https://github.com/user-attachments/assets/6a438094-b352-4f59-bb55-9e3c600837ad" />
+
+- **Three Backends in One App** ONNX, ncnn, and MNN all ship in single executable. Inference backends can be switched with a single click.
+- **GPU Acceleration for All Backends** up to **4x speedup** with CUDA-accelerated inference on consumer devices. (please refer to the inference speed comparison table in [Relases](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows)) 
+
+Please check our [Release Page](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows) for more details.
+
+---
+
 ## 🍎 Update (17-07-2026): YOLO-Master CoreML Runner for MacOS (GUI)
 
 **[Download](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-macos/YOLO-Master-CoreML-Runner-1.0.0.zip) and try it now!**
@@ -20,10 +37,7 @@ Alongside the Linxu and Windows C++ runtime, we now provide a native, user-frien
 
 For more details, please check the [Release](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-macos) page.
 
-The refined Windows 10/11 Runner with GUI is also in developmet.
-
 ---
-
 
 ## ✨ Benefits
 
@@ -112,7 +126,7 @@ Ensure you have the following dependencies installed （not required if you only
 
 ## 🛠️ Build Instructions
 
-### Linux & Windows
+### CLI (Linux & Windows)
 
 1.  **Clone the Repository:**
 
@@ -163,6 +177,30 @@ Ensure you have the following dependencies installed （not required if you only
 5.  **Locate Executable:**
     The compiled executable (`yolomaster_edge`, or `yolomaster_edge.exe` on Windows) is located in the `build` directory. On Windows the required backend and OpenCV DLLs are auto-copied next to it.
 
+### Windows GUI (with CUDA)
+
+1. **Clone the Repository**
+   ```shell
+   git clone https://github.com/skywalker-lt/yolo-master-edge.git
+   cd yolo-master-edge/gui
+   ```
+   
+2. **Copy and Edit the Paths**
+   ```bat
+   copy sdk-paths.example.cmd sdk-paths.cmd
+   ```
+   Edit `sdk-paths.cmd` with your locations. It is gitignored. Leave a backend blank to skip it.
+   
+4. **Build**
+   ```bat
+   build.cmd            :: configure + build Release
+   build.cmd run        :: build, then launch
+   build.cmd clean      :: wipe build\ first
+   ```
+   Output: `gui\build\Release\yolomaster_gui.exe`
+
+   > If PowerShell blocks `.ps1` scripts, use `.cmd` scripts as they are not subject to execution policy. `build.ps1` is equivalent and takes the same paths as parameters.   
+   
 ### MacOS 
 
 1.  **Clone the Repository:**
@@ -177,7 +215,7 @@ Ensure you have the following dependencies installed （not required if you only
     swift run -c release --package-path mac YOLOMasterApp
     ```
 
-## 🚀 Usage
+## 🚀 Usage (CLI)
 
 Run the executable, pointing it at a model and a source (image, directory, video, or `dataset.yaml`):
 
@@ -217,15 +255,18 @@ On an Orin Nano 4 GB the FP16 engine runs at **35.7 FPS** (27.8 ms) with **mAP50
 
 Inference performed on full 548 VisDrone validation images against the PyTorch original (`mAP50-95 = 0.2036`), using identical settings (conf 0.001, NMS IoU 0.7, multi-label).
 
-| Inference Backend                     | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
+| Inference Backend         | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
 | :------------------------ | :------- | :----------- | :------ | :---- |
-| ONNX (ONNX Runtime, CPU)  | 0.2034   | −0.02%       | 40 ms   | 25.0  |
-| NCNN (CPU)                | 0.2034   | −0.02%       | ~80 ms  | ~12.5 |
+| ONNX (CPU)                | 0.2034   | −0.02%       | 40 ms   | 25.0  |
+| ONNX CUDA (H200)          | 0.2033   | −0.03%       | 7.8 ms  | ~128  |
+| ONNX CUDA (RTX 5070Ti Laptop) | 0.2033 | −0.03%     | 9.0 ms  | ~111  |
+| NCNN (CPU)                | 0.2034   | −0.02%       | 80 ms   | 12.5  |
+| NCNN (Vulkan)             | 0.2034   | −0.02%       | 20.2 ms | ~111  | 
 | MNN (CPU)                 | 0.2034   | −0.02%       | 74 ms   | 13.5  |
-| INT8 mixed (CPU) ¹        | 0.1952   | −0.84%       | 137 ms  | 7.2   |
-| ONNX CUDA (H200 GPU)      | 0.2033   | −0.03%       | 7.8 ms  | ~128  |
-| TensorRT FP16 (Jetson Orin Nano 4GB) | 0.2029 | −0.34% | 27.8 ms | 35.7  |
-| Core ML (M4 Max) | N/A (no validator bundled) | N/A | 17.4 ms | ~57.4 |
+| MNN (OpenCL)              | 0.2034   | −0.02%       | 19.1    | 52.4  | 
+| INT8 mixed (CPU)¹         | 0.1952   | −0.84%       | 137 ms  | 7.2   |
+| TensorRT FP16 (Jetson Orin Nano 4GB) | 0.2029 | −0.34% | 27.8 ms | 35.7 |
+| Core ML (M4 Max) | N/A (no validator bundled) | N/A | 17.4 ms | 57.4  |
 
 CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph. The Jetson row is a native TensorRT FP16 engine, measured on-device (see below).
 
