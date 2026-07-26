@@ -97,6 +97,7 @@ add_executable(yolomaster_gui WIN32 ${SRC})   # WIN32 -> WinMain, no console win
 target_include_directories(yolomaster_gui PRIVATE ${INCS})
 target_link_libraries(yolomaster_gui PRIVATE ${LIBS})
 target_compile_definitions(yolomaster_gui PRIVATE ${DEFS} UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(yolomaster_gui PRIVATE /utf-8)   # treat sources as UTF-8 (silences C4819 under non-UTF-8 locales)
 
 # bundle the MSVC runtime + backend DLLs next to the exe
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP ON)

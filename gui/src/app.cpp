@@ -11,7 +11,7 @@ using namespace yolomaster;
 
 namespace gui {
 
-// 10-color palette (RGB 0-1), indexed cls%10 — identical to the Mac runner.
+// 10-color palette (RGB 0-1), indexed cls%10 - identical to the Mac runner.
 static const float kPalette[10][3] = {
     {0.98f,0.26f,0.30f},{0.20f,0.71f,0.98f},{0.16f,0.85f,0.52f},{0.99f,0.79f,0.12f},
     {0.72f,0.40f,0.98f},{0.99f,0.55f,0.18f},{0.10f,0.83f,0.80f},{0.98f,0.36f,0.66f},
@@ -167,7 +167,7 @@ void App::open_video(const std::string& path, const Platform& plat) {
     vinfer_ = std::thread(&App::video_preinfer, this, path, c);
 }
 
-// re-NMS + mask for a cached frame's candidates (no decode) — used on conf/IoU change
+// re-NMS + mask for a cached frame's candidates (no decode) - used on conf/IoU change
 void App::overlay_from_cache(int idx, const Platform& plat) {
     if (idx < 0 || idx >= (int)vcache_.size()) return;
     seg_model_ = !vproto_.empty();
@@ -357,7 +357,7 @@ void App::rebuild_overlay(const Platform& plat) {
 }
 
 void App::frame(const Platform& plat) {
-    // sync inference for still image / folder (never for video/camera — those own the backend)
+    // sync inference for still image / folder (never for video/camera - those own the backend)
     if (!async_mode_ && !is_video_) {
         if (need_reinfer_) run_inference();
         if (need_renms_)   recompute_nms();
@@ -378,7 +378,7 @@ void App::frame(const Platform& plat) {
         if (need_renms_) need_renms_ = false;   // camera picks up new conf/iou on the next frame
     }
 
-    // video: pre-infer all frames (progress bar), then play the raw video from cache — NO inference
+    // video: pre-infer all frames (progress bar), then play the raw video from cache - NO inference
     // on the playback path, so it runs at true source fps.
     if (is_video_) {
         if (!video_ready_) {
@@ -449,7 +449,7 @@ void App::frame(const Platform& plat) {
     if (show_about_) draw_about(plat);
 }
 
-// A rounded, padded, bordered "card" section — mirrors the macOS runner's grouped panels.
+// A rounded, padded, bordered "card" section - mirrors the macOS runner's grouped panels.
 static void begin_card(const char* title) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.155f, 0.166f, 0.198f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Border,  ImVec4(1.0f, 1.0f, 1.0f, 0.05f));
