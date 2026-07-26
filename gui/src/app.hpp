@@ -172,7 +172,8 @@ private:
     void close_video();
     // webcam + async worker
     void open_camera(const Platform& plat);
-    void close_camera();
+    void close_camera(const Platform* plat = nullptr);
+    void clear_preview(const Platform* plat);   // blank the preview + drop stale results
     void start_worker();
     void stop_worker();
     void worker_loop();
