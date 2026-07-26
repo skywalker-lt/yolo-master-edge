@@ -28,16 +28,16 @@ inline const Ack kAcks[] = {
      "https://github.com/Tencent/ncnn", "tencent"},
     {"ONNX Runtime @ Microsoft",
      "Cross-platform inference runtime (ONNX backend + CUDA EP). (C) Microsoft - MIT License.",
-     "https://github.com/microsoft/onnxruntime", nullptr},
+     "https://github.com/microsoft/onnxruntime", "onnx"},
     {"MNN @ Alibaba",
      "Lightweight inference engine (MNN backend + OpenCL/Vulkan GPU). (C) Alibaba - Apache-2.0.",
-     "https://github.com/alibaba/MNN", nullptr},
+     "https://github.com/alibaba/MNN", "mnn"},
     {"OpenCV",
      "Image decoding, preprocessing, and video/camera capture. - Apache-2.0.",
-     "https://github.com/opencv/opencv", nullptr},
+     "https://github.com/opencv/opencv", "opencv"},
     {"Dear ImGui",
      "The immediate-mode GUI toolkit behind this interface. (C) 2014-2026 Omar Cornut - MIT License.",
-     "https://github.com/ocornut/imgui", nullptr},
+     "https://github.com/ocornut/imgui", "imgui"},
 };
 
 inline const char* kLicenseText =
