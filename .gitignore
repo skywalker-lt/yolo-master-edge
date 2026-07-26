@@ -5,6 +5,7 @@
 cpp/build*/
 gui/build*/
 gui/dist/
+gui/dist-cuda/
 runs_edge/
 preds_*/
 results/
