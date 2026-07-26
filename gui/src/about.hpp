@@ -12,30 +12,31 @@ inline const char* kAuthorAffil= "The Hong Kong University of Science and Techno
 inline const char* kAuthorUrl  = "https://github.com/skywalker-lt";
 inline const char* kSourceUrl  = "https://github.com/skywalker-lt/yolo-master-edge";
 
-struct Ack { const char* name; const char* blurb; const char* repo; };
+// `logo` is the base name of a PNG under assets/ack/ (nullptr -> lettered placeholder tile).
+struct Ack { const char* name; const char* blurb; const char* repo; const char* logo; };
 
 inline const Ack kAcks[] = {
     {"YOLO-Master @ Tencent",
      "The YOLO-Master detector/segmenter family this runner packages. (C) 2026 Tencent - AGPL-3.0.",
-     "https://github.com/Tencent/YOLO-Master"},
+     "https://github.com/Tencent/YOLO-Master", "tencent"},
     {"Ultralytics",
      "The YOLO training & inference framework YOLO-Master builds on. (C) 2025 Ultralytics - AGPL-3.0.",
-     "https://github.com/ultralytics/ultralytics"},
-    {"ONNX Runtime @ Microsoft",
-     "Cross-platform inference runtime (ONNX backend + CUDA EP). (C) Microsoft - MIT License.",
-     "https://github.com/microsoft/onnxruntime"},
+     "https://github.com/ultralytics/ultralytics", "ultralytics"},
     {"ncnn @ Tencent",
      "High-performance NN inference (ncnn backend + Vulkan GPU). (C) Tencent - BSD-3-Clause.",
-     "https://github.com/Tencent/ncnn"},
+     "https://github.com/Tencent/ncnn", "tencent"},
+    {"ONNX Runtime @ Microsoft",
+     "Cross-platform inference runtime (ONNX backend + CUDA EP). (C) Microsoft - MIT License.",
+     "https://github.com/microsoft/onnxruntime", nullptr},
     {"MNN @ Alibaba",
      "Lightweight inference engine (MNN backend + OpenCL/Vulkan GPU). (C) Alibaba - Apache-2.0.",
-     "https://github.com/alibaba/MNN"},
+     "https://github.com/alibaba/MNN", nullptr},
     {"OpenCV",
      "Image decoding, preprocessing, and video/camera capture. - Apache-2.0.",
-     "https://github.com/opencv/opencv"},
+     "https://github.com/opencv/opencv", nullptr},
     {"Dear ImGui",
      "The immediate-mode GUI toolkit behind this interface. (C) 2014-2026 Omar Cornut - MIT License.",
-     "https://github.com/ocornut/imgui"},
+     "https://github.com/ocornut/imgui", nullptr},
 };
 
 inline const char* kLicenseText =
