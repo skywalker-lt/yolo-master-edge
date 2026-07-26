@@ -255,22 +255,22 @@ On an Orin Nano 4 GB the FP16 engine runs at **35.7 FPS** (27.8 ms) with **mAP50
 
 Inference performed on full 548 VisDrone validation images against the PyTorch original (`mAP50-95 = 0.2036`), using identical settings (conf 0.001, NMS IoU 0.7, multi-label).
 
-| Inference Backend         | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
-| :------------------------ | :------- | :----------- | :------ | :---- |
-| ONNX (CPU)                | 0.2034   | −0.02%       | 40 ms   | 25.0  |
-| ONNX CUDA (H200)          | 0.2033   | −0.03%       | 7.8 ms  | 128   |
-| ONNX CUDA (RTX 5070Ti Laptop) | 0.2033 | −0.03%     | 9.0 ms  | 111   |
-| NCNN (CPU)                | 0.2034   | −0.02%       | 80 ms   | 12.5  |
-| NCNN (Vulkan)             | 0.2034   | −0.02%       | 20.2 ms | 111   | 
-| MNN (CPU)                 | 0.2034   | −0.02%       | 74 ms   | 13.5  |
-| MNN (OpenCL)              | 0.2034   | −0.02%       | 19.1    | 52.4  | 
-| INT8 mixed (CPU)¹         | 0.1952   | −0.84%       | 137 ms  | 7.2   |
-| TensorRT FP16 (Jetson Orin Nano 4GB) | 0.2029 | −0.34% | 27.8 ms | 35.7 |
-| Core ML (M4 Max) | N/A (no validator bundled) | N/A | 17.4 ms | 57.4  |
+| Inference Backend | Device | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
+| :------------------------ | :------- | :------- | :----------- | :------ | :---- |
+| ONNX | CPU | 0.2034 | −0.02%  | 40 ms | 25.0  |
+| ONNX (CUDA) | H200 SXM | 0.2033 | −0.03% | 7.8 ms  | 128   |
+| ONNX (CUDA) | RTX 5070Ti Laptop | 0.2033 | −0.03%  | 9.0 ms  | 111   |
+| NCNN | CPU | 0.2034 | −0.02% | 80 ms | 12.5  |
+| NCNN (Vulkan) | RTX 5070Ti Laptop | 0.2034 | −0.02%  | 20.2 ms | 49.5  | 
+| MNN | CPU | 0.2034 | −0.02% | 74 ms | 13.5  |
+| MNN (OpenCL) | RTX 5070Ti Laptop | 0.2034 | −0.02%  | 19.1 | 52.4  | 
+| INT8 mixed ¹ | CPU | 0.1952 | −0.84% | 137 ms  | 7.2   |
+| TensorRT FP16 | Jetson Orin Nano 4GB | 0.2029 | −0.34% | 27.8 ms | 35.7 |
+| Core ML | Apple M4 Max | N/A (no validator bundled) | N/A | 17.4 ms | 57.4  |
 
-CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph. The Jetson row is a native TensorRT FP16 engine, measured on-device (see below).
+CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph. The Jetson row is a native TensorRT FP16 engine, measured on-device.
 
-> ¹ INT8 is *slower* than FP32 on CPU — its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is an **accuracy** proof (−0.84%, within budget); on the actual accelerator, note that even on the Orin's tensor cores FP16 wins here (the attention doesn't quantize — see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) §8).
+> ¹ INT8 is *slower* than FP32 on CPU — its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is an **accuracy** proof (−0.84%, within budget); on the actual accelerator, note that even on the Orin's tensor cores FP16 wins here (the attention doesn't quantize — see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) Section 8).
 
 See [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) for the full methodology, INT8 quantization deep-dive, and numerical parity analysis.
 
