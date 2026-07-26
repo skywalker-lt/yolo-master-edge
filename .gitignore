@@ -39,3 +39,5 @@ models/
 mac/.build/
 mac/*.mlpackage
 mac/*.mlmodelc
+# local SDK paths (per-machine, not shared)
+gui/sdk-paths.cmd
