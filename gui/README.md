@@ -52,6 +52,21 @@ cd gui
 ./build.ps1 -Clean     # wipe build/ and reconfigure
 ```
 
+If PowerShell refuses to run the script (execution policy), either invoke it as
+`powershell -ExecutionPolicy Bypass -File .\build.ps1`, or use the batch
+equivalents, which are not subject to execution policy:
+
+```bat
+build.cmd              :: configure + build Release
+build.cmd run          :: build then launch
+build.cmd clean        :: wipe build\ first
+package.cmd 1.0.0      :: build the redistributable zip
+```
+
+Both `.cmd` scripts have the SDK paths at the top - edit them to match your
+machine. `build.cmd` also kills a running yolomaster_gui.exe first, since the
+linker cannot overwrite the exe while it is open.
+
 Output: `gui/build/Release/yolomaster_gui.exe`.
 
 A backend whose `*_ROOT` isn't set is skipped with a warning — you can build with
