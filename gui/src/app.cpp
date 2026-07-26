@@ -735,9 +735,9 @@ void App::draw_camera_hud() {
 }
 
 void App::load_about_assets(const Platform& plat) {
-    assets_loaded_ = true;   // attempt once; missing files just leave a placeholder
-    auto load = [&](const char* name, Texture& tex) {
-        const std::string path = plat.exe_dir + "/assets/ack/" + name + ".png";
+    assets_loaded_ = true;   // attempt once; missing files just leave a lettered placeholder
+    auto load = [&](const char* file, Texture& tex) {
+        const std::string path = plat.exe_dir + "/assets/ack/" + file;
         cv::Mat img = cv::imread(path, cv::IMREAD_UNCHANGED);
         if (img.empty()) return;
         cv::Mat rgba;
@@ -747,9 +747,9 @@ void App::load_about_assets(const Platform& plat) {
         else return;
         plat.upload(rgba, tex);
     };
-    load("skywalker-lt", avatar_tex_);
-    load("tencent",      tencent_tex_);
-    load("ultralytics",  ultra_tex_);
+    load("skywalker-lt.png", avatar_tex_);
+    const char* keys[] = {"tencent", "ultralytics", "onnx", "mnn", "opencv", "imgui"};
+    for (const char* k : keys) load((std::string(k) + ".png").c_str(), logos_[k]);
 }
 
 void App::draw_about(const Platform& plat) {
@@ -766,9 +766,8 @@ void App::draw_about(const Platform& plat) {
         };
         auto logo_of = [&](const char* key) -> Texture* {
             if (!key) return nullptr;
-            if (!std::strcmp(key, "tencent"))     return &tencent_tex_;
-            if (!std::strcmp(key, "ultralytics")) return &ultra_tex_;
-            return nullptr;
+            auto it = logos_.find(key);
+            return (it != logos_.end() && it->second.id) ? &it->second : nullptr;
         };
 
         ImGui::TextUnformatted(kAppName);

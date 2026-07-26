@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <map>
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -168,7 +169,8 @@ private:
     void load_about_assets(const Platform& plat);
     bool show_about_ = false;
     bool assets_loaded_ = false;
-    Texture avatar_tex_, tencent_tex_, ultra_tex_;   // author avatar + org logos
+    Texture avatar_tex_;                             // round author avatar
+    std::map<std::string, Texture> logos_;           // ack logos keyed by Ack::logo
 };
 
 } // namespace gui
