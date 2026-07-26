@@ -671,11 +671,14 @@ static void draw_box(ImDrawList* dl, const Detection& d, BoxStyle style, LabelMo
     if (labels == LabelMode::Full) std::snprintf(buf, sizeof(buf), "%s %.2f", nm, d.conf);
     else                           std::snprintf(buf, sizeof(buf), "%s", nm);
     const ImVec2 ts = ImGui::CalcTextSize(buf);
-    const float pad = 3.f;
-    ImVec2 lp(x0, y0 - ts.y - 2 * pad);
-    if (lp.y < origin.y) lp.y = y0;                        // flip inside if it would clip off-top
-    dl->AddRectFilled(lp, ImVec2(lp.x + ts.x + 2*pad, lp.y + ts.y + 2*pad), col, 2.f);
-    dl->AddText(ImVec2(lp.x + pad, lp.y + pad), text_on(d.class_id), buf);
+    const float padX = ts.y * 0.5f, padY = ts.y * 0.22f;   // roomy chip padding
+    const float chipH = ts.y + 2 * padY, chipW = ts.x + 2 * padX;
+    const float rounding = chipH * 0.34f;                  // rounded pill
+    float lx = x0, ly = y0 - chipH - 1.f;                  // sit just above the box top edge
+    if (ly < origin.y) ly = y0 + 1.f;                      // flip inside if it would clip off-top
+    const float a = (labels == LabelMode::Min) ? 0.72f : 0.86f;
+    dl->AddRectFilled(ImVec2(lx, ly), ImVec2(lx + chipW, ly + chipH), col_of(d.class_id, a), rounding);
+    dl->AddText(ImVec2(lx + padX, ly + padY), text_on(d.class_id), buf);
 }
 
 void App::draw_transport(const Platform& plat) {
@@ -768,6 +771,8 @@ void App::draw_about(const Platform& plat) {
         };
 
         ImGui::TextUnformatted(kAppName);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", kAppSubtitle);
         ImGui::TextDisabled("Version %s", kAppVersion);
         ImGui::TextWrapped("%s", kAppTagline);
 

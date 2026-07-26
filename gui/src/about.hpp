@@ -4,9 +4,10 @@
 
 namespace gui {
 
-inline const char* kAppName    = "YOLO-Master Edge";
-inline const char* kAppVersion = "1.0.0";
-inline const char* kAppTagline = "On-device YOLO-Master detection & segmentation via ONNX Runtime / ncnn / MNN.";
+inline const char* kAppName     = "YOLO-Master";
+inline const char* kAppSubtitle = "Windows runner (GUI)";
+inline const char* kAppVersion  = "1.0.0";
+inline const char* kAppTagline  = "On-device YOLO-Master detection & segmentation via ONNX Runtime / ncnn / MNN.";
 inline const char* kAuthor     = "(Thomas) Ruiheng Li";
 inline const char* kAuthorAffil= "The Hong Kong University of Science and Technology";
 inline const char* kAuthorUrl  = "https://github.com/skywalker-lt";
@@ -41,7 +42,7 @@ inline const Ack kAcks[] = {
 
 inline const char* kLicenseText =
 R"LIC(================================================================
-YOLO-Master Edge
+YOLO-Master - Windows Runner
 Copyright (C) 2026 (Thomas) RUIHENG LI
 (Author affiliated with The Hong Kong University of Science and
 Technology)
