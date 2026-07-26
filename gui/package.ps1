@@ -16,8 +16,7 @@ param(
   [string]$MnnRoot   = "C:/dev/mnn_3.6.1_windows_x64_cpu_opencl_vulkan_avx512",
   [string]$OpenCVDir = "C:/dev/opencv/build/x64/vc16/lib",
   [string]$ModelsDir = "../models",                                     # source of model files
-  [string[]]$Models  = @("v0.1-seg-n.onnx","v0.1-seg-n.mnn","v0.1-seg-n.metadata.yaml","v0.1-seg-n_ncnn",
-                         "esmoe_n_visdrone_sim.onnx","esmoe_n_visdrone.mnn","esmoe_n_visdrone_ncnn"),
+  [string[]]$Models  = @("v0.1-seg-n.onnx","v0.1-seg-n.mnn","v0.1-seg-n.metadata.yaml","v0.1-seg-n_ncnn"),
   [string]$Version   = "1.0.0",
   [string]$Generator = ""
 )
@@ -31,7 +30,7 @@ $stage = Join-Path $root "dist/$name"
 Write-Host "== 1/5  clean CPU-ORT release build ==" -ForegroundColor Cyan
 if (Test-Path $build) { Remove-Item -Recurse -Force $build }
 $gen = if ($Generator) { @("-G", $Generator) } else { @() }
-cmake -S $root -B $build @gen -A x64 -DUSE_TRT=OFF `
+cmake -S $root -B $build @gen -A x64 `
   "-DONNXRUNTIME_ROOT=$OnnxRoot" "-DNCNN_ROOT=$NcnnRoot" "-DMNN_ROOT=$MnnRoot" "-DOpenCV_DIR=$OpenCVDir"
 if ($LASTEXITCODE) { throw "cmake configure failed" }
 cmake --build $build --config Release -j

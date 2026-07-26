@@ -28,7 +28,7 @@ set "STAGE=%ROOT%dist\%NAME%"
 
 echo == 1/5  clean CPU-ORT release build ==
 if exist "%BUILD%" rmdir /s /q "%BUILD%"
-cmake -S "%ROOT%." -B "%BUILD%" -A x64 -DUSE_TRT=OFF ^
+cmake -S "%ROOT%." -B "%BUILD%" -A x64 ^
   "-DONNXRUNTIME_ROOT=%ONNX_ROOT%" "-DNCNN_ROOT=%NCNN_ROOT%" ^
   "-DMNN_ROOT=%MNN_ROOT%" "-DOpenCV_DIR=%OPENCV_DIR%"
 if errorlevel 1 goto :fail
@@ -50,15 +50,14 @@ for %%P in (onnxruntime_providers_cuda*.dll onnxruntime_providers_tensorrt*.dll 
 
 echo == 4/5  bundle default models ==
 mkdir "%STAGE%\models" 2>nul
-for %%M in (v0.1-seg-n.onnx v0.1-seg-n.mnn v0.1-seg-n.metadata.yaml ^
-            esmoe_n_visdrone_sim.onnx esmoe_n_visdrone.mnn) do (
+for %%M in (v0.1-seg-n.onnx v0.1-seg-n.mnn v0.1-seg-n.metadata.yaml) do (
   if exist "%ROOT%%MODELS_DIR%\%%M" (
     copy /y "%ROOT%%MODELS_DIR%\%%M" "%STAGE%\models\" >nul
   ) else (
     echo   [warn] model not found, skipping: %%M
   )
 )
-for %%D in (v0.1-seg-n_ncnn esmoe_n_visdrone_ncnn) do (
+for %%D in (v0.1-seg-n_ncnn) do (
   if exist "%ROOT%%MODELS_DIR%\%%D" xcopy "%ROOT%%MODELS_DIR%\%%D" "%STAGE%\models\%%D\" /E /I /Y >nul
 )
 rem the app auto-loads models\v0.1-seg-n.onnx -- never ship a bundle without it
