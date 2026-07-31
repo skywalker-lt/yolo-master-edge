@@ -271,7 +271,7 @@ Inference performed on full 548 VisDrone validation images against the PyTorch o
 
 CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph. The Jetson row is a native TensorRT FP16 engine, measured on-device.
 
-> ¹ INT8 is *slower* than FP32 on CPU — its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is an **accuracy** proof (−0.84%, within budget); on the actual accelerator, note that even on the Orin's tensor cores FP16 wins here (the attention doesn't quantize — see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) Section 8).
+> ¹ INT8 is *slower* than FP32 on CPU — its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is an **accuracy** proof (−0.84%, within budget); on the actual accelerator, note that even on the Orin's tensor cores FP16 wins here (the attention doesn't quantize — see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) Section 9).
 
 See [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) for the full methodology, INT8 quantization deep-dive, and numerical parity analysis.
 
