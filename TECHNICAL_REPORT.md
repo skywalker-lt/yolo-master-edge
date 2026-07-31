@@ -26,19 +26,19 @@ This table portraits the exact system configs for deploying YOLO-Master in this 
 | OS / platform | Ubuntu Server 22.04 LTS | Windows 11 x64 | JetPack 7 / Ubuntu 24.04 | macOS 26.3 (Tahoe) |
 
 ---
-## Table of Contents
+## 📋 Table of Contents
 
-- [1. How and why the MoE internals dictate the deployment strategy](#1-how-and-why-the-moe-internals-dictate-the-deployment-strategy)
-- [2. Exports](#2-exports)
-- [3. INT8 quantization (the substantive part)](#3-int8-quantization-the-substantive-part)
-- [4. The inference runtime](#4-the-inference-runtime)
-- [5. Accuracy validation](#5-accuracy-validation)
-- [6. GPU acceleration across all three backends](#6-gpu-acceleration-across-all-three-backends)
-- [7. Latency and throughput](#7-latency-and-throughput)
-- [8. Cross-platform builds and distribution](#8-cross-platform-builds-and-distribution)
-- [9. Embedded GPU deployment: Jetson Orin](#9-embedded-gpu-deployment-jetson-orin)
-- [10. GUI runners with the same runtimea & two native frontends](#10-gui-runners-with-the-same-runtimea--two-native-frontends)
-- [11. Future work](#11-future-work)
+- [1. How and why the MoE internals dictate the deployment strategy](#-1-how-and-why-the-moe-internals-dictate-the-deployment-strategy)
+- [2. Exports](#-2-exports)
+- [3. INT8 quantization (the substantive part)](#-3-int8-quantization-the-substantive-part)
+- [4. The inference runtime](#-4-the-inference-runtime)
+- [5. Accuracy validation](#-5-accuracy-validation)
+- [6. GPU acceleration across all three backends](#-6-gpu-acceleration-across-all-three-backends)
+- [7. Latency and throughput](#--7-latency-and-throughput)
+- [8. Cross-platform builds and distribution](#-8-cross-platform-builds-and-distribution)
+- [9. Embedded GPU deployment: Jetson Orin](#-9-embedded-gpu-deployment-jetson-orin)
+- [10. GUI runners for Windows & macOS](#-10-gui-runners-for-windows-and-macos)
+- [11. Future work](#-11-future-work)
 
 ---
 
@@ -240,7 +240,7 @@ CPU latencies are x86 @ 4 threads on one host. The ordering is consistent and ex
 
 No single format fits everywhere, which is exactly why we have four distributions below.
 
-## 8.  Cross-platform builds and distribution
+## 🌐 8. Cross-platform builds and distribution
 
 A single CMake tree now targets **four platforms**:
 
@@ -255,7 +255,7 @@ The Windows port surfaced three concrete portability issues, each fixed in the b
 
 The Windows GUI ships in two flavours: a lean bundle that gets GPU inference through ncnn-Vulkan and MNN-OpenCL using only the graphics driver, and a considerably larger CUDA bundle that additionally carries the cuDNN and CUDA runtime libraries for the fastest ONNX path. Neither requires a CUDA toolkit installation on the target. The executable is **not code-signed** (that needs a paid certificate), so SmartScreen warns on first launch; the macOS app, by contrast, is signed and notarized and installs by double-click.
 
-## 9. Embedded GPU deployment: Jetson Orin
+## 🤖 9. Embedded GPU deployment: Jetson Orin
 
 The runtime was taken to a **Jetson Orin Nano 4 GB**. The same CMake produces a native aarch64 binary with a `trt_backend` that deserializes a prebuilt engine and runs it via `enqueueV3`, joining the other backends behind the same interface. The engine is built on-device with `trtexec` from the exported ONNX.
 
@@ -265,7 +265,7 @@ The runtime was taken to a **Jetson Orin Nano 4 GB**. The same CMake produces a 
 
 **Build notes.** Two toolchain specifics are worth recording. On sm87 with TRT 10.16.2 a pure-FP16 build fails at low builder-optimization levels (the timing model references an sm80 shader that has no sm87 base); `--builderOptimizationLevel=3` selects tactics by on-device profiling instead and builds cleanly. And an ONNXRuntime-quantized QDQ model must use symmetric activations and non-quantized bias to be accepted by TensorRT's parser `quantize_int8.py --symmetric`. The Nano 4 GB version also needs swap for the engine *build* (inference itself uses only ~20 MB).
 
-## 10. GUI runners with the same runtimea & two native frontends
+## 💻 10. GUI runners for Windows and macOS
 
 The CLI is the efficient tool for benchmarking and batch work but not friendly for everyone else, especially. Two native GUI runners now sit on the same pipeline.
 
@@ -282,7 +282,7 @@ Both frontends share the same interaction model, and two decisions:
 - **Forward once, tune cheap.** Confidence, IoU, box style, labels, and letterbox-vs-stretch all redraw from a cached forward pass. Inference never re-runs when a threshold moves, so the controls are usable at interactive rates even where a frame costs 80 ms. Candidates are cached down to a 0.05 confidence floor so lowering the threshold stays instant.
 - **Two-phase media handling.** Folders and videos are inferred once with a progress bar, then browsed or scrubbed from cache. A 30 fps clip therefore plays back at 30 fps regardless of model speed, because inference is off the playback path entirely. The webcam path instead infers on a background thread with drop-late-frames, trading completeness for latency.
 
-## 11. Future work
+## 🔖 11. Future work
 - **Further quantization work.** In a deep analysis later (Jul 30), we found a more feasible path to avoid the detection head failing to quantize to INT8 instead of keeping the entire head FP32 is a shared quantization scale at the output `Concat`, where box (0–644) and post-sigmoid class (0–1) tensors are forced onto one scale of ≈2.53 per step, placing every class score in the first bin. Next: dump the `QuantizeLinear` scales on both `Concat` inputs to confirm; if confirmed, split box and class into separate outputs rather than excluding all head nodes. Independently, we will also replace MinMax with percentile/entropy calibration.
 - **Core ML accuracy validation.** The one backend without an mAP number (Section 2.4). The cheapest route is a `--save-txt`-compatible dump from the macOS app, which drops it straight into the existing `eval_map.py` and makes the Core ML row directly comparable to every other row in Section 5.2.
 - **Segmentation metrics.** The harness is detection-only; the bundled `v0.1-seg-N` is validated visually. Mask AP against the COCO protocol would close it.
