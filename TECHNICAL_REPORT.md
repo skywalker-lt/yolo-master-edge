@@ -12,7 +12,7 @@ End-to-end deployment of **YOLO-Master** to the edge, spanning export formats (O
 
 The accuracy spine throughout is **YOLO-Master-EsMoE-N** on VisDrone, as demanded by Issue #51.
 
-## System Config 
+## 🖥️ System Config 
 
 This table portraits the exact system configs for deploying YOLO-Master in this article.
 
@@ -27,11 +27,22 @@ This table portraits the exact system configs for deploying YOLO-Master in this 
 
 ---
 ## Table of Contents
-- 
 
---
+- [1. How and why the MoE internals dictate the deployment strategy](#1-how-and-why-the-moe-internals-dictate-the-deployment-strategy)
+- [2. Exports](#2-exports)
+- [3. INT8 quantization (the substantive part)](#3-int8-quantization-the-substantive-part)
+- [4. The inference runtime](#4-the-inference-runtime)
+- [5. Accuracy validation](#5-accuracy-validation)
+- [6. GPU acceleration across all three backends](#6-gpu-acceleration-across-all-three-backends)
+- [7. Latency and throughput](#7-latency-and-throughput)
+- [8. Cross-platform builds and distribution](#8-cross-platform-builds-and-distribution)
+- [9. Embedded GPU deployment: Jetson Orin](#9-embedded-gpu-deployment-jetson-orin)
+- [10. GUI runners with the same runtimea & two native frontends](#10-gui-runners-with-the-same-runtimea--two-native-frontends)
+- [11. Future work](#11-future-work)
 
-## 1. How and why the MoE internals dictate the deployment strategy
+---
+
+## 🔎 1. How and why the MoE internals dictate the deployment strategy
 
 EsMoE-N is not a CNN YOLO like the older v8/v9 variants. There exists three structural priors drove all downstream decisions:
 
@@ -41,7 +52,7 @@ EsMoE-N is not a CNN YOLO like the older v8/v9 variants. There exists three stru
 
 The takeaway: the model exports cleanly precisely *because* the dense MoE path is standard ops -- but the attention and the head are landmines for INT8 and for third-party converters.
 
-## 2. Exports
+## 📦 2. Exports
 
 ### 2.1 ONNX via onnxsim (opset 12)
 
@@ -73,7 +84,7 @@ The script also handles **segmentation** (detects the two-output signature and w
 
 **Validation:** The Core ML path has **no mAP number**. The macOS app bundles no metric harness, and the `eval_map.py` pipeline used for every other format consumes `--save-txt` output from the C++ runtime, which the Swift app does not produce. The other main reason is that Apple's Notarization & Code-signing mendatory for distribution is time-consuming, so I decided to bundle the validator **with next major update (Core ML Runner `v1.1.0`).** 
 
-## 3. INT8 quantization (the substantive part)
+## 🔢 3. INT8 quantization (the substantive part)
 
 The requirement was ≤ 1.0% mAP gap under INT8 with ≥ 300 images for calibration. The naive pipeline *fails*.
 
@@ -124,7 +135,7 @@ On x86 CPU, INT8 is *slower* than FP32, measured at **137 ms/frame vs 49 ms for 
 
 The natural next hypothesis was that tensor-core hardware would invert the result. **It does not, for this model** -- Section 9 shows the calibrated TensorRT INT8 engine on the Orin is both slower and less accurate than FP16, for a structural reason: the mixed-precision assignment keeps the compute-dominant area-attention out of INT8, so INT8 never gets to accelerate the expensive part. The general lesson generalizes past this model: **PTQ's throughput payoff is bounded by the fraction of compute you are allowed to quantize**, and on attention-heavy architectures that fraction is small. We therefore treat the ONNX INT8 result as an **accuracy** proof (−0.84%, in budget), and locate the real throughput win on FP16 GPU execution (Section 6) rather than on INT8 anywhere.
 
-## 4. The inference runtime
+## ⚙️ 4. The inference runtime
 
 ### 4.1 Universal binary
 
@@ -155,7 +166,7 @@ The shipped default for both GUI runners is **`YOLO-Master-v0.1-seg-N`** (`task:
 
 The first self-contained Linux bundle was **231 shared libraries, 129 MB** since Ubuntu's `libopencv_imgcodecs` links **GDAL**, which transitively pulls in PostgreSQL (`libpq`), MySQL, `libpoppler` (PDF), HDF5, and the GIS stack, and `libopencv_dnn` pulls protobuf. An object detector does not need a Postgres client. We removed both by replacing `cv::imread`/`imwrite` with **stb_image** and `cv::dnn::NMSBoxes`/`blobFromImage` with a hand-written NMS and a manual NCHW pack. That drops the OpenCV surface to **core + imgproc only**: 231 → 10 libraries, **129 → 35 MB**, at a cost of a **0.087%** detection-count difference (stb vs OpenCV JPEG decoders diverge by sub-LSB pixel values on a handful of borderline boxes), inside tolerance. On Linux the binary is `$ORIGIN`-rpath'd and verified to run with no `LD_LIBRARY_PATH`; on Windows the MSVC runtime is bundled so targets need no VC++ Redistributable.
 
-## 5. Accuracy validation
+## 📊 5. Accuracy validation
 
 ### 5.1 Methodology
 
@@ -186,7 +197,7 @@ Because the FP32 formats share a graph, we verify fidelity directly rather than 
 
 The same discipline caught a **false alarm** on the CUDA path: a raw `max|Δ| = 2.31` looked alarming until it was traced to FP32 box-coordinate variance in a single anchor -- functional mAP was identical. A naive "max-abs-diff < ε" gate would have failed a correct model; the box-vs-class decomposition is what makes the comparison meaningful.
 
-## 6. GPU acceleration across all three backends
+## 🚀 6. GPU acceleration across all three backends
 
 Each backend has a different native accelerator, and the runtime maps a single **Device: CPU / GPU** switch onto all of them: **ONNX → CUDA**, **ncnn → Vulkan**, **MNN → OpenCL**, with ncnn and MNN running **FP16** on the GPU. Every backend falls back to CPU cleanly and surfaces the reason when a provider is unavailable, which matters in a GUI where the user cannot read a stderr log.
 
@@ -206,7 +217,7 @@ Three findings:
 
 **The model does not saturate a datacenter GPU.** An H200 SXM (7.8 ms) is only ~15% faster than an RTX 5070Ti Laptop (9.0 ms). At nano scale with a 640×640 input, per-launch overhead and memory traffic dominate, not FLOPs -- so for this model class a consumer GPU is the sensible deployment target and the datacenter part buys almost nothing.
 
-## 7. Latency and throughput
+## ⏱️ 7. Latency and throughput
 
 Per-frame inference, VisDrone val:
 
@@ -229,7 +240,7 @@ CPU latencies are x86 @ 4 threads on one host. The ordering is consistent and ex
 
 No single format fits everywhere, which is exactly why we have four distributions below.
 
-## 8. Cross-platform builds and distribution
+## 8.  Cross-platform builds and distribution
 
 A single CMake tree now targets **four platforms**:
 
