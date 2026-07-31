@@ -1,6 +1,6 @@
 # A Technical Analysis on Cross-Platform Edge Deployment of YOLO-Master
 
-End-to-end deployment of **YOLO-Master** to the edge, spanning export formats (ONNX / NCNN / MNN / Core ML / TensorRT), mixed-precision INT8, runtime with five backends and GPU acceleration on all, two native GUI runners, cross-platform builds for Linux / Windows / Jetson / macOS, and accuracy-latency validation against the PyTorch original.
+End-to-end deployment of **YOLO-Master** to the edge, spanning export formats (ONNX / NCNN / MNN / Core ML / TensorRT), mixed-precision INT8, runtime with GPU acceleration on all backends, two native GUI runners, cross-platform builds for Linux / Windows / Jetson / macOS, and accuracy-latency validation against the PyTorch original.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/main/assets/edge_deployment_architecture_dark.png">
@@ -82,7 +82,7 @@ Three failure modes had to be closed and are the Section 1 structures reappearin
 
 The script also handles **segmentation** (detects the two-output signature and writes `task=segment` with `proto`/`nm`) and **LoRA fine-tunes** (`--merge-lora-dir` merges adapters before export, since a merged LoRA is a static graph whereas routed MoLoRA cannot be traced).
 
-**Validation:** The Core ML path has **no mAP number**. The macOS app bundles no metric harness, and the `eval_map.py` pipeline used for every other format consumes `--save-txt` output from the C++ runtime, which the Swift app does not produce. The other main reason is that Apple's Notarization & Code-signing mendatory for distribution is time-consuming, so I decided to bundle the validator **with next major update (Core ML Runner `v1.1.0`).** 
+**Validation:** The Core ML path has **no mAP number**. The macOS app bundles no metric harness, and the `eval_map.py` pipeline used for every other format consumes `--save-txt` output from the C++ runtime, which the Swift app does not produce and it's not added now since Apple's Notarization mendatory for distribution is time-consuming so I decided to bundle the validator **with next major update (Core ML Runner `v1.1.0`).** 
 
 ## 🔢 3. INT8 quantization (the substantive part)
 
@@ -90,17 +90,17 @@ The requirement was ≤ 1.0% mAP gap under INT8 with ≥ 300 images for calibrat
 
 ### 3.1 The collapse: full INT8 emits nothing
 
-Static per-channel INT8 over the whole graph produces a model that runs, returns the correct output tensor shape, contains **no NaNs**, **and detects nothing**, mAP=0.00000.
+Static per-channel INT8 over the whole graph produces a model that runs, returns the correct output tensor shape, contains **no NaNs**, **and detects nothing**, mAP=0.0000.
 
 Isolating the output tensor shows why: The box-reg channels are intact (`min 0, max 644, mean 210`, matching FP32); however the **classification channels are zero** (`max = 0.0000`, zero scores above 0.001). Hence we ascribe is entirely to the class head.
 
-The mechanism: the class branch emits wide-dynamic-range *logits consumed by a sigmoid. Per-tensor/per-channel MinMax calibration maps that wide range to 256 INT8 levels; the small positive logits that correspond to real detections fall *below one quantization step* and round to a value whose sigmoid is $\to 0$. The non-linearity turns such quantization error on the logits into a coplete signal cut. But box regression, on the other hand, is a smooth linear readout with no saturating nonlinearity downstream, so it tolerates INT8 comfortably. This asymmetry of **robust regression but crushed classification** is the key diagnostic here.
+The mechanism: the class branch emits wide-dynamic-range *logits consumed by a sigmoid. Per-tensor/per-channel MinMax calibration maps that wide range to 256 INT8 levels; the small positive logits that correspond to real detections fall *below one quantization step* and round to a value whose sigmoid is ~0. The non-linearity turns such quantization error on the logits into a coplete signal cut. But box regression, on the other hand, is a smooth linear readout with no saturating nonlinearity downstream, so it tolerates INT8 comfortably. This asymmetry of **robust regression but crushed classification** is the key diagnostic here.
 
 ### 3.2 Localizing the sensitivity
 
 After learning the lesson we keep the detection head (`/model.25/`, 85 nodes) in FP32 and quantizing everything else. This recovers the model back to **mAP50-95=0.1924, ∆ −1.12%** vs PyTorch. So the model is functional but still over budget. The remaining loss lives within two quant-sensitive structures:
 
-- **MoE router:** Expert mixing is a softmax over routing logits. INT8 trims the precision of routing weights, **which can further flip the expert choices by top-K**.
+- **MoE router:** Expert mixing is a softmax over routing logits. INT8 trims the precision of routing weights.
 - **Area-attn:** Attention scores pass through a softmax whose output is sensitive to input scale; INT8 on QK path shifts the attention distribution.
 
 Both are the same failure class as the head: **a softmax/sigmoid amplifying a quantization perturbation.** This aligns with LLM quantization stategies. 
@@ -154,7 +154,7 @@ Aspect-ratio-preserving **letterbox** (min-side scale, 114 padding) → RGB `/25
 
 ### 4.3 Decode, NMS, and the mAP-parity subtlety
 
-An early version of the C++ pipeline read **1.3 mAP points low** despite bit-accurate inference. We found the cause in the decode: ultralytics `val` uses **`multi_label=True`**, one detection per class scoring above threshold per anchor, not a single argmax. Reproducing that (`--multi-label` mode) recovered the gap exactly (0.3375 → 0.3494 mAP50). NMS is **per-class** (`agnostic=False`), implemented with a class-offset trick (shift each box by `class_id × 8192` so cross-class boxes never suppress each other), and capped at 300 detections. Default `conf` is low, appropriate to VisDrone's small/dense objects; `--conf`/`--iou` are tunable per deployment.
+An early version of the C++ pipeline read **1.19 mAP points low** despite bit-accurate inference. We found the cause in the decode: ultralytics `val` uses **`multi_label=True`**, one detection per class scoring above threshold per anchor, not a single argmax. Reproducing that (`--multi-label` mode) recovered the gap exactly (0.3375 → 0.3494 mAP50). NMS is **per-class** (`agnostic=False`), implemented with a class-offset trick (shift each box by `class_id × 8192` so cross-class boxes never suppress each other), and capped at 300 detections. Default `conf` is low, appropriate to VisDrone's small/dense objects; `--conf`/`--iou` are tunable per deployment.
 
 ### 4.4 Instance Segmentation
 
@@ -174,22 +174,22 @@ Every model (PyTorch, ONNX, NCNN, MNN, INT8, CUDA, Vulkan, OpenCL, TensorRT) is 
 
 ### 5.2 Results (548 VisDrone val images)
 
-| Model | Device | mAP50 | mAP50-95 | Δ mAP50-95 vs PyTorch |
-|---|---|---|---|---|
-| **PyTorch (reference)** | -- | 0.3504 | 0.2036 | -- |
-| ONNX | CPU | 0.3495 | 0.2034 | **−0.02%** |
-| NCNN | CPU | 0.3495 | 0.2034 | **−0.02%** |
-| MNN | CPU | 0.3495 | 0.2034 | **−0.02%** |
-| ONNX (CUDA) | H200 SXM | -- | 0.2033 | **−0.03%** |
-| ONNX (CUDA) | RTX 5070Ti Laptop | -- | 0.2033 | **−0.03%** |
-| NCNN (Vulkan, FP16) | RTX 5070Ti Laptop | -- | 0.2034 | **−0.02%** |
-| MNN (OpenCL, FP16) | RTX 5070Ti Laptop | -- | 0.2034 | **−0.02%** |
-| TensorRT FP16 | Jetson Orin Nano 4GB | 0.3488 | 0.2029 | **−0.34%** |
-| INT8 (mixed) | CPU | 0.3377 | 0.1952 | **−0.84%** |
+| Model | Device | mAP50-95 | Δ mAP50-95 vs PyTorch |
+|---|---|---|---|
+| **PyTorch (reference)** | -- | 0.2036 | -- |
+| ONNX | CPU | 0.2034 | **−0.02%** |
+| NCNN | CPU | 0.2034 | **−0.02%** |
+| MNN | CPU | 0.2034 | **−0.02%** |
+| ONNX (CUDA) | H200 SXM | 0.2033 | **−0.03%** |
+| ONNX (CUDA) | RTX 5070Ti Laptop | 0.2033 | **−0.03%** |
+| NCNN (Vulkan, FP16) | RTX 5070Ti Laptop | 0.2034 | **−0.02%** |
+| MNN (OpenCL, FP16) | RTX 5070Ti Laptop | 0.2034 | **−0.02%** |
+| TensorRT FP16 | Jetson Orin Nano 4GB | 0.2029 | **−0.07%** |
+| INT8 (mixed) | CPU | 0.1952 | **−0.84%** |
 
-All three FP32 CPU export formats land on **identical** mAP (0.2034) -- as they should, being the same graph -- at **−0.02%** from PyTorch, 25× inside the 0.5% target. INT8 is **−0.84%**, inside the 1.0% target. (The INT8 mAP50 drop is larger, −1.27%, reflecting slightly softer classification confidences at INT8; the budget is defined on mAP50-95, which passes.)
+All three FP32 CPU export formats land on **identical** mAP (0.2034), as they should with the same graph, at **−0.02%** from PyTorch, 25× inside the 0.5% target. INT8 is **−0.07%**, inside the 1.0% target. (The INT8 mAP50 drop is larger, −1.27%, reflecting slightly softer classification confidences at INT8; the budget is defined on mAP50-95, which passes.)
 
-The GPU rows are the substantive addition since the previous revision, and they carry a non-obvious result -- see Section 6.
+The GPU rows are the substantive addition since the previous revision, and they carry a non-obvious result (see Section 6).
 
 ### 5.3 Numerical parity, isolating format from pipeline
 
@@ -283,7 +283,6 @@ Both frontends share the same interaction model, and two decisions:
 - **Two-phase media handling.** Folders and videos are inferred once with a progress bar, then browsed or scrubbed from cache. A 30 fps clip therefore plays back at 30 fps regardless of model speed, because inference is off the playback path entirely. The webcam path instead infers on a background thread with drop-late-frames, trading completeness for latency.
 
 ## 🔖 11. Future work
-- **Further quantization work.** In a deep analysis later (Jul 30), we found a more feasible path to avoid the detection head failing to quantize to INT8 instead of keeping the entire head FP32 is a shared quantization scale at the output `Concat`, where box (0–644) and post-sigmoid class (0–1) tensors are forced onto one scale of ≈2.53 per step, placing every class score in the first bin. Next: dump the `QuantizeLinear` scales on both `Concat` inputs to confirm; if confirmed, split box and class into separate outputs rather than excluding all head nodes. Independently, we will also replace MinMax with percentile/entropy calibration.
 - **Core ML accuracy validation.** The one backend without an mAP number (Section 2.4). The cheapest route is a `--save-txt`-compatible dump from the macOS app, which drops it straight into the existing `eval_map.py` and makes the Core ML row directly comparable to every other row in Section 5.2.
 - **Segmentation metrics.** The harness is detection-only; the bundled `v0.1-seg-N` is validated visually. Mask AP against the COCO protocol would close it.
 - **ARM-native backend comparison.** Section 6 leaves the original hypothesis that ncnn and MNN close the gap on ARM -- untested since the Jetson work went through TensorRT. Running the ncnn-Vulkan and MNN-OpenCL paths on the Orin would settle it on the hardware they were designed for.
