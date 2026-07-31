@@ -84,7 +84,7 @@ The script also handles **segmentation** (detects the two-output signature and w
 
 **Validation:** The Core ML path has **no mAP number**. The macOS app bundles no metric harness, and the `eval_map.py` pipeline used for every other format consumes `--save-txt` output from the C++ runtime, which the Swift app does not produce and it's not added now since Apple's Notarization mendatory for distribution is time-consuming so I decided to bundle the validator **with next major update (Core ML Runner `v1.1.0`).** 
 
-## 🔢 3. INT8 quantization (the substantive part)
+## 🔢 3. INT8 quantization findings
 
 The requirement was ≤ 1.0% mAP gap under INT8 with ≥ 300 images for calibration. The naive pipeline *fails*.
 
@@ -291,4 +291,6 @@ Both frontends share the same interaction model, and two decisions:
 
 ---
 
-*Reproducibility:* the C++ runtime, the GUI frontends (`gui/`, `mac/`), the Core ML exporter (`coreml_export/`), all scripts (`quantize_int8.py`, `eval_map.py`, `eval_map_standalone.py`, `mnn_val.py`, `mnn_parity.py`, `package_linux.sh`), and the Jetson kit (`jetson/`, incl. `DEPLOYMENT_LOG.md`) are in the repository above; the exported models and prebuilt bundles (Linux, Windows CPU/CUDA, macOS, Jetson Orin) are attached to the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases) page.
+## *Reproducibility:* 
+
+the C++ runtime, the GUI frontends (`gui/`, `mac/`), the Core ML exporter (`coreml_export/`), all scripts (`quantize_int8.py`, `eval_map.py`, `eval_map_standalone.py`, `mnn_val.py`, `mnn_parity.py`, `package_linux.sh`), and the Jetson kit (`jetson/`, incl. `DEPLOYMENT_LOG.md`) are in the repository; the exported models and prebuilt bundles (Linux, Windows CPU/CUDA, macOS, Jetson Orin) are attached to the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases) page.
