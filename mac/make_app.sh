@@ -20,7 +20,7 @@ APP_NAME="YOLO-Master CoreML Runner"           # display + .app bundle name (Fin
 EXEC_NAME="YOLOMaster"                          # Mach-O filename inside the bundle (no spaces -> simple paths)
 ZIP_SLUG="YOLO-Master-CoreML-Runner"            # zip filename base (no spaces)
 BUNDLE_ID="${BUNDLE_ID:-com.yolomaster.coreml}"   # override with BUNDLE_ID=com.you.app to use your own reverse-domain id
-VERSION="${1:-1.0.0}"
+VERSION="${1:-1.1.0}"
 ARCHS="${ARCHS:-arm64 x86_64}"                 # universal by default; override e.g. ARCHS=arm64
 DIST="$HERE/dist"
 APP="$DIST/$APP_NAME.app"

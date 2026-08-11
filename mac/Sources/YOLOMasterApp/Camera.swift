@@ -187,6 +187,7 @@ struct LiveCameraView: View {
     let compute: ComputeMode
     let preprocess: Detector.PreprocessMode
     let conf: Double, iou: Double
+    let nmsMode: NMSMode, sigma: Double
     let overlay: SegOverlay
     let style: BoxStyle, label: LabelMode
     @Binding var isSegment: Bool                    // reported up so the sidebar can show the Overlay control
@@ -195,7 +196,7 @@ struct LiveCameraView: View {
 
     var body: some View {
         // conf/iou/overlay are plain props of CameraStage -> tuning is instantly reactive (no side channel)
-        CameraStage(cam: cam, conf: conf, iou: iou, overlay: overlay, style: style, label: label, mirror: $mirror)
+        CameraStage(cam: cam, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, overlay: overlay, style: style, label: label, mirror: $mirror)
             .onAppear { cam.setMirrored(mirror); rebuild { cam.start(detector: $0) } }
             .onChange(of: mirror) { cam.setMirrored(mirror) }
             .onDisappear { cam.stop() }
@@ -221,11 +222,12 @@ struct LiveCameraView: View {
 struct CameraStage: View {
     @ObservedObject var cam: CameraController
     let conf: Double, iou: Double
+    let nmsMode: NMSMode, sigma: Double
     let overlay: SegOverlay
     let style: BoxStyle, label: LabelMode
     @Binding var mirror: Bool
     var body: some View {
-        let dets = Detector.nms(cam.candidates, conf: Float(conf), iou: CGFloat(iou))   // live conf/iou
+        let dets = Detector.nms(cam.candidates, conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma))   // live conf/iou/NMS-mode
         let masksOnly = cam.isSegment && overlay == .masks
         let drawBoxes = !masksOnly
         let mask: CGImage? = (cam.isSegment && overlay != .boxes) ? cam.makeMask(dets) : nil
