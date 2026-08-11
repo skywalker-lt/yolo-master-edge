@@ -82,6 +82,16 @@ public enum ComputeMode: String, CaseIterable, Sendable {
 
 public enum DetectorError: Error { case inputBuildFailed, badOutput }
 
+/// Which NMS variant post-processing uses. `.standard` is the classic greedy suppression.
+/// `.clusterWeighted` (CW-NMS, from upstream YOLO-Master) runs the same greedy selection and
+/// then REFINES each survivor's coordinates as the score-and-proximity-weighted average of its
+/// same-class cluster in the pre-NMS candidate pool — trading a little post-processing time for
+/// better localization. Survivor count, scores and classes are identical to `.standard`.
+public enum NMSMode: String, CaseIterable, Sendable {
+    case standard, clusterWeighted
+    public var label: String { self == .standard ? "Standard" : "Cluster-Weighted" }
+}
+
 /// IoU of two rects (used by NMS).
 func rectIoU(_ a: CGRect, _ b: CGRect) -> CGFloat {
     let i = a.intersection(b); if i.isNull { return 0 }
@@ -259,13 +269,52 @@ public final class Detector {
     }
 
     /// Filter cached `candidates` by `conf` + per-class greedy NMS (cap 300). Cheap — no model call.
-    public static func nms(_ dets: [Detection], conf: Float, iou iouT: CGFloat, maxDet: Int = 300) -> [Detection] {
+    /// `mode: .clusterWeighted` additionally rewrites survivor coordinates via CW refinement
+    /// (see `cwRefine`); defaults keep every existing call site's behavior byte-identical.
+    public static func nms(_ dets: [Detection], conf: Float, iou iouT: CGFloat, maxDet: Int = 300,
+                           mode: NMSMode = .standard, sigma: Float = 0.1) -> [Detection] {
         var keep: [Detection] = []
         for d in dets where d.score > conf {
             if keep.count >= maxDet { break }
             if !keep.contains(where: { $0.cls == d.cls && rectIoU($0.rect, d.rect) > iouT }) { keep.append(d) }
         }
-        return keep
+        guard mode == .clusterWeighted, !keep.isEmpty else { return keep }
+        return cwRefine(keep, pool: dets, conf: conf, iou: iouT, sigma: sigma)
+    }
+
+    /// Cluster-Weighted refinement — the `cluster` variant of upstream YOLO-Master's CW-NMS
+    /// (ultralytics/utils/nms.py, commit 31c3fe3). One shot, no iteration:
+    ///   pool  = pre-NMS candidates with score > conf, capped at the top 3000 (input is score-sorted,
+    ///           so prefix(while:) + prefix(3000) equals upstream's `scores > conf` + `topk(3000)`)
+    ///   w_km  = score_m * exp(-(1 - IoU_km)^2 / sigma) for same-class pool boxes with IoU_km > iouT
+    ///           (upstream separates classes via the class-offset trick; `cls ==` is equivalent.
+    ///            NOTE the exponent is /sigma exactly — NOT the Gaussian /(2*sigma^2))
+    ///   box_k = (sum_m w_km * box_m) / (sum_m w_km + 1e-6), all from ORIGINAL pre-update coords
+    /// Kept set, scores, classes and mask coeffs are unchanged; only survivor rects move.
+    /// Deliberate deviation from upstream: a survivor whose weight sum is ~0 keeps its original
+    /// rect (upstream's top-3000 cap can collapse such a box to (0,0,0,0) — a latent bug).
+    private static func cwRefine(_ keep: [Detection], pool dets: [Detection], conf: Float,
+                                 iou iouT: CGFloat, sigma: Float) -> [Detection] {
+        let pool = Array(dets.prefix(while: { $0.score > conf }).prefix(3000))
+        guard !pool.isEmpty else { return keep }
+        return keep.map { k in
+            var sw: Float = 0, ax1: Float = 0, ay1: Float = 0, ax2: Float = 0, ay2: Float = 0
+            for m in pool where m.cls == k.cls {
+                let ov = rectIoU(k.rect, m.rect)
+                guard ov > iouT else { continue }
+                let w = m.score * expf(-powf(1 - Float(ov), 2) / sigma)
+                sw += w
+                ax1 += w * Float(m.rect.minX); ay1 += w * Float(m.rect.minY)
+                ax2 += w * Float(m.rect.maxX); ay2 += w * Float(m.rect.maxY)
+            }
+            guard sw > 1e-6 else { return k }
+            let inv = 1 / (sw + 1e-6)
+            let x1 = CGFloat(ax1 * inv), y1 = CGFloat(ay1 * inv)
+            let x2 = CGFloat(ax2 * inv), y2 = CGFloat(ay2 * inv)
+            return Detection(cls: k.cls, score: k.score,
+                             rect: CGRect(x: x1, y: y1, width: max(0, x2 - x1), height: max(0, y2 - y1)),
+                             maskCoeffs: k.maskCoeffs)
+        }
     }
 
     // ---------- public inference ----------
@@ -309,6 +358,36 @@ public final class Detector {
         return try forward(cg)
     }
 
+    /// Forward a tile crop at NATIVE scale, padded bottom-right with gray 114 to imgsz×imgsz —
+    /// the upstream `_pad_slice` (predictor.py:523-530). No resize: the returned geometry is
+    /// scale=1 / pads=0, and origW/H are the CROP dims so `candidates()`'s existing clamp trims
+    /// detections to real crop content (deliberate deviation from upstream, which lets boxes
+    /// live on the gray padding). Interior tiles are exactly imgsz×imgsz and pad nothing.
+    /// Precondition: crop ≤ imgsz in both axes (guaranteed by `tileGrid`).
+    internal func forwardPadded(_ crop: CGImage) throws -> RawOutput {
+        let cw = crop.width, ch = crop.height
+        precondition(cw <= imgsz && ch <= imgsz, "tile crop exceeds model imgsz")
+        var px = [UInt8](repeating: 114, count: imgsz * imgsz * 4)
+        px.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(data: raw.baseAddress, width: imgsz, height: imgsz, bitsPerComponent: 8,
+                                      bytesPerRow: imgsz * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
+            ctx.interpolationQuality = .high
+            // Same no-flip convention as letterbox(): raster top-left = CG-space y (imgsz - ch).
+            ctx.draw(crop, in: CGRect(x: 0, y: CGFloat(imgsz - ch), width: CGFloat(cw), height: CGFloat(ch)))
+        }
+        guard let input = fillInput(px) else { throw DetectorError.inputBuildFailed }
+        let t0 = Date()
+        let out = try model.prediction(from: input)
+        let infMs = Date().timeIntervalSince(t0) * 1000
+        guard let y = out.featureValue(for: outputName)?.multiArrayValue, y.shape.count == 3 else {
+            throw DetectorError.badOutput
+        }
+        // proto deliberately nil: tile coeffs are meaningless against a full-image proto tensor.
+        return RawOutput(y: y, proto: nil, scaleX: 1, scaleY: 1, padX: 0, padY: 0,
+                         origW: cw, origH: ch, inferMs: infMs)
+    }
+
     /// Cheap BGRA `CVPixelBuffer` → `CGImage` (one memcpy via a buffer-backed context; no Core Image).
     static func cgImage(from pb: CVPixelBuffer) -> CGImage? {
         CVPixelBufferLockBaseAddress(pb, .readOnly)
@@ -323,14 +402,16 @@ public final class Detector {
     }
 
     /// Decode + per-class NMS from a cached forward pass. Cheap — no model call.
-    public func decode(_ raw: RawOutput, conf: Float, iou iouT: CGFloat) -> [Detection] {
-        Detector.nms(candidates(raw, confFloor: conf), conf: conf, iou: iouT)
+    public func decode(_ raw: RawOutput, conf: Float, iou iouT: CGFloat,
+                       mode: NMSMode = .standard, sigma: Float = 0.1) -> [Detection] {
+        Detector.nms(candidates(raw, confFloor: conf), conf: conf, iou: iouT, mode: mode, sigma: sigma)
     }
 
     /// Convenience: forward + decode in one call (used by the CLI). `inferMs` is model-only latency.
-    public func detect(_ image: CGImage, conf: Float = 0.25, iou iouT: CGFloat = 0.5) throws -> Result {
+    public func detect(_ image: CGImage, conf: Float = 0.25, iou iouT: CGFloat = 0.5,
+                       mode: NMSMode = .standard, sigma: Float = 0.1) throws -> Result {
         let raw = try forward(image)
-        return Result(detections: decode(raw, conf: conf, iou: iouT), inferMs: raw.inferMs)
+        return Result(detections: decode(raw, conf: conf, iou: iouT, mode: mode, sigma: sigma), inferMs: raw.inferMs)
     }
 
     // ---------- segmentation masks ----------

@@ -34,7 +34,7 @@ func ackLogo(_ name: String, _ ext: String) -> NSImage? {
 struct InfoView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var licenseExpanded = false   // license is collapsed by default
-    private var version: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0" }
+    private var version: String { (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.1.0" }
 
     var body: some View {
         VStack(spacing: 0) {

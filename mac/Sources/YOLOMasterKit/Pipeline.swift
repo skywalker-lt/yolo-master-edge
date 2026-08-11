@@ -72,6 +72,7 @@ public struct VideoStats: Sendable {
 @discardableResult
 public func runFolder(_ det: Detector, input: URL, output: URL?,
                       conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode, resize: Int = 0,
+                      tiling: TilingConfig = TilingConfig(), nmsMode: NMSMode = .standard, sigma: Float = 0.1,
                       progress: ((_ done: Int, _ total: Int, _ lastAnnotated: CGImage?) -> Void)? = nil) -> BatchStats {
     let files = listImages(input)
     if let output { try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true) }
@@ -79,7 +80,15 @@ public func runFolder(_ det: Detector, input: URL, output: URL?,
     for (i, src) in files.enumerated() {
         guard var cg = loadCGImage(src) else { continue }
         if resize > 0 { cg = resizeLong(cg, resize) }
-        guard let res = try? det.detect(cg, conf: conf, iou: iou) else { continue }
+        let res: Detector.Result
+        if tiling.mode == .off {
+            guard let r = try? det.detect(cg, conf: conf, iou: iou, mode: nmsMode, sigma: sigma) else { continue }
+            res = r
+        } else {
+            guard let (r, _) = try? det.detectTiled(cg, conf: conf, iou: iou, tiling: tiling,
+                                                    nmsMode: nmsMode, sigma: sigma) else { continue }
+            res = r
+        }
         times.append(res.inferMs)
         let annotated = annotate(cg, res.detections, names: det.classNames, style: style, label: label)
         if let output, let a = annotated {
@@ -96,6 +105,7 @@ public func runFolder(_ det: Detector, input: URL, output: URL?,
 @discardableResult
 public func runVideo(_ det: Detector, input: URL, output: URL,
                      conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode, resize: Int = 0,
+                     nmsMode: NMSMode = .standard, sigma: Float = 0.1,
                      progress: ((_ frames: Int, _ lastAnnotated: CGImage?) -> Void)? = nil) async throws -> VideoStats {
     let asset = AVURLAsset(url: input)
     guard let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first else {
@@ -137,7 +147,7 @@ public func runVideo(_ det: Detector, input: URL, output: URL,
         let ci = CIImage(cvPixelBuffer: pb).oriented(orient)   // upright, matching AVPlayer
         guard var cg = cictx.createCGImage(ci, from: ci.extent) else { continue }
         if resize > 0 { cg = resizeExact(cg, outW, outH) }
-        guard let res = try? det.detect(cg, conf: conf, iou: iou) else { continue }
+        guard let res = try? det.detect(cg, conf: conf, iou: iou, mode: nmsMode, sigma: sigma) else { continue }
         times.append(res.inferMs)
         guard let annotated = annotate(cg, res.detections, names: det.classNames, style: style, label: label)
         else { continue }
@@ -219,21 +229,35 @@ public struct InferSummary: Sendable {
 }
 
 /// Phase 1: forward every image once, caching pre-NMS candidates (conf/iou tuning stays cheap).
-/// Returns the cached items + inference timing summary.
+/// Returns the cached items + inference timing summary. With `tiling.mode != .off` each image
+/// runs the tiled pipeline instead (FolderItem shape is unchanged — the cache just holds the
+/// merged pool), `times` entries become the per-image SUM of all forwards, and aggregate tile
+/// stats are returned for the UI.
 public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
-                        progress: ((_ done: Int, _ total: Int) -> Void)? = nil) -> (items: [FolderItem], summary: InferSummary) {
+                        tiling: TilingConfig = TilingConfig(),
+                        progress: ((_ done: Int, _ total: Int) -> Void)? = nil)
+    -> (items: [FolderItem], summary: InferSummary, tileStats: TileStats?) {
     let files = listImages(input)
     var out: [FolderItem] = []; out.reserveCapacity(files.count)
     var times: [Double] = []
+    var stats: TileStats? = tiling.mode == .off ? nil : TileStats()
     let t0 = Date()
     for (i, url) in files.enumerated() {
-        if let cg = loadCGImage(url), let raw = try? det.forward(cg) {
-            out.append(FolderItem(url: url, candidates: det.candidates(raw, confFloor: confFloor)))
-            times.append(raw.inferMs)
+        if let cg = loadCGImage(url) {
+            if tiling.mode == .off {
+                if let raw = try? det.forward(cg) {
+                    out.append(FolderItem(url: url, candidates: det.candidates(raw, confFloor: confFloor)))
+                    times.append(raw.inferMs)
+                }
+            } else if let tiled = try? det.tiledCandidates(cg, config: tiling, confFloor: confFloor) {
+                out.append(FolderItem(url: url, candidates: tiled.candidates))
+                times.append(tiled.inferMs)
+                stats?.add(tiled)
+            }
         }
         progress?(i + 1, files.count)
     }
-    return (out, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000))
+    return (out, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000), stats)
 }
 
 /// Phase 3: write annotated images from cached candidates + the tuned params — NO inference.
@@ -241,13 +265,14 @@ public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
 public func exportFolderCached(_ items: [FolderItem], output: URL, names: [String],
                                conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode,
                                detector: Detector? = nil, overlay: SegOverlay = .both,
+                               nmsMode: NMSMode = .standard, sigma: Float = 0.1,
                                progress: ((_ done: Int, _ total: Int) -> Void)? = nil) -> Int {
     try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
     let seg = detector?.isSegment == true
     var written = 0
     for (i, item) in items.enumerated() {
         if let cg = loadCGImage(item.url) {
-            let dets = Detector.nms(item.candidates, conf: conf, iou: iou)
+            let dets = Detector.nms(item.candidates, conf: conf, iou: iou, mode: nmsMode, sigma: sigma)
             var masks: [MaskBitmap] = [], drawBoxes = true
             if seg, overlay != .boxes, let det = detector, let raw = try? det.forward(cg) {
                 masks = dets.compactMap { det.maskImage($0, raw) }
@@ -319,6 +344,7 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
 public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]], names: [String],
                               conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode, resize: Int = 0,
                               raws: [Detector.RawOutput?] = [], detector: Detector? = nil, overlay: SegOverlay = .both,
+                              nmsMode: NMSMode = .standard, sigma: Float = 0.1,
                               progress: ((_ done: Int, _ total: Int) -> Void)? = nil) async throws -> VideoStats {
     let seg = detector?.isSegment == true && overlay != .boxes
     let asset = AVURLAsset(url: input)
@@ -350,7 +376,8 @@ public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]
         let ci = CIImage(cvPixelBuffer: pb).oriented(orient)   // upright, matching AVPlayer
         guard var cg = cictx.createCGImage(ci, from: ci.extent) else { n += 1; continue }
         if resize > 0 { cg = resizeExact(cg, outW, outH) }
-        let dets = Detector.nms(n < framesCands.count ? framesCands[n] : [], conf: conf, iou: iou)
+        let dets = Detector.nms(n < framesCands.count ? framesCands[n] : [], conf: conf, iou: iou,
+                                mode: nmsMode, sigma: sigma)
         var masks: [MaskBitmap] = []
         if seg, let det = detector, n < raws.count, let raw = raws[n] { masks = dets.compactMap { det.maskImage($0, raw) } }
         let drawBoxes = !(detector?.isSegment == true && overlay == .masks)
