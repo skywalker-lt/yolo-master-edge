@@ -339,23 +339,35 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     }
     /// Compute the seg mask overlay for the frame at `time` (background) and publish it. No-op for
     /// detection models or masks-off. Recomputed as the shown frame / conf / iou / overlay change.
-    private var lastVideoMaskAt = Date.distantPast
-    func updateVideoMask(time: Double, conf: Double, iou: Double, overlay: SegOverlay, nmsMode: NMSMode = .standard, sigma: Double = 0.1, throttled: Bool = false) {
-        if throttled {   // playback: the full-res mask composite can't keep 30 Hz; 4 Hz reads fine
-            guard Date().timeIntervalSince(lastVideoMaskAt) > 0.25 else { return }
-            lastVideoMaskAt = Date()
-        }
+    // Mask compositing runs on the engine queue and CANNOT keep 30 Hz — but a fixed-interval
+    // throttle showed masks up to 0.25 s stale, visibly trailing moving objects and flashing
+    // members the current boxes don't have. Latest-wins coalescing instead: at most one job in
+    // flight, the newest request replaces any queued one, so masks are exactly as fresh as the
+    // compute allows (~40-80 ms behind) with zero backlog. (main-thread state; called on main)
+    private var maskBusy = false
+    private var maskPending: (t: Double, conf: Double, iou: Double, ov: SegOverlay, m: NMSMode, sg: Double)?
+    func updateVideoMask(time: Double, conf: Double, iou: Double, overlay: SegOverlay, nmsMode: NMSMode = .standard, sigma: Double = 0.1) {
         guard let det = videoDet, overlay != .boxes, !videoCache.isEmpty else {
             if videoMaskImg != nil { videoMaskImg = nil }
             return
         }
         let idx = videoFrameIndex(time)
         guard videoRaws.indices.contains(idx), let raw = videoRaws[idx] else { return }
+        if maskBusy { maskPending = (time, conf, iou, overlay, nmsMode, sigma); return }
+        maskBusy = true
         let cands = videoCache[idx]
         queue.async { [weak self] in
             let dets = Detector.nms(cands, conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma))
             let img = det.maskOverlay(dets, raw)
-            DispatchQueue.main.async { self?.videoMaskImg = img }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.videoMaskImg = img
+                self.maskBusy = false
+                if let p = self.maskPending {
+                    self.maskPending = nil
+                    self.updateVideoMask(time: p.t, conf: p.conf, iou: p.iou, overlay: p.ov, nmsMode: p.m, sigma: p.sg)
+                }
+            }
         }
     }
     /// Update the 'this frame' summary stats for the video frame at `time`.
@@ -626,7 +638,10 @@ final class PlayerController: ObservableObject {
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
         currentTime = 0; displayTime = 0; isPlaying = false
         if timeObs == nil {
-            timeObs = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { [weak self] t in
+            // 10 Hz: feeds the scrubber + stats/mask triggers only. The box overlay reads the
+            // player clock directly per vsync (TimelineView in VideoStage) and does NOT depend
+            // on this cadence; 30 Hz published here just tripled the SwiftUI diffing load.
+            timeObs = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 10), queue: .main) { [weak self] t in
                 guard let self else { return }
                 let s = t.seconds.isFinite ? t.seconds : 0
                 self.currentTime = s
@@ -677,9 +692,15 @@ struct VideoStage: View {
     var body: some View {
         ZStack {
             PlayerView(player: pc.player)
+            // TimelineView(.animation): the canvas redraws every vsync during playback, reading
+            // the player clock DIRECTLY — no @Published round-trip, no dependence on how fast
+            // SwiftUI can diff the rest of the window. Paused, it redraws only on state changes.
+            TimelineView(.animation(minimumInterval: nil, paused: !pc.isPlaying)) { _ in
             Canvas { ctx, size in
                 let vid = engine.videoSize
                 guard vid.width > 0, vid.height > 0 else { return }
+                let now = pc.isPlaying ? pc.player.currentTime().seconds : pc.displayTime
+                let t = now.isFinite ? now : 0
                 let scale = Swift.min(size.width / vid.width, size.height / vid.height)
                 let dw = vid.width * scale, dh = vid.height * scale
                 let ox = (size.width - dw) / 2, oy = (size.height - dh) / 2
@@ -689,7 +710,7 @@ struct VideoStage: View {
                 }
                 let masksOnly = engine.videoIsSegment && overlay == .masks   // hide boxes, keep labels/masks
                 if masksOnly && label == .off { return }
-                for d in engine.detsAt(time: pc.displayTime, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma) {   // displayTime -> boxes match the shown frame
+                for d in engine.detsAt(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma) {   // player clock (playing) / displayTime (paused)
                     let color = overlayPalette[d.cls % overlayPalette.count]
                     let r = CGRect(x: ox + d.rect.minX * scale, y: oy + d.rect.minY * scale, width: d.rect.width * scale, height: d.rect.height * scale)
                     let rp = Path(roundedRect: r, cornerRadius: 3)
@@ -723,6 +744,7 @@ struct VideoStage: View {
                         ctx.draw(resolved, at: CGPoint(x: chip.minX + 3, y: chip.minY + 2), anchor: .topLeading)
                     }
                 }
+            }
             }
             .allowsHitTesting(false)
         }
@@ -938,7 +960,7 @@ struct ContentView: View {
         // The stats card and the seg-mask composite are throttled to ~4 Hz DURING PLAYBACK —
         // they were the main-thread load that dropped the label overlay to ~5 fps.
         engine.setVideoFrameStats(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, throttled: pc.isPlaying)
-        engine.updateVideoMask(time: t, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma, throttled: pc.isPlaying)
+        engine.updateVideoMask(time: t, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
     }
     private func rerender() {
         if cameraOn { return }   // camera overlay reads conf/iou/style/label live — no engine re-render
@@ -1135,9 +1157,20 @@ struct ContentView: View {
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
                     .disabled(sourceURL == nil || engine.busy || sourceError != nil)
                 HStack(spacing: 8) {
-                    secondaryButton("Save frame", "square.and.arrow.down") { engine.saveVideoFrame(time: pc.displayTime, conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma) }
-                        .disabled(!engine.hasResults || engine.busy)
-                    secondaryButton("Export video", "square.and.arrow.up") { engine.exportVideo(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma) }
+                    secondaryButton("Export rendered", "photo.on.rectangle") { showRenderExport = true }
+                        .popover(isPresented: $showRenderExport, arrowEdge: .trailing) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                popoverRow("This frame") {
+                                    showRenderExport = false
+                                    engine.saveVideoFrame(time: pc.displayTime, conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
+                                }
+                                popoverRow("All (annotated video)") {
+                                    showRenderExport = false
+                                    engine.exportVideo(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
+                                }
+                            }
+                            .padding(8).frame(minWidth: 180)
+                        }
                         .disabled(!engine.hasResults || engine.busy)
                     if engine.outputURL != nil { revealButton }
                 }
