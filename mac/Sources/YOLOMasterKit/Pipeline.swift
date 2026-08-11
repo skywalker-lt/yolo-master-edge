@@ -345,6 +345,10 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
     func decodeOne() -> CGImage? {
         guard reader.status == .reading,
               let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { return nil }
+        // Upright video (the overwhelmingly common case): wrap the BGRA buffer as a CGImage with
+        // ONE memcpy — the CIContext render (full-res color-managed draw) was the decode-stage
+        // bottleneck capping overall fps at ~1/3 of model-only. Rotated tracks keep the CI path.
+        if orient == .up { return Detector.cgImage(from: pb) }
         let ci = CIImage(cvPixelBuffer: pb).oriented(orient)   // upright, matching AVPlayer
         return cictx.createCGImage(ci, from: ci.extent)
     }
