@@ -659,12 +659,7 @@ struct ContentView: View {
         .onChange(of: sourceURL) { setupSource() }
         .onChange(of: scrubTime) { if scrubbing { pc.seek(scrubTime) } }   // seek while dragging
         .onChange(of: pc.currentTime) { if pc.isPlaying && !scrubbing { scrubTime = pc.currentTime } }   // slider follows playback
-        .onChange(of: pc.displayTime) {
-            if sourceKind == .video && engine.hasResults {
-                engine.setVideoFrameStats(time: pc.displayTime, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
-                engine.updateVideoMask(time: pc.displayTime, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
-            }
-        }
+        .onChange(of: pc.displayTime) { refreshVideoOverlays() }
         .focusable().focused($kbFocused).focusEffectDisabled().onAppear { DispatchQueue.main.async { kbFocused = true } }
         .onKeyPress(.leftArrow)  { step(-1, vertical: false); return .handled }
         .onKeyPress(.rightArrow) { step(1,  vertical: false); return .handled }
@@ -731,13 +726,19 @@ struct ContentView: View {
         selectedIndex = i
         engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
     }
+    /// Re-derive the shown video frame's stats + seg-mask overlay from the cache. Extracted from
+    /// the body's onChange chain: inline, these two many-argument calls blow the SwiftUI
+    /// type-checker budget ("unable to type-check this expression in reasonable time").
+    private func refreshVideoOverlays() {
+        guard sourceKind == .video, engine.hasResults else { return }
+        let t: Double = pc.displayTime
+        engine.setVideoFrameStats(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
+        engine.updateVideoMask(time: t, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
+    }
     private func rerender() {
         if cameraOn { return }   // camera overlay reads conf/iou/style/label live — no engine re-render
         if sourceKind == .video {
-            if engine.hasResults {
-                engine.setVideoFrameStats(time: pc.displayTime, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)   // overlay redraws on conf/iou/label automatically
-                engine.updateVideoMask(time: pc.displayTime, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
-            }
+            refreshVideoOverlays()   // overlay redraws on conf/iou/label automatically
         } else {
             engine.restyle(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
         }
