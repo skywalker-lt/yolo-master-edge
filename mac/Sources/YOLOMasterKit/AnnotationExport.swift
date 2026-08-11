@@ -61,18 +61,27 @@ public struct AnnotationInstance: Sendable {
     public let score: Float
     public let rect: CGRect            // ORIGINAL px, top-left origin
     public let polygons: [[CGPoint]]   // ORIGINAL px; empty = box-only instance
+    public init(cls: Int, score: Float, rect: CGRect, polygons: [[CGPoint]] = []) {
+        self.cls = cls; self.score = score; self.rect = rect; self.polygons = polygons
+    }
 }
 
 public struct AnnotatedImage: Sendable {
     public let name: String            // stem (no extension)
     public let width: Int, height: Int
     public let instances: [AnnotationInstance]
+    public init(name: String, width: Int, height: Int, instances: [AnnotationInstance]) {
+        self.name = name; self.width = width; self.height = height; self.instances = instances
+    }
 }
 
 public struct AnnotationExportResult: Sendable {
     public let images: Int
     public let instances: Int
     public let output: URL
+    public init(images: Int, instances: Int, output: URL) {
+        self.images = images; self.instances = instances; self.output = output
+    }
 }
 
 /// Build the IR from post-NMS detections (WYSIWYG — pass exactly what the preview shows).
