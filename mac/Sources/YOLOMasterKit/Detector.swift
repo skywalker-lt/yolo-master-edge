@@ -7,6 +7,7 @@ import Foundation
 import CoreML
 import CoreGraphics
 import CoreVideo
+import Accelerate   // batched mask math: SGEMM (AMX) + vectorized sigmoid
 
 /// IEEE half bits (UInt16) -> Float32, done by hand. `Float16` is entirely UNAVAILABLE in macOS on
 /// x86_64 (arm64-only type), so it can't be named at all — half-precision Core ML tensors are read
@@ -487,22 +488,106 @@ public final class Detector {
     /// Transparent original-image-sized overlay compositing every detection's instance mask (box-clipped),
     /// for the Canvas-based stages (video / live camera) that draw over a raw frame rather than through
     /// `annotate`. Returns nil for non-seg models or when no mask survives. `dets` should be post-NMS.
+    ///
+    /// BATCHED math (Accelerate): the old path ran a scalar coeffs·proto matmul PER DETECTION,
+    /// re-reading (and for fp16 re-converting) the whole proto tensor each time — seconds at
+    /// hundreds of detections. Now: proto is unpacked to contiguous Float32 ONCE, all
+    /// detections' coefficients form one [N,nm] matrix, and a single SGEMM ([N,nm]x[nm,plane],
+    /// dispatched to the AMX matrix units) plus vectorized sigmoid produce every mask grid in
+    /// one shot. Only the cheap per-pixel tint + the GPU-backed CG composite remain per mask.
     public func maskOverlay(_ dets: [Detection], _ raw: RawOutput) -> CGImage? {
-        guard isSegment, raw.proto != nil, !dets.isEmpty else { return nil }
+        guard isSegment, let proto = raw.proto, proto.shape.count == 4, !dets.isEmpty else { return nil }
         let w = raw.origW, h = raw.origH
-        guard w > 0, h > 0,
-              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+        guard w > 0, h > 0 else { return nil }
+        let cm = proto.shape[1].intValue, mh = proto.shape[2].intValue, mw = proto.shape[3].intValue
+        let plane = mh * mw
+        guard cm > 0, plane > 0 else { return nil }
+        let usable = dets.filter { !$0.maskCoeffs.isEmpty }
+        guard !usable.isEmpty else { return nil }
+        let N = usable.count
+
+        // ---- proto -> contiguous [cm, plane] Float32, once ----
+        let s1 = proto.strides[1].intValue, s2 = proto.strides[2].intValue, s3 = proto.strides[3].intValue
+        var protoF = [Float](repeating: 0, count: cm * plane)
+        if proto.dataType == .float16 {
+            let rp = proto.dataPointer
+            protoF.withUnsafeMutableBufferPointer { dst in
+                for k in 0..<cm {
+                    let ko = k * plane
+                    for i in 0..<mh {
+                        let ro = ko + i * mw, so = k * s1 + i * s2
+                        for j in 0..<mw {
+                            dst[ro + j] = halfToFloat(rp.load(fromByteOffset: (so + j * s3) * 2, as: UInt16.self))
+                        }
+                    }
+                }
+            }
+        } else {
+            proto.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+                guard let pp = buf.baseAddress else { return }
+                protoF.withUnsafeMutableBufferPointer { dst in
+                    for k in 0..<cm {
+                        let ko = k * plane
+                        for i in 0..<mh {
+                            let ro = ko + i * mw, so = k * s1 + i * s2
+                            for j in 0..<mw { dst[ro + j] = pp[so + j * s3] }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- one SGEMM for all masks + batch sigmoid ----
+        var A = [Float](repeating: 0, count: N * cm)
+        for (r, d) in usable.enumerated() {
+            let nmv = min(cm, d.maskCoeffs.count)
+            for k in 0..<nmv { A[r * cm + k] = d.maskCoeffs[k] }
+        }
+        var acc = [Float](repeating: 0, count: N * plane)
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, Int32(N), Int32(plane), Int32(cm),
+                    1, A, Int32(cm), protoF, Int32(plane), 0, &acc, Int32(plane))
+        var cnt = Int32(N * plane)
+        vDSP_vneg(acc, 1, &acc, 1, vDSP_Length(N * plane))       // -x
+        vvexpf(&acc, acc, &cnt)                                   // e^-x
+        var one: Float = 1
+        vDSP_vsadd(acc, 1, &one, &acc, 1, vDSP_Length(N * plane)) // 1 + e^-x
+        vvrecf(&acc, acc, &cnt)                                   // sigmoid
+
+        // ---- per-mask tint + composite (identical visual pipeline to maskImage) ----
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         ctx.interpolationQuality = .high   // bilinear upscale proto->full res -> smooth mask edges
+        let sz = CGFloat(imgsz)
+        let crop = CGRect(x: raw.padX / sz, y: raw.padY / sz,
+                          width: CGFloat(raw.origW) * raw.scaleX / sz, height: CGFloat(raw.origH) * raw.scaleY / sz)
+        let threshold: Float = 0.5, alphaMax: Float = 165
+        let band: Float = 0.14, e0 = threshold - band, e1 = threshold + band, inv = 1 / (e1 - e0)
         var drew = false
-        for d in dets {
-            guard let m = maskImage(d, raw) else { continue }
-            let pc = m.protoCrop, iw = CGFloat(m.image.width), ih = CGFloat(m.image.height)
-            let sub = CGRect(x: pc.minX * iw, y: pc.minY * ih, width: pc.width * iw, height: pc.height * ih)
-            guard sub.width > 0, sub.height > 0, let cropped = m.image.cropping(to: sub) else { continue }
+        var px = [UInt8](repeating: 0, count: plane * 4)
+        for (r, d) in usable.enumerated() {
+            let comps = classColor(d.cls).components ?? [1, 0.25, 0.25, 1]
+            let cr = Float(comps[0]), cg = Float(comps[1]), cb = Float(comps[2])
+            for i in 0..<plane * 4 { px[i] = 0 }
+            let row = r * plane
+            for i in 0..<plane {
+                var t = (acc[row + i] - e0) * inv
+                if t <= 0 { continue }
+                if t > 1 { t = 1 }
+                let a = t * t * (3 - 2 * t) * alphaMax
+                let o = i * 4
+                px[o] = UInt8(min(255, cr * a)); px[o + 1] = UInt8(min(255, cg * a))
+                px[o + 2] = UInt8(min(255, cb * a)); px[o + 3] = UInt8(min(255, a))
+            }
+            guard let mctx = CGContext(data: &px, width: mw, height: mh, bitsPerComponent: 8, bytesPerRow: mw * 4,
+                                       space: CGColorSpaceCreateDeviceRGB(),
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  let img = mctx.makeImage() else { continue }
+            let sub = CGRect(x: crop.minX * CGFloat(mw), y: crop.minY * CGFloat(mh),
+                             width: crop.width * CGFloat(mw), height: crop.height * CGFloat(mh))
+            guard sub.width > 0, sub.height > 0, let cropped = img.cropping(to: sub) else { continue }
             ctx.saveGState()
-            ctx.clip(to: CGRect(x: m.clip.minX, y: CGFloat(h) - m.clip.maxY, width: m.clip.width, height: m.clip.height))
+            ctx.clip(to: CGRect(x: d.rect.minX, y: CGFloat(h) - d.rect.maxY, width: d.rect.width, height: d.rect.height))
             ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))  // upright, matches Canvas top-left mapping
             ctx.restoreGState()
             drew = true
