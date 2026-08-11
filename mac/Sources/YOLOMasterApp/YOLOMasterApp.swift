@@ -692,11 +692,14 @@ struct VideoStage: View {
     var body: some View {
         ZStack {
             PlayerView(player: pc.player)
-            // TimelineView(.animation): the canvas redraws every vsync during playback, reading
-            // the player clock DIRECTLY — no @Published round-trip, no dependence on how fast
-            // SwiftUI can diff the rest of the window. Paused, it redraws only on state changes.
-            TimelineView(.animation(minimumInterval: nil, paused: !pc.isPlaying)) { _ in
+            // TimelineView: the canvas redraws on the video cadence during playback, reading the
+            // player clock DIRECTLY — no @Published round-trip. CRITICAL: the timeline context
+            // MUST be read (`tick`) — with `{ _ in ... }` SwiftUI sees no dependency on the
+            // schedule and never re-evaluates, which silently disabled the whole mechanism.
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !pc.isPlaying)) { timeline in
+            let tick = timeline.date
             Canvas { ctx, size in
+                _ = tick   // dependency: each scheduled tick changes the captured value -> redraw
                 let vid = engine.videoSize
                 guard vid.width > 0, vid.height > 0 else { return }
                 let now = pc.isPlaying ? pc.player.currentTime().seconds : pc.displayTime
@@ -710,7 +713,8 @@ struct VideoStage: View {
                 }
                 let masksOnly = engine.videoIsSegment && overlay == .masks   // hide boxes, keep labels/masks
                 if masksOnly && label == .off { return }
-                for d in engine.detsAt(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma) {   // player clock (playing) / displayTime (paused)
+                let labelBudget = pc.isPlaying ? 60 : Int.max   // Text resolution is the redraw cost
+                for (di, d) in engine.detsAt(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma).enumerated() {   // player clock (playing) / displayTime (paused)
                     let color = overlayPalette[d.cls % overlayPalette.count]
                     let r = CGRect(x: ox + d.rect.minX * scale, y: oy + d.rect.minY * scale, width: d.rect.width * scale, height: d.rect.height * scale)
                     let rp = Path(roundedRect: r, cornerRadius: 3)
@@ -734,7 +738,7 @@ struct VideoStage: View {
                         ctx.stroke(br, with: .color(color), lineWidth: lw * 1.4)
                     }
                     }   // if !masksOnly
-                    if label != .off {
+                    if label != .off && di < labelBudget {
                         let name = d.cls < engine.names.count ? engine.names[d.cls] : "class\(d.cls)"
                         let txt = label == .min ? name : "\(name) \(String(format: "%.2f", d.score))"
                         let resolved = ctx.resolve(Text(txt).font(.system(size: Swift.max(9, dw / 95))).bold().foregroundColor(.white))

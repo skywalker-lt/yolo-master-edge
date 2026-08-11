@@ -335,17 +335,39 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
     var frames: [[Detection]] = [], raws: [Detector.RawOutput?] = [], times: [Double] = [], n = 0
     let seg = det.isSegment   // only seg needs the proto tensor cached (for masks); else keep memory flat
     let t0 = Date()
-    while reader.status == .reading {
-        guard let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { break }
+    // 3-stage pipeline: frame decode (CIImage->CGImage, the expensive CPU step) for frame n+1
+    // overlaps the Core ML forward of frame n, and candidate extraction of frame n runs on a
+    // detached task overlapping the next forward. This closes most of the model-only vs overall
+    // fps gap (the stages used to run strictly serially). Exactly ONE decode task exists at a
+    // time (awaited before the next spawns), so the AVAssetReader is never touched concurrently;
+    // candidates() reads a finished MLMultiArray (concurrent-read safe). The in-flight bound
+    // keeps at most ~3 raw output tensors alive, so memory stays flat on long videos.
+    func decodeOne() -> CGImage? {
+        guard reader.status == .reading,
+              let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { return nil }
         let ci = CIImage(cvPixelBuffer: pb).oriented(orient)   // upright, matching AVPlayer
-        if let cg = cictx.createCGImage(ci, from: ci.extent),
-           let raw = try? det.forward(cg) {
-            frames.append(det.candidates(raw, confFloor: confFloor)); times.append(raw.inferMs)
-            raws.append(seg ? raw : nil)
-        } else { frames.append([]); raws.append(nil) }
+        return cictx.createCGImage(ci, from: ci.extent)
+    }
+    var candTasks: [Task<([Detection], Detector.RawOutput?), Never>] = []
+    func drainOne() async {
+        guard !candTasks.isEmpty else { return }
+        let (c, r) = await candTasks.removeFirst().value
+        frames.append(c); raws.append(r)
+    }
+    var nextDecode = Task.detached { decodeOne() }
+    while let cg = await nextDecode.value {
+        nextDecode = Task.detached { decodeOne() }            // decode n+1 while forwarding n
+        if let raw = try? det.forward(cg) {
+            times.append(raw.inferMs)
+            candTasks.append(Task.detached { (det.candidates(raw, confFloor: confFloor), seg ? raw : nil) })
+        } else {
+            candTasks.append(Task { ([], nil) })              // keeps frame/candidate alignment
+        }
+        if candTasks.count >= 3 { await drainOne() }          // bound in-flight raw tensors
         n += 1
         if n % 4 == 0 { progress?(n, estTotal) }
     }
+    while !candTasks.isEmpty { await drainOne() }
     return (frames, raws, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000), Double(fps), CGSize(width: natW, height: natH))
 }
 
