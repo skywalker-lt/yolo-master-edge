@@ -42,6 +42,34 @@ Applies to **images and folder batches**; video and webcam stay single-pass.
   Applies everywhere: images, folders, video, live camera, exports — and it is the merge
   used for tiled inference when selected.
 
+## New: Zoom (images + paused video)
+
+Pinch to zoom (cursor-anchored, up to 8x), drag to pan, double-click or ⌘0 to reset,
+⌘+ / ⌘− for stepped zoom. Works on the annotated image preview and on video **while paused**
+(the overlay boxes scale with the pixels); zoom resets automatically on play, when browsing
+to another image, and on re-run. Scrubbing while paused keeps the zoom, for frame-to-frame
+comparison at magnification.
+
+## New: annotation export (Export labels…)
+
+Turn inference results into training data, in three formats — **YOLO TXT**, **COCO JSON**,
+**Pascal VOC XML** — exported WYSIWYG at the current conf / IoU / NMS-mode / sigma:
+
+- **Single image** -> one annotation file (save panel; YOLO also writes a sibling classes.txt).
+- **Folder** -> `<folder>_labels/` with one file per image (COCO: one `annotations.coco.json`).
+- **Video** -> `<video>_annotations/` with `frames/` (extracted JPEGs, source-frame-indexed)
+  plus `labels/` (or one COCO json referencing `frames/…`). The **sampling rate** is selectable
+  in the scrubber bar: every frame, one per second (default), or every 5th/10th/30th.
+- **Segmentation models export polygons** (YOLO-seg lines, COCO polygon segmentation),
+  traced from the instance masks; Pascal VOC has no standard segmentation field and always
+  writes boxes. Detection models export boxes. In tiled modes the export follows what the
+  preview shows: with "Masks (global pass)" on, global-pass instances carry real polygons and
+  tile instances fall back to their box as a 4-point polygon; with it off, the export is
+  box-dialect. Empty results still write (empty .txt = verified negative).
+- Format details: COCO uses 1-based category ids (cls+1), polygon shoelace areas, and keeps
+  a `score` key per annotation; VOC uses 1-based inclusive integer boxes with no score
+  element; YOLO coordinates are normalized to 6 decimal places.
+
 ## CLI
 
 ```

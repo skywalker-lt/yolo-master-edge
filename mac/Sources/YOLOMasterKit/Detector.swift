@@ -499,6 +499,199 @@ public final class Detector {
         return drew ? ctx.makeImage() : nil
     }
 
+    // ---------- segmentation mask -> polygon contours (annotation export) ----------
+    /// Contours of one detection's instance mask, in ORIGINAL-image pixels (top-left origin).
+    /// Used by the annotation exporters (YOLO-seg / COCO polygons).
+    ///
+    /// Semantics match what the preview shows: hard threshold at the CENTER of `maskImage`'s
+    /// smoothstep band (sigmoid(coeffs . proto) > threshold), restricted to `det.rect` (the
+    /// preview clips masks to the box). OUTER contours only — holes are unrepresentable in
+    /// YOLO-seg and COCO-polygon anyway. Components smaller than 2 proto cells are dropped
+    /// (speckle). Rings are Douglas-Peucker-simplified with `epsilon` in original pixels,
+    /// sorted by area (desc) and capped at `maxPolygons`.
+    ///
+    /// Bias note: contours pass through proto CELL CENTERS, so polygons sit up to half a proto
+    /// cell (~2 px at 640/160) inside the rendered mask edge — comparable to `epsilon`, and
+    /// tight-side annotations are the safer convention.
+    /// Returns [] for non-seg models, missing proto, empty coeffs, or an all-background mask.
+    public func maskPolygons(_ det: Detection, _ raw: RawOutput, threshold: Float = 0.5,
+                             epsilon: CGFloat = 2.0, maxPolygons: Int = 8) -> [[CGPoint]] {
+        guard let proto = raw.proto, proto.shape.count == 4, !det.maskCoeffs.isEmpty else { return [] }
+        let cm = proto.shape[1].intValue, mh = proto.shape[2].intValue, mw = proto.shape[3].intValue
+        guard mh > 0, mw > 0 else { return [] }
+        let nmv = min(cm, det.maskCoeffs.count)
+        let s1 = proto.strides[1].intValue, s2 = proto.strides[2].intValue, s3 = proto.strides[3].intValue
+        let coeffs = det.maskCoeffs
+        let sz = CGFloat(imgsz)
+
+        // det.rect (original px) <-> proto grid (same mapping as maskImage's protoCrop, K:468-473):
+        //   grid = (pad + orig * scale) / imgsz * gridDim
+        func gridX(_ x: CGFloat) -> CGFloat { (raw.padX + x * raw.scaleX) / sz * CGFloat(mw) }
+        func gridY(_ y: CGFloat) -> CGFloat { (raw.padY + y * raw.scaleY) / sz * CGFloat(mh) }
+        func origX(_ gx: CGFloat) -> CGFloat { (gx / CGFloat(mw) * sz - raw.padX) / raw.scaleX }
+        func origY(_ gy: CGFloat) -> CGFloat { (gy / CGFloat(mh) * sz - raw.padY) / raw.scaleY }
+
+        // sub-grid covering det.rect, expanded by 1 cell, clamped to the proto
+        let gx0 = max(0, Int(gridX(det.rect.minX).rounded(.down)) - 1)
+        let gy0 = max(0, Int(gridY(det.rect.minY).rounded(.down)) - 1)
+        let gx1 = min(mw, Int(gridX(det.rect.maxX).rounded(.up)) + 1)
+        let gy1 = min(mh, Int(gridY(det.rect.maxY).rounded(.up)) + 1)
+        guard gx1 > gx0, gy1 > gy0 else { return [] }
+        let subW = gx1 - gx0, subH = gy1 - gy0
+        // padded (+2 each axis) with a guaranteed-false border ring so every contour closes
+        let gw = subW + 2, gh = subH + 2
+        var grid = [Bool](repeating: false, count: gw * gh)
+
+        func fill(_ at: (Int, Int, Int) -> Float32) {
+            for i in 0..<subH {
+                let pi = gy0 + i
+                let cy = origY(CGFloat(pi) + 0.5)
+                if cy < det.rect.minY || cy > det.rect.maxY { continue }   // preview clips to box
+                for j in 0..<subW {
+                    let pj = gx0 + j
+                    let cx = origX(CGFloat(pj) + 0.5)
+                    if cx < det.rect.minX || cx > det.rect.maxX { continue }
+                    var acc: Float = 0
+                    for k in 0..<nmv { acc += coeffs[k] * Float(at(k, pi, pj)) }
+                    if 1 / (1 + expf(-acc)) > threshold { grid[(i + 1) * gw + (j + 1)] = true }
+                }
+            }
+        }
+        if proto.dataType == .float16 {
+            let rp = proto.dataPointer   // Float16 unnameable on x86_64; read half bits (cf. maskImage)
+            fill { k, i, j in halfToFloat(rp.load(fromByteOffset: (k * s1 + i * s2 + j * s3) * 2, as: UInt16.self)) }
+        } else {
+            proto.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+                guard let pp = buf.baseAddress else { return }
+                fill { k, i, j in pp[k * s1 + i * s2 + j * s3] }
+            }
+        }
+
+        // ---- 8-connected component labeling (iterative flood fill); < 2 cells = speckle ----
+        var label = [Int](repeating: 0, count: gw * gh)
+        var starts: [Int] = []                       // topmost-leftmost cell per kept component
+        var nextLabel = 0
+        var stack: [Int] = []
+        for idx0 in 0..<(gw * gh) where grid[idx0] && label[idx0] == 0 {
+            nextLabel += 1
+            var count = 0
+            stack.removeAll(keepingCapacity: true)
+            stack.append(idx0); label[idx0] = nextLabel
+            while let idx = stack.popLast() {
+                count += 1
+                let cy = idx / gw, cx = idx % gw
+                for dy in -1...1 {
+                    for dx in -1...1 where dx != 0 || dy != 0 {
+                        let ny = cy + dy, nx = cx + dx
+                        guard ny >= 0, ny < gh, nx >= 0, nx < gw else { continue }
+                        let nidx = ny * gw + nx
+                        if grid[nidx] && label[nidx] == 0 { label[nidx] = nextLabel; stack.append(nidx) }
+                    }
+                }
+            }
+            if count >= 2 { starts.append(idx0) }    // row-major scan => idx0 is topmost-leftmost
+        }
+        guard !starts.isEmpty else { return [] }
+
+        // ---- Moore-neighbor boundary trace (clockwise, Jacob's stopping criterion) ----
+        // Neighbor offsets clockwise from West in a top-down grid.
+        let nbr: [(dx: Int, dy: Int)] = [(-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1)]
+        func traceRing(from start: Int, component: Int) -> [(x: Int, y: Int)] {
+            let sx = start % gw, sy = start / gw
+            var ring: [(x: Int, y: Int)] = [(sx, sy)]
+            var cur = (x: sx, y: sy)
+            var back = 0                              // entered scanning from West (border ring guarantees background there)
+            var firstDir = -1
+            let maxSteps = 4 * gw * gh
+            for _ in 0..<maxSteps {
+                var found = false
+                for t in 0..<8 {
+                    let d = (back + 1 + t) % 8        // clockwise from just past the backtrack
+                    let nx = cur.x + nbr[d].dx, ny = cur.y + nbr[d].dy
+                    guard nx >= 0, nx < gw, ny >= 0, ny < gh, label[ny * gw + nx] == component else { continue }
+                    // Jacob's criterion: back at start entering in the same direction as the first move
+                    if nx == sx && ny == sy {
+                        if firstDir == -1 { firstDir = d }
+                        else if d == firstDir { return ring }
+                    }
+                    if firstDir == -1 { firstDir = d }
+                    cur = (nx, ny)
+                    if !(nx == sx && ny == sy) { ring.append(cur) }
+                    back = (d + 4) % 8               // backtrack = direction we came FROM
+                    found = true
+                    break
+                }
+                if !found { return ring }            // isolated pair edge case: ring so far
+                if cur.x == sx && cur.y == sy && ring.count > 1 { return ring }
+            }
+            return ring
+        }
+
+        // ---- Douglas-Peucker on an open polyline ----
+        func perpDist(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+            let vx = b.x - a.x, vy = b.y - a.y
+            let len = (vx * vx + vy * vy).squareRoot()
+            if len < 1e-9 { return ((p.x - a.x) * (p.x - a.x) + (p.y - a.y) * (p.y - a.y)).squareRoot() }
+            return abs(vx * (a.y - p.y) - (a.x - p.x) * vy) / len
+        }
+        func dp(_ pts: [CGPoint]) -> [CGPoint] {
+            guard pts.count > 2 else { return pts }
+            var keep = [Bool](repeating: false, count: pts.count)
+            keep[0] = true; keep[pts.count - 1] = true
+            var spans: [(Int, Int)] = [(0, pts.count - 1)]
+            while let (i0, i1) = spans.popLast() {
+                guard i1 > i0 + 1 else { continue }
+                var maxD: CGFloat = -1; var maxI = i0
+                for i in (i0 + 1)..<i1 {
+                    let d = perpDist(pts[i], pts[i0], pts[i1])
+                    if d > maxD { maxD = d; maxI = i }
+                }
+                if maxD > epsilon { keep[maxI] = true; spans.append((i0, maxI)); spans.append((maxI, i1)) }
+            }
+            return pts.indices.filter { keep[$0] }.map { pts[$0] }
+        }
+        func shoelace(_ pts: [CGPoint]) -> CGFloat {
+            guard pts.count >= 3 else { return 0 }
+            var a: CGFloat = 0
+            for i in pts.indices {
+                let q = pts[(i + 1) % pts.count]
+                a += pts[i].x * q.y - q.x * pts[i].y
+            }
+            return abs(a) / 2
+        }
+
+        var rings: [[CGPoint]] = []
+        for start in starts {
+            let cells = traceRing(from: start, component: label[start])
+            guard cells.count >= 3 else { continue }
+            // padded-grid cell centers -> original px, clamped to det.rect intersect image
+            let pts = cells.map { c -> CGPoint in
+                let gx = CGFloat(gx0 + c.x - 1) + 0.5, gy = CGFloat(gy0 + c.y - 1) + 0.5
+                let x = min(max(origX(gx), max(0, det.rect.minX)), min(CGFloat(raw.origW), det.rect.maxX))
+                let y = min(max(origY(gy), max(0, det.rect.minY)), min(CGFloat(raw.origH), det.rect.maxY))
+                return CGPoint(x: x, y: y)
+            }
+            // closed-ring DP: anchor at the pair of farthest-apart vertices, DP each half
+            var farI = 0; var farD: CGFloat = -1
+            for i in pts.indices {
+                let dx = pts[i].x - pts[0].x, dy = pts[i].y - pts[0].y
+                let d = dx * dx + dy * dy
+                if d > farD { farD = d; farI = i }
+            }
+            let simplified: [CGPoint]
+            if farI > 0 {
+                let half1 = dp(Array(pts[0...farI]))
+                let half2 = dp(Array(pts[farI...]) + [pts[0]])
+                simplified = half1 + half2.dropFirst().dropLast()
+            } else {
+                simplified = dp(pts)
+            }
+            if simplified.count >= 3 { rings.append(simplified) }
+        }
+        rings.sort { shoelace($0) > shoelace($1) }
+        return Array(rings.prefix(maxPolygons))
+    }
+
     /// Model-only forward (no decode/draw) — for latency benchmarking. Returns ms.
     @discardableResult
     public func inferOnly(_ image: CGImage) throws -> Double {

@@ -107,6 +107,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     private var lastAnnotated: CGImage?
     private var folderCache: [FolderItem] = []
     private var folderInput: URL?
+    private var imageInput: URL?                 // single-image source (annotation export stem)
     private var videoCache: [[Detection]] = []
     private var videoRaws: [Detector.RawOutput?] = []   // per-frame proto (seg only) for on-demand masks
     private var videoDet: Detector?                       // the seg detector, to compute mask overlays
@@ -122,6 +123,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         resultImage = nil; detCount = 0; currentCG = nil; currentCands = []; currentRaw = nil
         videoRaws = []; videoDet = nil; videoMaskImg = nil
         infer = nil; classCounts = []; tileStats = nil; resultsTiled = false; tiledMasksKept = false
+        imageInput = nil
         status = "Ready — press Run."
     }
 
@@ -129,6 +131,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     func previewURL(model: URL, image: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay, preprocess: Detector.PreprocessMode,
                     tiling: TilingConfig = TilingConfig(), nmsMode: NMSMode = .standard, sigma: Double = 0.1) {
         guard let cg = loadCGImage(image) else { publish(error: "Could not read image."); return }
+        imageInput = image
         preview(model: model, cg: cg, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess, tiling: tiling, nmsMode: nmsMode, sigma: sigma)
     }
     func preview(model: URL, cg: CGImage, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay, preprocess: Detector.PreprocessMode,
@@ -356,6 +359,108 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                     self.status = "Exported \(stats.frames) frames @\(stats.fps)fps"
                 }
             } catch { DispatchQueue.main.async { self.status = "Export failed: \(error.localizedDescription)"; self.busy = false; self.exporting = false } }
+        }
+    }
+
+    // ---- annotation export (YOLO TXT / COCO JSON / Pascal VOC XML) ----
+    /// Source kind inferred from the caches, mirroring the image/folder/video export methods.
+    /// WYSIWYG: exports the cached candidates filtered through the CURRENT tuned parameters.
+    func exportAnnotations(format: AnnotationFormat, sampling: VideoSampling,
+                           conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double) {
+        if let input = videoInput, !videoCache.isEmpty {
+            busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting labels…"
+            let root = input.deletingLastPathComponent()
+                .appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_annotations")
+            let frames = videoCache, nm = detNames, rw = videoRaws, det = videoDet, fps = videoFps
+            let includePolys = det != nil   // video is never tiled; videoDet is non-nil only for seg
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let res = try await exportAnnotationsVideo(
+                        input: input, root: root, framesCands: frames, names: nm,
+                        format: format, sampling: sampling, fps: fps,
+                        conf: Float(conf), iou: CGFloat(iou), nmsMode: nmsMode, sigma: Float(sigma),
+                        raws: rw, detector: det, includePolygons: includePolys) { done, total in
+                        DispatchQueue.main.async {
+                            self.progress = total > 0 ? Double(done) / Double(total) : nil
+                            self.status = "Exporting labels \(done)/\(total)…"
+                        }
+                    }
+                    DispatchQueue.main.async {
+                        self.outputURL = res.output; self.busy = false; self.exporting = false; self.progress = nil
+                        self.status = "Exported \(res.images) frames + labels (\(res.instances) objects)"
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        self.status = "Label export failed: \(error.localizedDescription)"
+                        self.busy = false; self.exporting = false; self.progress = nil
+                    }
+                }
+            }
+        } else if let input = folderInput, !folderCache.isEmpty {
+            busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting labels…"
+            let out = input.deletingLastPathComponent().appendingPathComponent(input.lastPathComponent + "_labels")
+            let cache = folderCache, nm = detNames, det = detector
+            let includePolys = det?.isSegment == true && (!resultsTiled || tiledMasksKept)
+            queue.async { [weak self] in
+                guard let self else { return }
+                do {
+                    let res = try exportAnnotationsFolder(cache, output: out, names: nm, format: format,
+                        conf: Float(conf), iou: CGFloat(iou), nmsMode: nmsMode, sigma: Float(sigma),
+                        detector: det, includePolygons: includePolys) { done, total in
+                        DispatchQueue.main.async {
+                            self.progress = total > 0 ? Double(done) / Double(total) : nil
+                            self.status = "Exporting labels \(done)/\(total)…"
+                        }
+                    }
+                    DispatchQueue.main.async {
+                        self.outputURL = res.output; self.busy = false; self.exporting = false; self.progress = nil
+                        self.status = "Exported \(res.images) label files (\(res.instances) objects)"
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        self.status = "Label export failed: \(error.localizedDescription)"
+                        self.busy = false; self.exporting = false; self.progress = nil
+                    }
+                }
+            }
+        } else if currentCG != nil {
+            // Build the IR on the engine queue (touches private caches + non-Sendable RawOutput),
+            // then hop to main for the save panel.
+            queue.async { [weak self] in
+                guard let self, let cg = self.currentCG else { return }
+                let dets = Detector.nms(self.currentCands, conf: Float(conf), iou: CGFloat(iou),
+                                        mode: nmsMode, sigma: Float(sigma))
+                let det = self.detector
+                let includePolys = det?.isSegment == true && (!self.resultsTiled || self.tiledMasksKept)
+                let insts = annotationInstances(dets, detector: det, raw: self.currentRaw, includePolygons: includePolys)
+                let stem = self.imageInput?.deletingPathExtension().lastPathComponent ?? "annotations"
+                let srcName = self.imageInput?.lastPathComponent ?? (stem + ".jpg")
+                let img = AnnotatedImage(name: stem, width: cg.width, height: cg.height, instances: insts)
+                let nm = self.detNames
+                DispatchQueue.main.async {
+                    let panel = NSSavePanel()
+                    panel.nameFieldStringValue = stem + (format == .cocoJSON ? ".coco." : ".") + format.fileExtension
+                    guard panel.runModal() == .OK, let url = panel.url else { return }
+                    do {
+                        switch format {
+                        case .yoloTXT:
+                            try AnnotationWriter.yoloLines(img, segDialect: includePolys)
+                                .write(to: url, atomically: true, encoding: .utf8)
+                            try? AnnotationWriter.classesTXT(nm)
+                                .write(to: url.deletingLastPathComponent().appendingPathComponent("classes.txt"),
+                                       atomically: true, encoding: .utf8)
+                        case .pascalVOC:
+                            try AnnotationWriter.vocXML(img, names: nm, folder: url.deletingLastPathComponent().lastPathComponent)
+                                .write(to: url, atomically: true, encoding: .utf8)
+                        case .cocoJSON:
+                            try AnnotationWriter.cocoJSON([img], fileNames: [srcName], names: nm, segDialect: includePolys)
+                                .write(to: url)
+                        }
+                        self.status = "Exported \(insts.count) objects → \(url.lastPathComponent)"
+                    } catch { self.status = "Label export failed: \(error.localizedDescription)" }
+                }
+            }
         }
     }
 
@@ -591,6 +696,7 @@ struct ContentView: View {
     @State private var tilingMasks = false             // tiled modes: keep global-pass seg masks
     @State private var nmsMode: NMSMode = .standard    // global NMS variant (also the tiled merge)
     @State private var sigma = 0.1                     // CW-NMS gaussian width
+    @State private var sampling: VideoSampling = .onePerSecond   // annotation-export frame sampling
     @State private var compute: ComputeMode = .cpuAndGPU
     @State private var showPicker = false
     @State private var pickTarget: PickTarget = .model
@@ -604,6 +710,7 @@ struct ContentView: View {
     @State private var scrubbing = false
     @State private var wasPlaying = false
     @StateObject private var pc = PlayerController()
+    @StateObject private var zoom = ZoomModel()   // image + paused-video magnification (stages are exclusive)
     @State private var cameraOn = false   // live-camera mode; the session lives in LiveCameraView (isolated observation)
     @State private var cameraIsSegment = false   // set by LiveCameraView once its detector is built
     @State private var cameraMirror = true       // live-camera selfie mirror (toggled from the stage)
@@ -689,6 +796,7 @@ struct ContentView: View {
             .onChange(of: scrubTime) { if scrubbing { pc.seek(scrubTime) } }   // seek while dragging
             .onChange(of: pc.currentTime) { if pc.isPlaying && !scrubbing { scrubTime = pc.currentTime } }   // slider follows playback
             .onChange(of: pc.displayTime) { refreshVideoOverlays() }
+            .onChange(of: pc.isPlaying) { if pc.isPlaying { zoom.reset() } }   // zoom is a paused-video feature
     }
 
     /// Stage 4: keyboard focus + shortcuts + tint.
@@ -712,6 +820,7 @@ struct ContentView: View {
     private func setupSource() {
         pc.pause()
         engine.resetResults()
+        zoom.reset()
         recomputeTileCeil()
         sourceError = nil; folderImages = []
         guard let s = sourceURL else { return }
@@ -740,6 +849,7 @@ struct ContentView: View {
     }
     private func runInfer() {
         guard let m = modelURL, let s = sourceURL, sourceError == nil else { return }
+        zoom.reset()
         switch sourceKind {
         case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess,
                                         tiling: tilingConfig, nmsMode: nmsMode, sigma: sigma)
@@ -756,12 +866,13 @@ struct ContentView: View {
         pc.togglePlay()
         return .handled
     }
-    private func startCamera() { guard modelURL != nil, !engine.busy else { return }; pc.pause(); cameraOn = true }
+    private func startCamera() { guard modelURL != nil, !engine.busy else { return }; pc.pause(); zoom.reset(); cameraOn = true }
     private func stopCamera() { cameraOn = false }
 
     private func selectAndShow(_ i: Int) {
         guard folderImages.indices.contains(i) else { return }
         selectedIndex = i
+        zoom.reset()
         engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
     }
     /// Re-derive the shown video frame's stats + seg-mask overlay from the cache. Extracted from
@@ -944,6 +1055,7 @@ struct ContentView: View {
             case .image:
                 primaryButton("Run", "play.fill") { runInfer() }.disabled(sourceURL == nil || engine.busy || sourceError != nil)
                 secondaryButton("Save…", "square.and.arrow.down") { engine.save() }.disabled(engine.resultImage == nil)
+                exportLabelsMenu.disabled(engine.resultImage == nil || engine.busy)
             case .folder:
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
                     .disabled(sourceURL == nil || engine.busy || sourceError != nil)
@@ -954,6 +1066,7 @@ struct ContentView: View {
                         .disabled(!engine.hasResults || engine.busy)
                     if engine.outputURL != nil { revealButton }
                 }
+                exportLabelsMenu.disabled(!engine.hasResults || engine.busy)
             case .video:
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
                     .disabled(sourceURL == nil || engine.busy || sourceError != nil)
@@ -964,10 +1077,31 @@ struct ContentView: View {
                         .disabled(!engine.hasResults || engine.busy)
                     if engine.outputURL != nil { revealButton }
                 }
+                exportLabelsMenu.disabled(!engine.hasResults || engine.busy)
             case .unknown:
                 EmptyView()
             }
         }
+    }
+
+    /// Annotation export: one menu, three formats. Video exports honor the sampling picker in
+    /// the scrubber bar (frames + labels); image/folder ignore it.
+    @ViewBuilder private var exportLabelsMenu: some View {
+        Menu {
+            ForEach(AnnotationFormat.allCases, id: \.self) { f in
+                Button(f.label) {
+                    engine.exportAnnotations(format: f, sampling: sampling,
+                                             conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
+                }
+            }
+            if sourceKind == .video {
+                Divider()
+                Text("Sampling: \(sampling.label) — change in the scrubber bar")
+            }
+        } label: {
+            Label("Export labels…", systemImage: "doc.badge.arrow.up").frame(maxWidth: .infinity)
+        }
+        .controlSize(.large)
     }
 
     private func primaryButton(_ title: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
@@ -1002,9 +1136,13 @@ struct ContentView: View {
                     Text(err).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 380)
                 }.padding(24)
             } else if sourceKind == .video && engine.hasResults {
-                VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, overlay: overlay, style: style, label: label).padding(12)
+                ZoomContainer(zoom: zoom, enabled: !pc.isPlaying) {
+                    VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, overlay: overlay, style: style, label: label).padding(12)
+                }
             } else if let img = engine.resultImage {
-                Image(nsImage: img).resizable().scaledToFit().padding(12)
+                ZoomContainer(zoom: zoom) {
+                    Image(nsImage: img).resizable().scaledToFit().padding(12)
+                }
             } else if (sourceKind == .folder || sourceKind == .video) && !engine.hasResults && !engine.busy {
                 VStack(spacing: 8) {
                     Image(systemName: sourceKind == .video ? "film" : "folder").font(.system(size: 48)).foregroundStyle(.tertiary)
@@ -1035,6 +1173,16 @@ struct ContentView: View {
                 }
                 Text("\(String(format: "%.2f", scrubTime))s / \(String(format: "%.1f", videoDur))s")
                     .font(.caption2).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 2) {   // annotation-export frame sampling
+                Text("Label sampling").font(.caption2).foregroundStyle(.secondary)
+                Picker("", selection: $sampling) {
+                    Text("Every frame").tag(VideoSampling.allFrames)
+                    Text("1 / second").tag(VideoSampling.onePerSecond)
+                    Text("Every 5th").tag(VideoSampling.everyNth(5))
+                    Text("Every 10th").tag(VideoSampling.everyNth(10))
+                    Text("Every 30th").tag(VideoSampling.everyNth(30))
+                }.pickerStyle(.menu).labelsHidden().frame(width: 130)
             }
         }.padding(.horizontal, 12).padding(.vertical, 8).background(Color(nsColor: .windowBackgroundColor))
     }

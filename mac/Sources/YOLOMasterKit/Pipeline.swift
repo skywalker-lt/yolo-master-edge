@@ -208,7 +208,15 @@ public final class FrameGrabber {
 }
 
 // ---- two-phase folder flow: infer-all-once (cache candidates) -> tune -> export ----
-public struct FolderItem: Sendable { public let url: URL; public let candidates: [Detection] }
+public struct FolderItem: Sendable {
+    public let url: URL
+    public let candidates: [Detection]
+    public let width: Int    // source pixel dims, captured at infer time (annotation export
+    public let height: Int   // normalizes coords without re-decoding 548 images)
+    public init(url: URL, candidates: [Detection], width: Int = 0, height: Int = 0) {
+        self.url = url; self.candidates = candidates; self.width = width; self.height = height
+    }
+}
 
 /// Aggregate inference timing over a set of forward passes.
 /// `meanMs`/`fps` are MODEL-ONLY (forward pass). `wallMeanMs`/`wallFps` are OVERALL
@@ -246,11 +254,13 @@ public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
         if let cg = loadCGImage(url) {
             if tiling.mode == .off {
                 if let raw = try? det.forward(cg) {
-                    out.append(FolderItem(url: url, candidates: det.candidates(raw, confFloor: confFloor)))
+                    out.append(FolderItem(url: url, candidates: det.candidates(raw, confFloor: confFloor),
+                                          width: cg.width, height: cg.height))
                     times.append(raw.inferMs)
                 }
             } else if let tiled = try? det.tiledCandidates(cg, config: tiling, confFloor: confFloor) {
-                out.append(FolderItem(url: url, candidates: tiled.candidates))
+                out.append(FolderItem(url: url, candidates: tiled.candidates,
+                                      width: cg.width, height: cg.height))
                 times.append(tiled.inferMs)
                 stats?.add(tiled)
             }
