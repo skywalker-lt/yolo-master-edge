@@ -50,18 +50,27 @@ struct ZoomContainer<Content: View>: View {
     var body: some View {
         GeometryReader { geo in
             let size = geo.size
-            content()
-                .frame(width: size.width, height: size.height)
-                .scaleEffect(zoom.scale)
-                .offset(zoom.offset)
-                .frame(width: size.width, height: size.height)
-                .contentShape(Rectangle())
-                .clipped()
-                .gesture(magnify(size), isEnabled: enabled)
-                .gesture(pan(size), isEnabled: enabled && zoom.isZoomed)
-                .onTapGesture(count: 2) {
-                    if enabled { withAnimation(.snappy(duration: 0.2)) { zoom.reset() } }
+            ZStack {
+                content()
+                    .frame(width: size.width, height: size.height)
+                    .scaleEffect(zoom.scale)
+                    .offset(zoom.offset)
+                    .frame(width: size.width, height: size.height)
+                    .clipped()
+                // Gestures live on a transparent layer ABOVE the content: the video stage hosts
+                // a raw NSView (AVPlayerLayer), and AppKit views swallow mouse events before
+                // SwiftUI ancestor gestures fire. Nothing interactive sits under this layer
+                // inside the container, so it can safely own click-drag/pinch/double-click.
+                if enabled {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(pan(size), isEnabled: zoom.isZoomed)   // click-and-drag to pan
+                        .gesture(magnify(size))
+                        .onTapGesture(count: 2) {
+                            withAnimation(.snappy(duration: 0.2)) { zoom.reset() }
+                        }
                 }
+            }
                 .overlay(alignment: .topTrailing) {
                     if zoom.isZoomed {
                         Text("\(Int((zoom.scale * 100).rounded()))% — double-click to reset")

@@ -378,9 +378,12 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     func exportAnnotations(format: AnnotationFormat, sampling: VideoSampling,
                            conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double) {
         if let input = videoInput, !videoCache.isEmpty {
+            // let the user place the export root (frames/ + labels/ land inside it)
+            guard let root = Self.chooseExportDir(
+                suggested: input.deletingPathExtension().lastPathComponent + "_annotations",
+                startingIn: input.deletingLastPathComponent(),
+                message: "Choose where to save the extracted frames and label files") else { return }
             busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting labels…"
-            let root = input.deletingLastPathComponent()
-                .appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_annotations")
             let frames = videoCache, nm = detNames, rw = videoRaws, det = videoDet, fps = videoFps
             let includePolys = det != nil   // video is never tiled; videoDet is non-nil only for seg
             Task { [weak self] in
@@ -408,8 +411,11 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                 }
             }
         } else if let input = folderInput, !folderCache.isEmpty {
+            guard let out = Self.chooseExportDir(
+                suggested: input.lastPathComponent + "_labels",
+                startingIn: input.deletingLastPathComponent(),
+                message: "Choose where to save the label files") else { return }
             busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting labels…"
-            let out = input.deletingLastPathComponent().appendingPathComponent(input.lastPathComponent + "_labels")
             let cache = folderCache, nm = detNames, det = detector
             let includePolys = det?.isSegment == true && (!resultsTiled || tiledMasksKept)
             queue.async { [weak self] in
@@ -472,6 +478,18 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                 }
             }
         }
+    }
+
+    /// Save-panel idiom for exporting a NEW directory: the user names/places the folder, the
+    /// export creates it. Returns nil on cancel. Must run on the main thread (runModal).
+    private static func chooseExportDir(suggested: String, startingIn: URL, message: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = suggested
+        panel.directoryURL = startingIn
+        panel.message = message
+        panel.prompt = "Export"
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     private func reuseDetector(model: URL, compute: ComputeMode, key k: String) throws -> Detector {
@@ -1070,10 +1088,14 @@ struct ContentView: View {
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
                     .disabled(sourceURL == nil || engine.busy || sourceError != nil)
                 HStack(spacing: 8) {
-                    secondaryButton("Save image", "square.and.arrow.down") { engine.save() }
-                        .disabled(!engine.hasResults || engine.busy)
-                    secondaryButton("Export all", "square.and.arrow.up") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma) }
-                        .disabled(!engine.hasResults || engine.busy)
+                    Menu {
+                        Button("This frame") { engine.save() }
+                        Button("All") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma) }
+                    } label: {
+                        Label("Export rendered images", systemImage: "photo.on.rectangle").frame(maxWidth: .infinity)
+                    }
+                    .menuStyle(.button).controlSize(.large).frame(maxWidth: .infinity)
+                    .disabled(!engine.hasResults || engine.busy)
                     if engine.outputURL != nil { revealButton }
                 }
                 exportLabelsMenu.disabled(!engine.hasResults || engine.busy)
@@ -1095,7 +1117,8 @@ struct ContentView: View {
     }
 
     /// Annotation export: one menu, three formats. Video exports honor the sampling picker in
-    /// the scrubber bar (frames + labels); image/folder ignore it.
+    /// the scrubber bar (frames + labels); image/folder ignore it. Styled as a full-width
+    /// bordered button (same width as the Live Camera / Run buttons).
     @ViewBuilder private var exportLabelsMenu: some View {
         Menu {
             ForEach(AnnotationFormat.allCases, id: \.self) { f in
@@ -1109,9 +1132,11 @@ struct ContentView: View {
                 Text("Sampling: \(sampling.label) — change in the scrubber bar")
             }
         } label: {
-            Label("Export labels…", systemImage: "doc.badge.arrow.up").frame(maxWidth: .infinity)
+            Label("Export labels", systemImage: "doc.badge.arrow.up").frame(maxWidth: .infinity)
         }
+        .menuStyle(.button)
         .controlSize(.large)
+        .frame(maxWidth: .infinity)
     }
 
     private func primaryButton(_ title: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
