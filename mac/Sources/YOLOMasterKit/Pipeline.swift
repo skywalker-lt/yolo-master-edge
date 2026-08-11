@@ -363,7 +363,7 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
         nextDecode = Task.detached { decodeOne() }            // decode n+1 while forwarding n
         if let raw = try? det.forward(cg) {
             times.append(raw.inferMs)
-            candTasks.append(Task.detached { (det.candidates(raw, confFloor: confFloor), seg ? raw : nil) })
+            candTasks.append(Task.detached { (det.candidates(raw, confFloor: confFloor), seg ? raw.maskOnly() : nil) })
         } else {
             candTasks.append(Task { ([], nil) })              // keeps frame/candidate alignment
         }

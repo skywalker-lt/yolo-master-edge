@@ -14,6 +14,7 @@ import UniformTypeIdentifiers
 import CoreGraphics
 import ImageIO
 import AVFoundation
+import os   // OSAllocatedUnfairLock: thread-safe bake-cancellation token
 @preconcurrency import YOLOMasterKit   // Detector/RawOutput aren't Sendable; we hop them to main safely
 
 let brandColor = Color.accentColor   // default system accent (blue)
@@ -135,6 +136,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         infer = nil; classCounts = []; tileStats = nil; resultsTiled = false; tiledMasksKept = false
         imageInput = nil
         baked = []; bakedKey = ""; bakeGen += 1; detsCacheKey = ""; detsCacheVal = []
+        bakeCancel?.withLock { $0 = true }; bakeCancel = nil; maskPending = nil
         status = "Ready — press Run."
     }
 
@@ -288,6 +290,14 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     func runVideo(model: URL, input: URL, compute: ComputeMode, conf: Double, iou: Double, style: BoxStyle, label: LabelMode, preprocess: Detector.PreprocessMode, overlay: SegOverlay,
                   nmsMode: NMSMode = .standard, sigma: Double = 0.1) {
         busy = true; exporting = false; hasResults = false; progress = 0; outputURL = nil; status = "Inferring video…"
+        // Release the PREVIOUS run's per-frame tensors before the new run allocates its own:
+        // re-inferring a seg video otherwise holds both generations at once (GBs) and pushes
+        // the machine into memory pressure that outlives the run.
+        videoCache = []; videoRaws = []; videoDet = nil; videoMaskImg = nil
+        baked = []; bakedKey = ""; bakeGen += 1
+        bakeCancel?.withLock { $0 = true }; bakeCancel = nil
+        detsCacheKey = ""; detsCacheVal = []
+        maskPending = nil
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -331,6 +341,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     private var baked: [[Detection]?] = []
     private var bakedKey = ""
     private var bakeGen = 0
+    private var bakeCancel: OSAllocatedUnfairLock<Bool>?   // current bake's cancellation token
     private var detsCacheKey = ""
     private var detsCacheVal: [Detection] = []
     fileprivate var videoRunGen = 0            // bumped when a new video cache is installed
@@ -356,11 +367,19 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         bakedKey = key
         bakeGen += 1
         let gen = bakeGen
+        // CANCEL the superseded bake. Without this, every settings change (each TICK of a
+        // slider drag!) spawned a full-video NMS pass that ran to completion — a few drags
+        // left dozens of concurrent passes pegging the CPU, the "gets laggier every re-run"
+        // syndrome. The token is an unfair-lock-guarded Bool: safe to read off-main.
+        bakeCancel?.withLock { $0 = true }
+        let token = OSAllocatedUnfairLock(initialState: false)
+        bakeCancel = token
         let cache = videoCache
         baked = Array(repeating: nil, count: cache.count)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var chunk: [(Int, [Detection])] = []
             for i in cache.indices {
+                if token.withLock({ $0 }) { return }   // superseded -> stop immediately
                 chunk.append((i, Detector.nms(cache[i], conf: Float(conf), iou: CGFloat(iou),
                                               mode: nmsMode, sigma: Float(sigma))))
                 if chunk.count == 32 || i == cache.count - 1 {

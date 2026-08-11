@@ -335,6 +335,16 @@ public final class Detector {
             self.y = y; self.proto = proto; self.scaleX = scaleX; self.scaleY = scaleY; self.padX = padX; self.padY = padY
             self.origW = origW; self.origH = origH; self.inferMs = inferMs
         }
+
+        /// A copy retaining ONLY what mask rendering needs (proto tensor + letterbox geometry),
+        /// dropping the detection tensor `y` — the larger half of a RawOutput. Per-frame video
+        /// caches keep these: ~halves seg-video memory. nil for non-seg outputs.
+        /// (maskImage/maskOverlay never touch `y`; a 1-element placeholder satisfies the field.)
+        public func maskOnly() -> RawOutput? {
+            guard let p = proto, let tiny = try? MLMultiArray(shape: [1], dataType: .float32) else { return nil }
+            return RawOutput(y: tiny, proto: p, scaleX: scaleX, scaleY: scaleY, padX: padX, padY: padY,
+                             origW: origW, origH: origH, inferMs: inferMs)
+        }
     }
 
     /// Core ML forward pass only (letterbox → predict). Cache the result and re-`decode`.
