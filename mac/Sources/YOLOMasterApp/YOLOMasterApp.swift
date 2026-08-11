@@ -122,22 +122,21 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     private var videoCache: [[Detection]] = []
     private var videoRaws: [Detector.RawOutput?] = []   // per-frame proto (seg only) for on-demand masks
     private var videoDet: Detector?                       // the seg detector, to compute mask overlays
-    @Published var videoMaskImg: CGImage?                 // mask overlay for the shown video frame
     @Published private(set) var videoFps: Double = 30
     @Published private(set) var videoURL: URL?
     @Published private(set) var videoSize: CGSize = .zero
     private var videoInput: URL?
     private let queue = DispatchQueue(label: "com.yolomaster.inference")
-    private let maskQueue = DispatchQueue(label: "com.yolomaster.videomask", qos: .userInitiated)
 
     func resetResults() {
         hasResults = false; folderCache = []; folderInput = nil; videoCache = []; videoInput = nil; videoURL = nil; videoSize = .zero; outputURL = nil
         resultImage = nil; detCount = 0; currentCG = nil; currentCands = []; currentRaw = nil
-        videoRaws = []; videoDet = nil; videoMaskImg = nil
+        videoRaws = []; videoDet = nil
         infer = nil; classCounts = []; tileStats = nil; resultsTiled = false; tiledMasksKept = false
         imageInput = nil
         baked = []; bakedKey = ""; bakeGen += 1; detsCacheKey = ""; detsCacheVal = []
-        bakeCancel?.withLock { $0 = true }; bakeCancel = nil; maskPending = nil
+        bakeCancel?.withLock { $0 = true }; bakeCancel = nil
+        stopVideoOverlayLoop(); videoOverlayImg = nil
         status = "Ready — press Run."
     }
 
@@ -294,11 +293,11 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         // Release the PREVIOUS run's per-frame tensors before the new run allocates its own:
         // re-inferring a seg video otherwise holds both generations at once (GBs) and pushes
         // the machine into memory pressure that outlives the run.
-        videoCache = []; videoRaws = []; videoDet = nil; videoMaskImg = nil
+        videoCache = []; videoRaws = []; videoDet = nil
         baked = []; bakedKey = ""; bakeGen += 1
         bakeCancel?.withLock { $0 = true }; bakeCancel = nil
         detsCacheKey = ""; detsCacheVal = []
-        maskPending = nil
+        stopVideoOverlayLoop(); videoOverlayImg = nil
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -316,13 +315,13 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                     self.videoRunGen += 1
                     self.videoCache = frames; self.videoRaws = raws; self.videoDet = det.isSegment ? det : nil
                     self.modelIsSegment = det.isSegment
-                    self.videoFps = fps; self.videoInput = input; self.videoURL = input; self.videoSize = size; self.videoMaskImg = nil
+                    self.videoFps = fps; self.videoInput = input; self.videoURL = input; self.videoSize = size
                     self.modelInfo = info; self.infer = summary; self.hasResults = !frames.isEmpty
                     self.busy = false; self.progress = nil
                     self.status = "Inferred \(frames.count) frames — play / scrub & tune, then Export"
-                    self.ensureBaked(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
                     self.setVideoFrameStats(time: 0, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
-                    self.updateVideoMask(time: 0, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
+                    self.requestOverlayFrame(time: 0, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma,
+                                             style: style, label: label, overlay: overlay)
                 }
             } catch { DispatchQueue.main.async { self.status = "Inference failed: \(error.localizedDescription)"; self.busy = false; self.progress = nil } }
         }
@@ -395,41 +394,88 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     }
     /// Compute the seg mask overlay for the frame at `time` (background) and publish it. No-op for
     /// detection models or masks-off. Recomputed as the shown frame / conf / iou / overlay change.
-    // Mask compositing runs on the engine queue and CANNOT keep 30 Hz — but a fixed-interval
-    // throttle showed masks up to 0.25 s stale, visibly trailing moving objects and flashing
-    // members the current boxes don't have. Latest-wins coalescing instead: at most one job in
-    // flight, the newest request replaces any queued one, so masks are exactly as fresh as the
-    // compute allows (~40-80 ms behind) with zero backlog. (main-thread state; called on main)
-    private var maskBusy = false
-    fileprivate var isPlayingHint = false   // set by the view before mask updates (LOD budget)
-    private var maskPending: (t: Double, conf: Double, iou: Double, ov: SegOverlay, m: NMSMode, sg: Double)?
-    func updateVideoMask(time: Double, conf: Double, iou: Double, overlay: SegOverlay, nmsMode: NMSMode = .standard, sigma: Double = 0.1) {
-        guard let det = videoDet, overlay != .boxes, !videoCache.isEmpty else {
-            if videoMaskImg != nil { videoMaskImg = nil }
-            return
+    // ---- self-paced video overlay compositor (the webcam model) ----
+    // The live camera is smooth because its overlay is SELF-PACED: a worker renders the latest
+    // state as fast as it can and the view blits the newest image while the preview runs free.
+    // Video playback now works identically: while playing, a worker loop chases the player
+    // clock, composing boxes + labels + masks for the frame under the playhead into ONE
+    // transparent full-res image (NMS + batched mask math + annotate, all off-main — legal
+    // because detection settings are frozen during playback), and the Canvas draws that single
+    // image. Paused / scrubbing composes one frame on demand at full detail.
+    @Published var videoOverlayImg: CGImage?
+    private let overlayQueue = DispatchQueue(label: "com.yolomaster.videooverlay", qos: .userInitiated)
+    private let overlayGen = OSAllocatedUnfairLock(initialState: 0)
+
+    func stopVideoOverlayLoop() { overlayGen.withLock { $0 += 1 } }
+
+    private struct OverlaySnapshot {
+        let cache: [[Detection]], raws: [Detector.RawOutput?], det: Detector?, names: [String]
+        let fps: Double, size: CGSize
+        let conf: Float, iou: CGFloat, nmsMode: NMSMode, sigma: Float
+        let style: BoxStyle, label: LabelMode, overlay: SegOverlay
+    }
+    private func overlaySnapshot(conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double,
+                                 style: BoxStyle, label: LabelMode, overlay: SegOverlay) -> OverlaySnapshot? {
+        guard !videoCache.isEmpty, videoSize.width > 0, videoSize.height > 0 else { return nil }
+        return OverlaySnapshot(cache: videoCache, raws: videoRaws, det: videoDet, names: detNames,
+                               fps: videoFps, size: videoSize,
+                               conf: Float(conf), iou: CGFloat(iou), nmsMode: nmsMode, sigma: Float(sigma),
+                               style: style, label: label, overlay: overlay)
+    }
+    private static func compose(_ s: OverlaySnapshot, idx: Int, maskCap: Int) -> CGImage? {
+        guard s.cache.indices.contains(idx) else { return nil }
+        let dets = Detector.nms(s.cache[idx], conf: s.conf, iou: s.iou, mode: s.nmsMode, sigma: s.sigma)
+        let w = Int(s.size.width), h = Int(s.size.height)
+        var base: CGImage? = nil
+        if let det = s.det, s.overlay != .boxes, s.raws.indices.contains(idx), let raw = s.raws[idx] {
+            let md = dets.count > maskCap ? Array(dets.prefix(maskCap)) : dets
+            base = det.maskOverlay(md, raw)
         }
-        let idx = videoFrameIndex(time)
-        guard videoRaws.indices.contains(idx), let raw = videoRaws[idx] else { return }
-        if maskBusy { maskPending = (time, conf, iou, overlay, nmsMode, sigma); return }
-        maskBusy = true
-        let cands = videoCache[idx]
-        // Mask math is batched through Accelerate (one SGEMM for all detections), so the
-        // playback budget is generous — it bounds the per-mask CG composite cost, not the
-        // matmul. Paused shows every mask. Dedicated queue so a long composite never stalls
-        // pause-time tuning renders on the engine queue.
-        let maskBudget = isPlayingHint ? 250 : Int.max
-        maskQueue.async { [weak self] in
-            var dets = Detector.nms(cands, conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma))
-            if dets.count > maskBudget { dets = Array(dets.prefix(maskBudget)) }
-            let img = det.maskOverlay(dets, raw)
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.videoMaskImg = img
-                self.maskBusy = false
-                if let p = self.maskPending {
-                    self.maskPending = nil
-                    self.updateVideoMask(time: p.t, conf: p.conf, iou: p.iou, overlay: p.ov, nmsMode: p.m, sigma: p.sg)
+        if base == nil {   // transparent canvas when no masks (det model / boxes-only / no proto)
+            guard let c = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                    space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            base = c.makeImage()
+        }
+        guard let b = base else { return nil }
+        let drawBoxes = !((s.det?.isSegment ?? false) && s.overlay == .masks)
+        if !drawBoxes && s.label == .off { return b }
+        return annotate(b, dets, names: s.names, style: s.style, label: s.label, masks: [], drawBoxes: drawBoxes) ?? b
+    }
+    /// PLAYING: chase the player clock, latest-frame-wins, as fast as compose allows.
+    func startVideoOverlayLoop(player: AVPlayer, conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double,
+                               style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
+        guard let snap = overlaySnapshot(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma,
+                                         style: style, label: label, overlay: overlay) else { return }
+        let gen: Int = overlayGen.withLock { $0 += 1; return $0 }
+        overlayQueue.async { [weak self] in
+            var lastIdx = -1
+            while true {
+                guard let strong = self, strong.overlayGen.withLock({ $0 }) == gen else { return }
+                let t = player.currentTime().seconds
+                let idx = min(max(0, Int(((t.isFinite ? t : 0) * snap.fps).rounded())), snap.cache.count - 1)
+                if idx == lastIdx { usleep(4000); continue }   // frame unchanged -> tiny nap
+                lastIdx = idx
+                let img = InferenceEngine.compose(snap, idx: idx, maskCap: 250)
+                DispatchQueue.main.async {
+                    guard let s2 = self, s2.overlayGen.withLock({ $0 }) == gen else { return }
+                    s2.videoOverlayImg = img
                 }
+            }
+        }
+    }
+    /// PAUSED / scrub / tuning: compose the shown frame once, full detail (no mask cap).
+    func requestOverlayFrame(time: Double, conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double,
+                             style: BoxStyle, label: LabelMode, overlay: SegOverlay) {
+        guard let snap = overlaySnapshot(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma,
+                                         style: style, label: label, overlay: overlay) else { return }
+        let gen: Int = overlayGen.withLock { $0 }
+        let idx = min(max(0, Int((max(0, time) * snap.fps).rounded())), snap.cache.count - 1)
+        overlayQueue.async { [weak self] in
+            let img = InferenceEngine.compose(snap, idx: idx, maskCap: Int.max)
+            DispatchQueue.main.async {
+                guard let self, self.overlayGen.withLock({ $0 }) == gen else { return }
+                self.videoOverlayImg = img
             }
         }
     }
@@ -701,9 +747,9 @@ final class PlayerController: ObservableObject {
         player.replaceCurrentItem(with: AVPlayerItem(url: url))
         currentTime = 0; displayTime = 0; isPlaying = false
         if timeObs == nil {
-            // 10 Hz: feeds the scrubber + stats/mask triggers only. The box overlay reads the
-            // player clock directly per vsync (TimelineView in VideoStage) and does NOT depend
-            // on this cadence; 30 Hz published here just tripled the SwiftUI diffing load.
+            // 10 Hz: feeds the scrubber + stats/paused-compose triggers only. The playback
+            // overlay is composed by the self-paced worker reading the player clock directly
+            // and does not depend on this cadence.
             timeObs = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 10), queue: .main) { [weak self] t in
                 guard let self else { return }
                 let s = t.seconds.isFinite ? t.seconds : 0
@@ -755,63 +801,18 @@ struct VideoStage: View {
     var body: some View {
         ZStack {
             PlayerView(player: pc.player)
-            // TimelineView: the canvas redraws on the video cadence during playback, reading the
-            // player clock DIRECTLY — no @Published round-trip. CRITICAL: the timeline context
-            // MUST be read (`tick`) — with `{ _ in ... }` SwiftUI sees no dependency on the
-            // schedule and never re-evaluates, which silently disabled the whole mechanism.
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !pc.isPlaying)) { timeline in
-            let tick = timeline.date
+            // The webcam model: the compositor publishes ONE transparent full-res overlay image
+            // (boxes + labels + masks, rendered off-main); this canvas just blits the newest
+            // one into the video's fitted rect. Redraw cost is a single image draw.
             Canvas { ctx, size in
-                _ = tick   // dependency: each scheduled tick changes the captured value -> redraw
                 let vid = engine.videoSize
                 guard vid.width > 0, vid.height > 0 else { return }
-                let now = pc.isPlaying ? pc.player.currentTime().seconds : pc.displayTime
-                let t = now.isFinite ? now : 0
                 let scale = Swift.min(size.width / vid.width, size.height / vid.height)
                 let dw = vid.width * scale, dh = vid.height * scale
                 let ox = (size.width - dw) / 2, oy = (size.height - dh) / 2
-                let lw = Swift.max(1.5, dw / 640 * 1.5)
-                if let mask = engine.videoMaskImg {   // segmentation overlay, scaled to the video rect
-                    ctx.draw(Image(decorative: mask, scale: 1), in: CGRect(x: ox, y: oy, width: dw, height: dh))
+                if let ov = engine.videoOverlayImg {
+                    ctx.draw(Image(decorative: ov, scale: 1), in: CGRect(x: ox, y: oy, width: dw, height: dh))
                 }
-                let masksOnly = engine.videoIsSegment && overlay == .masks   // hide boxes, keep labels/masks
-                if masksOnly && label == .off { return }
-                let labelBudget = pc.isPlaying ? 60 : Int.max   // Text resolution is the redraw cost
-                for (di, d) in engine.detsAt(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma).enumerated() {   // player clock (playing) / displayTime (paused)
-                    let color = overlayPalette[d.cls % overlayPalette.count]
-                    let r = CGRect(x: ox + d.rect.minX * scale, y: oy + d.rect.minY * scale, width: d.rect.width * scale, height: d.rect.height * scale)
-                    let rp = Path(roundedRect: r, cornerRadius: 3)
-                    if !masksOnly {
-                    switch style {
-                    case .solid:
-                        ctx.stroke(rp, with: .color(color), lineWidth: lw * 1.2)
-                    case .neon:
-                        var g = ctx
-                        g.addFilter(.shadow(color: color, radius: lw * 4))
-                        g.stroke(rp, with: .color(color), lineWidth: lw * 1.3)
-                    case .hud:
-                        ctx.fill(Path(r), with: .color(color.opacity(0.08)))
-                        ctx.stroke(Path(r), with: .color(color.opacity(0.35)), lineWidth: lw * 0.6)
-                        let arm = Swift.min(Swift.min(r.width, r.height) * 0.28, lw * 22)
-                        var br = Path()
-                        br.move(to: CGPoint(x: r.minX + arm, y: r.minY)); br.addLine(to: CGPoint(x: r.minX, y: r.minY)); br.addLine(to: CGPoint(x: r.minX, y: r.minY + arm))
-                        br.move(to: CGPoint(x: r.maxX - arm, y: r.minY)); br.addLine(to: CGPoint(x: r.maxX, y: r.minY)); br.addLine(to: CGPoint(x: r.maxX, y: r.minY + arm))
-                        br.move(to: CGPoint(x: r.minX, y: r.maxY - arm)); br.addLine(to: CGPoint(x: r.minX, y: r.maxY)); br.addLine(to: CGPoint(x: r.minX + arm, y: r.maxY))
-                        br.move(to: CGPoint(x: r.maxX, y: r.maxY - arm)); br.addLine(to: CGPoint(x: r.maxX, y: r.maxY)); br.addLine(to: CGPoint(x: r.maxX - arm, y: r.maxY))
-                        ctx.stroke(br, with: .color(color), lineWidth: lw * 1.4)
-                    }
-                    }   // if !masksOnly
-                    if label != .off && di < labelBudget {
-                        let name = d.cls < engine.names.count ? engine.names[d.cls] : "class\(d.cls)"
-                        let txt = label == .min ? name : "\(name) \(String(format: "%.2f", d.score))"
-                        let resolved = ctx.resolve(Text(txt).font(.system(size: Swift.max(9, dw / 95))).bold().foregroundColor(.white))
-                        let ts = resolved.measure(in: size)
-                        let chip = CGRect(x: r.minX, y: Swift.max(oy, r.minY - ts.height - 4), width: ts.width + 6, height: ts.height + 4)
-                        ctx.fill(Path(roundedRect: chip, cornerRadius: 3), with: .color(color.opacity(0.85)))
-                        ctx.draw(resolved, at: CGPoint(x: chip.minX + 3, y: chip.minY + 2), anchor: .topLeading)
-                    }
-                }
-            }
             }
             .allowsHitTesting(false)
         }
@@ -938,7 +939,17 @@ struct ContentView: View {
             .onChange(of: scrubTime) { if scrubbing { pc.seek(scrubTime) } }   // seek while dragging
             .onChange(of: pc.currentTime) { if pc.isPlaying && !scrubbing { scrubTime = pc.currentTime } }   // slider follows playback
             .onChange(of: pc.displayTime) { refreshVideoOverlays() }
-            .onChange(of: pc.isPlaying) { if pc.isPlaying { zoom.reset() } }   // zoom is a paused-video feature
+            .onChange(of: pc.isPlaying) {
+                if pc.isPlaying {
+                    zoom.reset()   // zoom is a paused-video feature
+                    engine.startVideoOverlayLoop(player: pc.player, conf: conf, iou: iou, nmsMode: nmsMode,
+                                                 sigma: sigma, style: style, label: label, overlay: overlay)
+                } else {
+                    engine.stopVideoOverlayLoop()
+                    engine.requestOverlayFrame(time: pc.displayTime, conf: conf, iou: iou, nmsMode: nmsMode,
+                                               sigma: sigma, style: style, label: label, overlay: overlay)
+                }
+            }
     }
 
     /// Stage 4: keyboard focus + shortcuts + tint.
@@ -1025,10 +1036,11 @@ struct ContentView: View {
         let t: Double = pc.displayTime
         // Baked-playback contract: keep the whole-video post-NMS bake current for the settings
         // (cheap key compare when nothing changed; settings are locked during playback anyway).
-        engine.isPlayingHint = pc.isPlaying
-        engine.ensureBaked(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
         engine.setVideoFrameStats(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, throttled: pc.isPlaying)
-        engine.updateVideoMask(time: t, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
+        if !pc.isPlaying {   // paused/scrub: one full-detail compose; the loop owns playback
+            engine.requestOverlayFrame(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma,
+                                       style: style, label: label, overlay: overlay)
+        }
     }
     private func rerender() {
         if cameraOn { return }   // camera overlay reads conf/iou/style/label live — no engine re-render
