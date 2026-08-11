@@ -18,10 +18,19 @@ Applies to **images and folder batches**; video and webcam stay single-pass.
 - Tile counts (run / grid, fallback, cap) appear in the Inference stats card.
   A 256-tile-per-image safety cap keeps gigapixel inputs from hanging; hitting it is
   reported as "(capped)".
-- Changing the tiling mode re-runs inference (like the Preprocess control); conf / IoU /
-  NMS-mode / sigma tuning stays instant on the cached candidate pool.
-- Segmentation masks are disabled in tiled modes (boxes only): tile mask coefficients are
-  meaningless against a full-image prototype tensor. The Overlay picker hides accordingly.
+- **Tile size is adjustable**: from the model input size (native scale, the default) up to
+  1/4 of the source's short side. Larger tiles are letterboxed down to the model input
+  (fewer forwards, coarser detail — upstream `slice_size` semantics). The bound is enforced
+  per image, so a mixed-size folder clamps each image to its own limit; the stats card shows
+  the tile size actually used (a range when it varies).
+- Changing the tiling mode, tile size, or the masks toggle re-runs inference (like the
+  Preprocess control); conf / IoU / NMS-mode / sigma tuning stays instant on the cached
+  candidate pool. The tile-size slider commits on release, not per drag tick.
+- **Segmentation masks in tiled modes are opt-in via "Masks (global pass)"**: when enabled,
+  detections from the full-image pass render masks as in 1.0.0, while tile detections stay
+  boxes-only — tile mask coefficients are meaningless against a full-image prototype tensor,
+  and caching a prototype tensor per tile would be prohibitive in folder mode. With the
+  toggle off, tiled modes are boxes-only and the Overlay picker hides.
 
 ## New: NMS mode (Detection section)
 
@@ -36,7 +45,7 @@ Applies to **images and folder batches**; video and webcam stay single-pass.
 ## CLI
 
 ```
-yolomaster-coreml ... [--tiling off|dense|sparse] [--cw-nms [--sigma 0.1]]
+yolomaster-coreml ... [--tiling off|dense|sparse [--tile-size N] [--tiling-masks]] [--cw-nms [--sigma 0.1]]
 ```
 
 `--tiling` on a video source warns and runs single-pass.

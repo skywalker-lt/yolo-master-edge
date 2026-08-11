@@ -358,23 +358,27 @@ public final class Detector {
         return try forward(cg)
     }
 
-    /// Forward a tile crop at NATIVE scale, padded bottom-right with gray 114 to imgsz×imgsz —
-    /// the upstream `_pad_slice` (predictor.py:523-530). No resize: the returned geometry is
-    /// scale=1 / pads=0, and origW/H are the CROP dims so `candidates()`'s existing clamp trims
-    /// detections to real crop content (deliberate deviation from upstream, which lets boxes
-    /// live on the gray padding). Interior tiles are exactly imgsz×imgsz and pad nothing.
-    /// Precondition: crop ≤ imgsz in both axes (guaranteed by `tileGrid`).
-    internal func forwardPadded(_ crop: CGImage) throws -> RawOutput {
+    /// Forward a tile crop, padded bottom-right with gray 114 to tileSize×tileSize and (when
+    /// tileSize > imgsz) letterboxed down to the model input — upstream `_pad_slice`
+    /// (predictor.py:523-530) followed by its standard preprocess. tileSize == imgsz is the
+    /// native-scale fast path (scale 1). Returned geometry: scale = imgsz/tileSize, pads = 0,
+    /// origW/H = CROP dims so `candidates()`'s existing clamp trims detections to real crop
+    /// content (deliberate deviation from upstream, which lets boxes live on the padding).
+    /// Precondition: crop ≤ tileSize in both axes (guaranteed by `tileGrid`).
+    internal func forwardPadded(_ crop: CGImage, tileSize: Int? = nil) throws -> RawOutput {
+        let tile = tileSize ?? imgsz
         let cw = crop.width, ch = crop.height
-        precondition(cw <= imgsz && ch <= imgsz, "tile crop exceeds model imgsz")
+        precondition(cw <= tile && ch <= tile, "tile crop exceeds tile size")
+        let s = CGFloat(imgsz) / CGFloat(tile)   // 1 when tile == imgsz; <1 shrinks bigger tiles
         var px = [UInt8](repeating: 114, count: imgsz * imgsz * 4)
         px.withUnsafeMutableBytes { raw in
             guard let ctx = CGContext(data: raw.baseAddress, width: imgsz, height: imgsz, bitsPerComponent: 8,
                                       bytesPerRow: imgsz * 4, space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
             ctx.interpolationQuality = .high
-            // Same no-flip convention as letterbox(): raster top-left = CG-space y (imgsz - ch).
-            ctx.draw(crop, in: CGRect(x: 0, y: CGFloat(imgsz - ch), width: CGFloat(cw), height: CGFloat(ch)))
+            // Same no-flip convention as letterbox(): raster top-left = CG-space y (imgsz - ch*s).
+            ctx.draw(crop, in: CGRect(x: 0, y: CGFloat(imgsz) - CGFloat(ch) * s,
+                                      width: CGFloat(cw) * s, height: CGFloat(ch) * s))
         }
         guard let input = fillInput(px) else { throw DetectorError.inputBuildFailed }
         let t0 = Date()
@@ -384,7 +388,7 @@ public final class Detector {
             throw DetectorError.badOutput
         }
         // proto deliberately nil: tile coeffs are meaningless against a full-image proto tensor.
-        return RawOutput(y: y, proto: nil, scaleX: 1, scaleY: 1, padX: 0, padY: 0,
+        return RawOutput(y: y, proto: nil, scaleX: s, scaleY: s, padX: 0, padY: 0,
                          origW: cw, origH: ch, inferMs: infMs)
     }
 
