@@ -128,6 +128,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     @Published private(set) var videoSize: CGSize = .zero
     private var videoInput: URL?
     private let queue = DispatchQueue(label: "com.yolomaster.inference")
+    private let maskQueue = DispatchQueue(label: "com.yolomaster.videomask", qos: .userInitiated)
 
     func resetResults() {
         hasResults = false; folderCache = []; folderInput = nil; videoCache = []; videoInput = nil; videoURL = nil; videoSize = .zero; outputURL = nil
@@ -400,6 +401,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     // flight, the newest request replaces any queued one, so masks are exactly as fresh as the
     // compute allows (~40-80 ms behind) with zero backlog. (main-thread state; called on main)
     private var maskBusy = false
+    fileprivate var isPlayingHint = false   // set by the view before mask updates (LOD budget)
     private var maskPending: (t: Double, conf: Double, iou: Double, ov: SegOverlay, m: NMSMode, sg: Double)?
     func updateVideoMask(time: Double, conf: Double, iou: Double, overlay: SegOverlay, nmsMode: NMSMode = .standard, sigma: Double = 0.1) {
         guard let det = videoDet, overlay != .boxes, !videoCache.isEmpty else {
@@ -411,8 +413,14 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         if maskBusy { maskPending = (time, conf, iou, overlay, nmsMode, sigma); return }
         maskBusy = true
         let cands = videoCache[idx]
-        queue.async { [weak self] in
-            let dets = Detector.nms(cands, conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma))
+        // Mask compositing is ~0.8M multiply-adds PER DETECTION: at low conf (hundreds of
+        // dets) a full composite takes seconds. During playback, composite only the top 60
+        // by score (matches the label budget); paused shows every mask. Dedicated queue so a
+        // long composite never stalls pause-time tuning renders on the engine queue.
+        let maskBudget = isPlayingHint ? 60 : Int.max
+        maskQueue.async { [weak self] in
+            var dets = Detector.nms(cands, conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma))
+            if dets.count > maskBudget { dets = Array(dets.prefix(maskBudget)) }
             let img = det.maskOverlay(dets, raw)
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -1017,6 +1025,7 @@ struct ContentView: View {
         let t: Double = pc.displayTime
         // Baked-playback contract: keep the whole-video post-NMS bake current for the settings
         // (cheap key compare when nothing changed; settings are locked during playback anyway).
+        engine.isPlayingHint = pc.isPlaying
         engine.ensureBaked(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
         engine.setVideoFrameStats(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, throttled: pc.isPlaying)
         engine.updateVideoMask(time: t, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
