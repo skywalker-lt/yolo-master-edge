@@ -274,7 +274,8 @@ public final class Detector {
     public static func nms(_ dets: [Detection], conf: Float, iou iouT: CGFloat, maxDet: Int = 300,
                            mode: NMSMode = .standard, sigma: Float = 0.1) -> [Detection] {
         var keep: [Detection] = []
-        for d in dets where d.score > conf {
+        for d in dets {
+            if d.score <= conf { break }   // input is score-sorted (see candidates()) -> nothing further passes
             if keep.count >= maxDet { break }
             if !keep.contains(where: { $0.cls == d.cls && rectIoU($0.rect, d.rect) > iouT }) { keep.append(d) }
         }
