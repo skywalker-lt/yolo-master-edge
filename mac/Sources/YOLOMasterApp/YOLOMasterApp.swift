@@ -413,11 +413,11 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         if maskBusy { maskPending = (time, conf, iou, overlay, nmsMode, sigma); return }
         maskBusy = true
         let cands = videoCache[idx]
-        // Mask compositing is ~0.8M multiply-adds PER DETECTION: at low conf (hundreds of
-        // dets) a full composite takes seconds. During playback, composite only the top 60
-        // by score (matches the label budget); paused shows every mask. Dedicated queue so a
-        // long composite never stalls pause-time tuning renders on the engine queue.
-        let maskBudget = isPlayingHint ? 60 : Int.max
+        // Mask math is batched through Accelerate (one SGEMM for all detections), so the
+        // playback budget is generous — it bounds the per-mask CG composite cost, not the
+        // matmul. Paused shows every mask. Dedicated queue so a long composite never stalls
+        // pause-time tuning renders on the engine queue.
+        let maskBudget = isPlayingHint ? 250 : Int.max
         maskQueue.async { [weak self] in
             var dets = Detector.nms(cands, conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma))
             if dets.count > maskBudget { dets = Array(dets.prefix(maskBudget)) }
