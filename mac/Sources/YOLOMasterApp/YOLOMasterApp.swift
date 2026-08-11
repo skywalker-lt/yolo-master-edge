@@ -748,6 +748,8 @@ struct ContentView: View {
     @State private var nmsMode: NMSMode = .standard    // global NMS variant (also the tiled merge)
     @State private var sigma = 0.1                     // CW-NMS gaussian width
     @State private var sampling: VideoSampling = .onePerSecond   // annotation-export frame sampling
+    @State private var showLabelExport = false    // "Export labels" popover
+    @State private var showRenderExport = false   // "Export rendered images" popover
     @State private var compute: ComputeMode = .cpuAndGPU
     @State private var showPicker = false
     @State private var pickTarget: PickTarget = .model
@@ -1114,14 +1116,18 @@ struct ContentView: View {
                 primaryButton(engine.hasResults ? "Re-run inference" : "Run inference", "play.fill") { runInfer() }
                     .disabled(sourceURL == nil || engine.busy || sourceError != nil)
                 HStack(spacing: 8) {
-                    Menu {
-                        Button("This frame") { engine.save() }
-                        Button("All") { engine.exportFolder(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma) }
-                    } label: {
-                        Label("Export rendered images", systemImage: "photo.on.rectangle").frame(maxWidth: .infinity)
-                    }
-                    .menuStyle(.button).controlSize(.large).frame(maxWidth: .infinity)
-                    .disabled(!engine.hasResults || engine.busy)
+                    secondaryButton("Export rendered images", "photo.on.rectangle") { showRenderExport = true }
+                        .popover(isPresented: $showRenderExport, arrowEdge: .trailing) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                popoverRow("This frame") { showRenderExport = false; engine.save() }
+                                popoverRow("All") {
+                                    showRenderExport = false
+                                    engine.exportFolder(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
+                                }
+                            }
+                            .padding(8).frame(minWidth: 150)
+                        }
+                        .disabled(!engine.hasResults || engine.busy)
                     if engine.outputURL != nil { revealButton }
                 }
                 exportLabelsMenu.disabled(!engine.hasResults || engine.busy)
@@ -1142,27 +1148,38 @@ struct ContentView: View {
         }
     }
 
-    /// Annotation export: one menu, three formats. Video exports honor the sampling picker in
-    /// the scrubber bar (frames + labels); image/folder ignore it. Styled as a full-width
-    /// bordered button (same width as the Live Camera / Run buttons).
+    /// Annotation export: a real full-width button (identical chrome/width to every other action
+    /// button — macOS `Menu` hugs its content and never honors a full-width label) opening a
+    /// popover with the three formats. Video exports honor the scrubber-bar sampling picker.
     @ViewBuilder private var exportLabelsMenu: some View {
-        Menu {
-            ForEach(AnnotationFormat.allCases, id: \.self) { f in
-                Button(f.label) {
-                    engine.exportAnnotations(format: f, sampling: sampling,
-                                             conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
+        secondaryButton("Export labels", "doc.badge.arrow.up") { showLabelExport = true }
+            .popover(isPresented: $showLabelExport, arrowEdge: .trailing) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(AnnotationFormat.allCases, id: \.self) { f in
+                        popoverRow(f.label) {
+                            showLabelExport = false
+                            engine.exportAnnotations(format: f, sampling: sampling,
+                                                     conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
+                        }
+                    }
+                    if sourceKind == .video {
+                        Divider().padding(.vertical, 2)
+                        Text("Sampling: \(sampling.label) — change in the scrubber bar")
+                            .font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 8)
+                    }
                 }
+                .padding(8).frame(minWidth: 190)
             }
-            if sourceKind == .video {
-                Divider()
-                Text("Sampling: \(sampling.label) — change in the scrubber bar")
-            }
-        } label: {
-            Label("Export labels", systemImage: "doc.badge.arrow.up").frame(maxWidth: .infinity)
+    }
+
+    /// A menu-item-like row for action popovers.
+    private func popoverRow(_ title: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .contentShape(Rectangle())
         }
-        .menuStyle(.button)
-        .controlSize(.large)
-        .frame(maxWidth: .infinity)
+        .buttonStyle(.borderless)
     }
 
     private func primaryButton(_ title: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
