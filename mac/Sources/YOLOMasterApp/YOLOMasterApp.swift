@@ -134,6 +134,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         videoRaws = []; videoDet = nil; videoMaskImg = nil
         infer = nil; classCounts = []; tileStats = nil; resultsTiled = false; tiledMasksKept = false
         imageInput = nil
+        baked = []; bakedKey = ""; bakeGen += 1; detsCacheKey = ""; detsCacheVal = []
         status = "Ready — press Run."
     }
 
@@ -308,6 +309,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                     self.modelInfo = info; self.infer = summary; self.hasResults = !frames.isEmpty
                     self.busy = false; self.progress = nil
                     self.status = "Inferred \(frames.count) frames — play / scrub & tune, then Export"
+                    self.ensureBaked(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
                     self.setVideoFrameStats(time: 0, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
                     self.updateVideoMask(time: 0, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
                 }
@@ -321,21 +323,55 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     private func videoFrameIndex(_ time: Double) -> Int {
         min(max(0, Int((time * videoFps).rounded())), max(0, videoCache.count - 1))
     }
-    // Single-entry NMS cache: during playback the Canvas, the stats card and the mask path all
-    // ask for the same frame's detections several times per tick; sequential frames make a
-    // one-slot cache ~a 3x main-thread saving. Invalidated on new runs (cache key includes the
-    // run generation) and automatically by any param change (key includes them all).
+    // Playback detections come from a BAKED per-frame post-NMS array: detection settings are
+    // frozen while the video plays (the sidebar disables them), so the whole video's NMS is
+    // computed ONCE in the background at the current settings and playback is a pure array
+    // index + draw. The baker outruns the playhead within a fraction of a second; frames it
+    // hasn't reached yet fall back to the single-slot on-demand cache below.
+    private var baked: [[Detection]?] = []
+    private var bakedKey = ""
+    private var bakeGen = 0
     private var detsCacheKey = ""
     private var detsCacheVal: [Detection] = []
     fileprivate var videoRunGen = 0            // bumped when a new video cache is installed
     func detsAt(time: Double, conf: Double, iou: Double, nmsMode: NMSMode = .standard, sigma: Double = 0.1) -> [Detection] {
         guard !videoCache.isEmpty else { return [] }
         let idx = videoFrameIndex(time)
+        if idx < baked.count, bakedKey == bakeKey(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma),
+           let b = baked[idx] { return b }
         let key = "\(videoRunGen)|\(idx)|\(conf)|\(iou)|\(nmsMode.rawValue)|\(sigma)"
         if key == detsCacheKey { return detsCacheVal }
         let dets = Detector.nms(videoCache[idx], conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma))
         detsCacheKey = key; detsCacheVal = dets
         return dets
+    }
+    private func bakeKey(conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double) -> String {
+        "\(videoRunGen)|\(conf)|\(iou)|\(nmsMode.rawValue)|\(sigma)"
+    }
+    /// Re-bake the whole video's post-NMS detections at the given settings (no-op if already
+    /// baked for them). Runs on a global queue in 32-frame chunks; a newer bake supersedes.
+    func ensureBaked(conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double) {
+        let key = bakeKey(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
+        guard key != bakedKey, !videoCache.isEmpty else { return }
+        bakedKey = key
+        bakeGen += 1
+        let gen = bakeGen
+        let cache = videoCache
+        baked = Array(repeating: nil, count: cache.count)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var chunk: [(Int, [Detection])] = []
+            for i in cache.indices {
+                chunk.append((i, Detector.nms(cache[i], conf: Float(conf), iou: CGFloat(iou),
+                                              mode: nmsMode, sigma: Float(sigma))))
+                if chunk.count == 32 || i == cache.count - 1 {
+                    let batch = chunk; chunk = []
+                    DispatchQueue.main.async {
+                        guard let self, self.bakeGen == gen else { return }
+                        for (j, d) in batch { self.baked[j] = d }
+                    }
+                }
+            }
+        }
     }
     /// Compute the seg mask overlay for the frame at `time` (background) and publish it. No-op for
     /// detection models or masks-off. Recomputed as the shown frame / conf / iou / overlay change.
@@ -960,9 +996,9 @@ struct ContentView: View {
     private func refreshVideoOverlays() {
         guard sourceKind == .video, engine.hasResults else { return }
         let t: Double = pc.displayTime
-        // The box Canvas redraws every displayTime tick (cheap: detsAt is cached per frame).
-        // The stats card and the seg-mask composite are throttled to ~4 Hz DURING PLAYBACK —
-        // they were the main-thread load that dropped the label overlay to ~5 fps.
+        // Baked-playback contract: keep the whole-video post-NMS bake current for the settings
+        // (cheap key compare when nothing changed; settings are locked during playback anyway).
+        engine.ensureBaked(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
         engine.setVideoFrameStats(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, throttled: pc.isPlaying)
         engine.updateVideoMask(time: t, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
     }
@@ -1055,15 +1091,19 @@ struct ContentView: View {
                         }
                     }
                     sectionBox("Detection", "slider.horizontal.3") {
-                        sliderRow("Confidence", $conf, 0.05...0.95)
-                        sliderRow("IoU (NMS)", $iou, 0.10...0.90)
+                        if videoTuningLocked {
+                            Text("Pause the video to tune detection settings.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        sliderRow("Confidence", $conf, 0.05...0.95).disabled(videoTuningLocked)
+                        sliderRow("IoU (NMS)", $iou, 0.10...0.90).disabled(videoTuningLocked)
                         segRow("NMS") {
                             Picker("", selection: $nmsMode) {
                                 ForEach(NMSMode.allCases, id: \.self) { Text($0.label).tag($0) }
-                            }.pickerStyle(.segmented).labelsHidden()
+                            }.pickerStyle(.segmented).labelsHidden().disabled(videoTuningLocked)
                         }
                         if nmsMode == .clusterWeighted {
-                            sliderRow("Sigma", $sigma, 0.01...0.5)
+                            sliderRow("Sigma", $sigma, 0.01...0.5).disabled(videoTuningLocked)
                             Text("Survivor boxes are refined by score-weighted averaging over overlapping candidates.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
@@ -1447,6 +1487,9 @@ struct ContentView: View {
     }
     /// Tiled modes affect only image/folder sources; video/camera keep single-pass masks.
     private var tiledActive: Bool { tiling != .off && !cameraOn && (sourceKind == .image || sourceKind == .folder) }
+    /// Detection tuning is FROZEN while an inferred video plays: playback reads a pre-baked
+    /// whole-video post-NMS array (pure index + draw); pause to tune, the bake refreshes then.
+    private var videoTuningLocked: Bool { !cameraOn && sourceKind == .video && engine.hasResults && pc.isPlaying }
     private func speedText(_ ms: Double, _ fps: Double) -> String {
         String(format: "%.1f", ms) + (isVideoSource ? " ms/frame · " : " ms/img · ")
             + String(format: "%.1f", fps) + (isVideoSource ? " fps" : " img/s")
