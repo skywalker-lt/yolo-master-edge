@@ -74,6 +74,16 @@ struct AsyncThumb: View {
     }
 }
 
+/// Image pixel dims from the header only (no decode) — cheap even across a large folder.
+/// File-scope (not actor-isolated) so background tasks can call it.
+func imagePixelSize(_ url: URL) -> (w: Int, h: Int)? {
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+          let w = props[kCGImagePropertyPixelWidth] as? Int,
+          let h = props[kCGImagePropertyPixelHeight] as? Int else { return nil }
+    return (w, h)
+}
+
 // ---------- stats models ----------
 struct StatModelInfo: Equatable { let name: String; let imgsz: Int; let nc: Int; let compute: String }
 struct ClassCount: Identifiable, Equatable { var id: String { name }; let name: String; let count: Int }
@@ -1306,14 +1316,6 @@ struct ContentView: View {
         let lo = Double(tileFloor)
         return lo...Swift.max(lo, Double(tileCeil))
     }
-    /// Image pixel dims from the header only (no decode) — cheap even across a large folder.
-    private static func pixelSize(_ url: URL) -> (w: Int, h: Int)? {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
-              let w = props[kCGImagePropertyPixelWidth] as? Int,
-              let h = props[kCGImagePropertyPixelHeight] as? Int else { return nil }
-        return (w, h)
-    }
     /// Recompute the tile-size ceiling for the current source: shortSide/4 for an image, the MAX
     /// of shortSide/4 across a folder (per-image clamping in Kit enforces each image's own bound).
     private func recomputeTileCeil() {
@@ -1321,13 +1323,17 @@ struct ContentView: View {
         guard let src = sourceURL else { return }
         let kind = sourceKind
         Task.detached(priority: .utility) {
-            var ceil = 0
-            if kind == .image, let d = Self.pixelSize(src) { ceil = Swift.min(d.w, d.h) / 4 }
-            else if kind == .folder {
-                for u in listImages(src) {
-                    if let d = Self.pixelSize(u) { ceil = Swift.max(ceil, Swift.min(d.w, d.h) / 4) }
+            // computed as a let so the MainActor hop captures an immutable value (Swift 6 ready)
+            let ceil: Int = {
+                if kind == .image, let d = imagePixelSize(src) { return Swift.min(d.w, d.h) / 4 }
+                if kind == .folder {
+                    return listImages(src).reduce(0) { acc, u in
+                        guard let d = imagePixelSize(u) else { return acc }
+                        return Swift.max(acc, Swift.min(d.w, d.h) / 4)
+                    }
                 }
-            }
+                return 0
+            }()
             await MainActor.run {
                 tileCeil = ceil
                 tileSize = Swift.min(Swift.max(tileSize, Double(tileFloor)), tileRange.upperBound)
