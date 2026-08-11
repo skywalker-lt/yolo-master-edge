@@ -31,7 +31,7 @@ guard let modelPath = argValue("--model"), let srcPath = argValue("--source") el
     die("usage: yolomaster-coreml --model M.mlpackage --source img|dir/|vid.mp4 [--out o] " +
         "[--conf 0.25] [--iou 0.5] [--compute cpuAndGPU|all|cpu] [--style hud|solid|neon] " +
         "[--label full|min|off] [--resize N] [--benchmark [--iters 200]] [--no-save] " +
-        "[--tiling off|dense|sparse] [--cw-nms [--sigma 0.1]]", 2)
+        "[--tiling off|dense|sparse [--tile-size N] [--tiling-masks]] [--cw-nms [--sigma 0.1]]", 2)
 }
 let conf = Float(argValue("--conf", "0.25")!) ?? 0.25
 let iouT = CGFloat(Float(argValue("--iou", "0.5")!) ?? 0.5)
@@ -44,7 +44,10 @@ let resize = Int(argValue("--resize", "0")!) ?? 0
 let boxStyle = BoxStyle(rawValue: (argValue("--style", "hud")!).lowercased()) ?? .hud
 let labelMode = LabelMode(rawValue: (argValue("--label", "full")!).lowercased()) ?? .full
 let tilingMode = TilingMode(rawValue: (argValue("--tiling", "off")!).lowercased()) ?? .off
-let tilingCfg = TilingConfig(mode: tilingMode)
+// --tile-size: clamped per image in Kit to [model imgsz, max(imgsz, shortSide/4)]
+let tileSizeArg = Int(argValue("--tile-size", "0")!) ?? 0
+let tilingCfg = TilingConfig(mode: tilingMode, tileSize: tileSizeArg > 0 ? tileSizeArg : nil,
+                             keepGlobalMasks: hasFlag("--tiling-masks"))
 let nmsMode: NMSMode = hasFlag("--cw-nms") ? .clusterWeighted : .standard
 let sigma = Float(argValue("--sigma", "0.1")!) ?? 0.1
 
@@ -66,7 +69,7 @@ func processImage(_ path: String, _ outPath: String) {
     } else {
         guard let (r, t) = try? detector.detectTiled(cg, conf: conf, iou: iouT, tiling: tilingCfg, nmsMode: nmsMode, sigma: sigma) else { logErr("predict failed: \(path)"); return }
         res = r
-        tileNote = "  tiles=\(t.tilesRun)/\(t.tilesTotal)" + (t.usedFallback ? " (fallback)" : "") + (t.capped ? " (capped)" : "")
+        tileNote = "  tiles=\(t.tilesRun)/\(t.tilesTotal) @\(t.tileSizeUsed)px" + (t.usedFallback ? " (fallback)" : "") + (t.capped ? " (capped)" : "")
     }
     print("[det] \((path as NSString).lastPathComponent)  dets=\(res.detections.count)  infer=\(f1(res.inferMs))ms" + tileNote)
     if !noSave, let a = annotate(cg, res.detections, names: detector.classNames, style: boxStyle, label: labelMode) {

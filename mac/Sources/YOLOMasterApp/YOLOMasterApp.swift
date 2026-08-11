@@ -96,7 +96,8 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     @Published var tileStats: TileStats?       // tiled modes: tiles run/total (+fallback/cap), nil when off
 
     private var detector: Detector?
-    private var resultsTiled = false           // current image/folder cache was built tiled (masks off)
+    private var resultsTiled = false           // current image/folder cache was built tiled
+    private var tiledMasksKept = false         // tiled cache retained global-pass masks (keepGlobalMasks)
     private var currentRaw: Detector.RawOutput?    // cached forward pass for the shown image (seg masks need protos)
     private var key = ""
     private var detNames: [String] = []
@@ -120,7 +121,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         hasResults = false; folderCache = []; folderInput = nil; videoCache = []; videoInput = nil; videoURL = nil; videoSize = .zero; outputURL = nil
         resultImage = nil; detCount = 0; currentCG = nil; currentCands = []; currentRaw = nil
         videoRaws = []; videoDet = nil; videoMaskImg = nil
-        infer = nil; classCounts = []; tileStats = nil; resultsTiled = false
+        infer = nil; classCounts = []; tileStats = nil; resultsTiled = false; tiledMasksKept = false
         status = "Ready — press Run."
     }
 
@@ -151,8 +152,9 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                     let t0 = Date()
                     let tiled = try det.tiledCandidates(cg, config: tiling)
                     self.currentCG = cg; self.currentCands = tiled.candidates; self.currentMs = tiled.inferMs
-                    self.currentRaw = nil                       // masks structurally off in tiled modes
+                    self.currentRaw = tiled.globalRaw           // non-nil only when keepGlobalMasks on a seg model
                     self.resultsTiled = true
+                    self.tiledMasksKept = tiled.globalRaw != nil
                     var st = TileStats(); st.add(tiled); stats = st
                     s = InferSummary([tiled.inferMs], wallMs: Date().timeIntervalSince(t0) * 1000)
                 }
@@ -184,10 +186,11 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                 }
                 self.folderCache = items; self.folderInput = input
                 self.resultsTiled = tiling.mode != .off
+                self.tiledMasksKept = tiling.mode != .off && tiling.keepGlobalMasks && det.isSegment
                 let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
                 if let first = items.first, let cg = loadCGImage(first.url) {
                     self.currentCG = cg; self.currentCands = first.candidates; self.currentMs = 0
-                    self.currentRaw = (det.isSegment && tiling.mode == .off) ? try? det.forward(cg) : nil
+                    self.currentRaw = (det.isSegment && (tiling.mode == .off || tiling.keepGlobalMasks)) ? try? det.forward(cg) : nil
                 }
                 DispatchQueue.main.async {
                     self.modelInfo = info; self.infer = summary; self.hasResults = !items.isEmpty
@@ -208,7 +211,8 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
             self.currentCG = cg
             self.currentCands = self.folderCache.indices.contains(i) ? self.folderCache[i].candidates : []
             self.currentMs = 0
-            self.currentRaw = (self.detector?.isSegment == true && !self.resultsTiled) ? try? self.detector?.forward(cg) : nil
+            let wantMasks = self.detector?.isSegment == true && (!self.resultsTiled || self.tiledMasksKept)
+            self.currentRaw = wantMasks ? try? self.detector?.forward(cg) : nil
             self.render(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
         }
     }
@@ -253,7 +257,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting folder…"
         let out = input.deletingLastPathComponent().appendingPathComponent(input.lastPathComponent + "_annotated")
         let cache = folderCache, names = detNames, det = detector
-        let ov: SegOverlay = resultsTiled ? .boxes : overlay   // tiled cache has no mask coeffs — boxes only
+        let ov: SegOverlay = (resultsTiled && !tiledMasksKept) ? .boxes : overlay   // tiled-without-masks cache has no coeffs
         queue.async { [weak self] in
             guard let self else { return }
             let n = exportFolderCached(cache, output: out, names: names, conf: Float(conf), iou: CGFloat(iou), style: style, label: label, detector: det, overlay: ov,
@@ -582,6 +586,9 @@ struct ContentView: View {
     @State private var overlay: SegOverlay = .both     // segmentation: masks / boxes / both
     @State private var preprocess: Detector.PreprocessMode = .letterbox   // input fit: letterbox vs force-resize to imgsz
     @State private var tiling: TilingMode = .off       // tiled inference (images/folders only)
+    @State private var tileSize = 640.0                // requested tile edge (clamped per image in Kit)
+    @State private var tileCeil = 0                    // slider ceiling: max over source of shortSide/4 (0 = unknown)
+    @State private var tilingMasks = false             // tiled modes: keep global-pass seg masks
     @State private var nmsMode: NMSMode = .standard    // global NMS variant (also the tiled merge)
     @State private var sigma = 0.1                     // CW-NMS gaussian width
     @State private var compute: ComputeMode = .cpuAndGPU
@@ -672,6 +679,11 @@ struct ContentView: View {
                 guard !engine.busy, engine.hasResults || engine.resultImage != nil else { return }
                 runInfer()
             }
+            .onChange(of: tilingMasks) {  // toggling mask retention changes what the tiled cache holds
+                guard tiling != .off, !cameraOn, sourceKind == .image || sourceKind == .folder else { return }
+                guard !engine.busy, engine.hasResults || engine.resultImage != nil else { return }
+                runInfer()
+            }
             .onChange(of: modelURL) { setupSource() }
             .onChange(of: sourceURL) { setupSource() }
             .onChange(of: scrubTime) { if scrubbing { pc.seek(scrubTime) } }   // seek while dragging
@@ -700,6 +712,7 @@ struct ContentView: View {
     private func setupSource() {
         pc.pause()
         engine.resetResults()
+        recomputeTileCeil()
         sourceError = nil; folderImages = []
         guard let s = sourceURL else { return }
         switch classifySource(s) {
@@ -722,13 +735,16 @@ struct ContentView: View {
         default: break
         }
     }
+    private var tilingConfig: TilingConfig {
+        TilingConfig(mode: tiling, tileSize: Int(tileSize), keepGlobalMasks: tilingMasks)
+    }
     private func runInfer() {
         guard let m = modelURL, let s = sourceURL, sourceError == nil else { return }
         switch sourceKind {
         case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess,
-                                        tiling: TilingConfig(mode: tiling), nmsMode: nmsMode, sigma: sigma)
+                                        tiling: tilingConfig, nmsMode: nmsMode, sigma: sigma)
         case .folder: engine.runFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess,
-                                       tiling: TilingConfig(mode: tiling), nmsMode: nmsMode, sigma: sigma)
+                                       tiling: tilingConfig, nmsMode: nmsMode, sigma: sigma)
         case .video:  engine.runVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, preprocess: preprocess, overlay: overlay,
                                       nmsMode: nmsMode, sigma: sigma)
         default: break
@@ -825,6 +841,15 @@ struct ContentView: View {
                             }.pickerStyle(.segmented).labelsHidden()
                                 .disabled(cameraOn || sourceKind == .video)
                         }
+                        if tiling != .off && !(cameraOn || sourceKind == .video) {
+                            tileSizeRow
+                            if engine.modelIsSegment {
+                                Toggle("Masks (global pass)", isOn: $tilingMasks)
+                                    .toggleStyle(.switch).controlSize(.small).font(.callout)
+                                Text("Masks come from the full-image pass; tile detections stay boxes-only.")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
                         if cameraOn || sourceKind == .video {
                             Text("Tiling applies to images and folders only.")
                                 .font(.caption2).foregroundStyle(.secondary)
@@ -851,11 +876,11 @@ struct ContentView: View {
                         }
                     }
                     sectionBox("Appearance", "paintbrush.fill") {
-                        if isSegModel && tiledActive {
-                            Text("Masks are disabled in tiled modes (boxes only).")
+                        if isSegModel && tiledActive && !tilingMasks {
+                            Text("Masks are off in tiled modes — enable \"Masks (global pass)\" in Tiling.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
-                        if isSegModel && !tiledActive {
+                        if isSegModel && (!tiledActive || tilingMasks) {
                             segRow("Overlay") {
                                 Picker("", selection: $overlay) { ForEach(SegOverlay.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
                                     .pickerStyle(.segmented).labelsHidden()
@@ -1051,6 +1076,31 @@ struct ContentView: View {
             Slider(value: value, in: range)
         }
     }
+    /// Tile-size slider. Bound: [model imgsz, shortSide/4 of the source] (Kit re-clamps per
+    /// image). Commits on slider RELEASE — each change re-runs tiled inference, so per-tick
+    /// re-inference during a drag would be a storm of forwards.
+    @ViewBuilder private var tileSizeRow: some View {
+        let degenerate = tileCeil <= tileFloor
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text("Tile size").font(.callout)
+                Spacer()
+                Text("\(Int(tileSize)) px").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                    .padding(.horizontal, 7).padding(.vertical, 1).background(.quaternary, in: Capsule())
+            }
+            Slider(value: $tileSize, in: tileRange) { editing in
+                if !editing {
+                    guard !engine.busy, engine.hasResults || engine.resultImage != nil else { return }
+                    runInfer()
+                }
+            }
+            .disabled(degenerate)
+            Text(degenerate
+                 ? "Source too small for larger tiles — tiling runs at the model input (\(tileFloor) px)."
+                 : "Min = model input (\(tileFloor) px) · max = 1/4 of the source's short side (\(tileCeil) px). Larger tiles run faster but see less detail.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
     private func segRow<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 4) { Text(title).font(.callout); content() }
     }
@@ -1075,6 +1125,7 @@ struct ContentView: View {
             if let t = engine.tileStats {
                 Divider()
                 statRow("Tiling", tiling.label)
+                statRow("Tile size", t.tileSizeLabel + " px")
                 statRow("Tiles", "\(t.tilesRun) run / \(t.tilesTotal) grid" + (t.capped > 0 ? " (capped)" : ""))
                 if t.fallbacks > 0 { statRow("Fallback", "\(t.fallbacks) image(s) ran all tiles") }
             }
@@ -1099,6 +1150,42 @@ struct ContentView: View {
     }
 
     private var isVideoSource: Bool { sourceKind == .video }
+    /// Slider floor: the model input size (the tile-size lower bound). 640 until a model reports.
+    private var tileFloor: Int { engine.modelInfo?.imgsz ?? 640 }
+    /// Slider range honoring the bound "no less than model res, no bigger than shortSide/4".
+    /// When the source is too small (ceil < floor) the floor wins and the slider is moot.
+    private var tileRange: ClosedRange<Double> {
+        let lo = Double(tileFloor)
+        return lo...Swift.max(lo, Double(tileCeil))
+    }
+    /// Image pixel dims from the header only (no decode) — cheap even across a large folder.
+    private static func pixelSize(_ url: URL) -> (w: Int, h: Int)? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Int,
+              let h = props[kCGImagePropertyPixelHeight] as? Int else { return nil }
+        return (w, h)
+    }
+    /// Recompute the tile-size ceiling for the current source: shortSide/4 for an image, the MAX
+    /// of shortSide/4 across a folder (per-image clamping in Kit enforces each image's own bound).
+    private func recomputeTileCeil() {
+        tileCeil = 0
+        guard let src = sourceURL else { return }
+        let kind = sourceKind
+        Task.detached(priority: .utility) {
+            var ceil = 0
+            if kind == .image, let d = Self.pixelSize(src) { ceil = Swift.min(d.w, d.h) / 4 }
+            else if kind == .folder {
+                for u in listImages(src) {
+                    if let d = Self.pixelSize(u) { ceil = Swift.max(ceil, Swift.min(d.w, d.h) / 4) }
+                }
+            }
+            await MainActor.run {
+                tileCeil = ceil
+                tileSize = Swift.min(Swift.max(tileSize, Double(tileFloor)), tileRange.upperBound)
+            }
+        }
+    }
     /// Tiled modes affect only image/folder sources; video/camera keep single-pass masks.
     private var tiledActive: Bool { tiling != .off && !cameraOn && (sourceKind == .image || sourceKind == .folder) }
     private func speedText(_ ms: Double, _ fps: Double) -> String {
