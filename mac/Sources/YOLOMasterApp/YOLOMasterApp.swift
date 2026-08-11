@@ -301,6 +301,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                 }
                 let info = StatModelInfo(name: model.lastPathComponent, imgsz: det.imgsz, nc: det.nc, compute: compute.label)
                 DispatchQueue.main.async {
+                    self.videoRunGen += 1
                     self.videoCache = frames; self.videoRaws = raws; self.videoDet = det.isSegment ? det : nil
                     self.modelIsSegment = det.isSegment
                     self.videoFps = fps; self.videoInput = input; self.videoURL = input; self.videoSize = size; self.videoMaskImg = nil
@@ -320,13 +321,30 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     private func videoFrameIndex(_ time: Double) -> Int {
         min(max(0, Int((time * videoFps).rounded())), max(0, videoCache.count - 1))
     }
+    // Single-entry NMS cache: during playback the Canvas, the stats card and the mask path all
+    // ask for the same frame's detections several times per tick; sequential frames make a
+    // one-slot cache ~a 3x main-thread saving. Invalidated on new runs (cache key includes the
+    // run generation) and automatically by any param change (key includes them all).
+    private var detsCacheKey = ""
+    private var detsCacheVal: [Detection] = []
+    fileprivate var videoRunGen = 0            // bumped when a new video cache is installed
     func detsAt(time: Double, conf: Double, iou: Double, nmsMode: NMSMode = .standard, sigma: Double = 0.1) -> [Detection] {
         guard !videoCache.isEmpty else { return [] }
-        return Detector.nms(videoCache[videoFrameIndex(time)], conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma))
+        let idx = videoFrameIndex(time)
+        let key = "\(videoRunGen)|\(idx)|\(conf)|\(iou)|\(nmsMode.rawValue)|\(sigma)"
+        if key == detsCacheKey { return detsCacheVal }
+        let dets = Detector.nms(videoCache[idx], conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma))
+        detsCacheKey = key; detsCacheVal = dets
+        return dets
     }
     /// Compute the seg mask overlay for the frame at `time` (background) and publish it. No-op for
     /// detection models or masks-off. Recomputed as the shown frame / conf / iou / overlay change.
-    func updateVideoMask(time: Double, conf: Double, iou: Double, overlay: SegOverlay, nmsMode: NMSMode = .standard, sigma: Double = 0.1) {
+    private var lastVideoMaskAt = Date.distantPast
+    func updateVideoMask(time: Double, conf: Double, iou: Double, overlay: SegOverlay, nmsMode: NMSMode = .standard, sigma: Double = 0.1, throttled: Bool = false) {
+        if throttled {   // playback: the full-res mask composite can't keep 30 Hz; 4 Hz reads fine
+            guard Date().timeIntervalSince(lastVideoMaskAt) > 0.25 else { return }
+            lastVideoMaskAt = Date()
+        }
         guard let det = videoDet, overlay != .boxes, !videoCache.isEmpty else {
             if videoMaskImg != nil { videoMaskImg = nil }
             return
@@ -341,7 +359,12 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         }
     }
     /// Update the 'this frame' summary stats for the video frame at `time`.
-    func setVideoFrameStats(time: Double, conf: Double, iou: Double, nmsMode: NMSMode = .standard, sigma: Double = 0.1) {
+    private var lastVideoStatsAt = Date.distantPast
+    func setVideoFrameStats(time: Double, conf: Double, iou: Double, nmsMode: NMSMode = .standard, sigma: Double = 0.1, throttled: Bool = false) {
+        if throttled {   // playback: classCounts rebuild + sidebar diff at 30 Hz starves the Canvas
+            guard Date().timeIntervalSince(lastVideoStatsAt) > 0.25 else { return }
+            lastVideoStatsAt = Date()
+        }
         let dets = detsAt(time: time, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
         detCount = dets.count
         var byClass: [Int: Int] = [:]; for d in dets { byClass[d.cls, default: 0] += 1 }
@@ -909,8 +932,11 @@ struct ContentView: View {
     private func refreshVideoOverlays() {
         guard sourceKind == .video, engine.hasResults else { return }
         let t: Double = pc.displayTime
-        engine.setVideoFrameStats(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
-        engine.updateVideoMask(time: t, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
+        // The box Canvas redraws every displayTime tick (cheap: detsAt is cached per frame).
+        // The stats card and the seg-mask composite are throttled to ~4 Hz DURING PLAYBACK —
+        // they were the main-thread load that dropped the label overlay to ~5 fps.
+        engine.setVideoFrameStats(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, throttled: pc.isPlaying)
+        engine.updateVideoMask(time: t, conf: conf, iou: iou, overlay: overlay, nmsMode: nmsMode, sigma: sigma, throttled: pc.isPlaying)
     }
     private func rerender() {
         if cameraOn { return }   // camera overlay reads conf/iou/style/label live — no engine re-render
