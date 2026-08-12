@@ -245,7 +245,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     private func render(conf: Double, iou: Double, style: BoxStyle, label: LabelMode, overlay: SegOverlay,
                         nmsMode: NMSMode = .standard, sigma: Double = 0.1, maxDet: Int = 300) {
         guard let cg = currentCG, !detNames.isEmpty else { DispatchQueue.main.async { self.busy = false }; return }
-        let dets = Detector.nms(currentCands, conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma), maxDet: maxDet)
+        let dets = Detector.nms(currentCands, conf: Float(conf), iou: CGFloat(iou), maxDet: maxDet, mode: nmsMode, sigma: Float(sigma))
         var masks: [MaskBitmap] = [], drawBoxes = true
         if let det = detector, det.isSegment, let raw = currentRaw, overlay != .boxes {
             masks = dets.compactMap { det.maskImage($0, raw) }
@@ -352,7 +352,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
            let b = baked[idx] { return b }
         let key = "\(videoRunGen)|\(idx)|\(conf)|\(iou)|\(nmsMode.rawValue)|\(sigma)|\(maxDet)"
         if key == detsCacheKey { return detsCacheVal }
-        let dets = Detector.nms(videoCache[idx], conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma), maxDet: maxDet)
+        let dets = Detector.nms(videoCache[idx], conf: Float(conf), iou: CGFloat(iou), maxDet: maxDet, mode: nmsMode, sigma: Float(sigma))
         detsCacheKey = key; detsCacheVal = dets
         return dets
     }
@@ -381,7 +381,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
             for i in cache.indices {
                 if token.withLock({ $0 }) { return }   // superseded -> stop immediately
                 chunk.append((i, Detector.nms(cache[i], conf: Float(conf), iou: CGFloat(iou),
-                                              mode: nmsMode, sigma: Float(sigma), maxDet: maxDet)))
+                                              maxDet: maxDet, mode: nmsMode, sigma: Float(sigma))))
                 if chunk.count == 32 || i == cache.count - 1 {
                     let batch = chunk; chunk = []
                     DispatchQueue.main.async {
@@ -424,7 +424,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     }
     private static func compose(_ s: OverlaySnapshot, idx: Int, maskCap: Int) -> CGImage? {
         guard s.cache.indices.contains(idx) else { return nil }
-        let dets = Detector.nms(s.cache[idx], conf: s.conf, iou: s.iou, mode: s.nmsMode, sigma: s.sigma, maxDet: s.maxDet)
+        let dets = Detector.nms(s.cache[idx], conf: s.conf, iou: s.iou, maxDet: s.maxDet, mode: s.nmsMode, sigma: s.sigma)
         let w = Int(s.size.width), h = Int(s.size.height)
         var base: CGImage? = nil
         if let det = s.det, s.overlay != .boxes, s.raws.indices.contains(idx), let raw = s.raws[idx] {
@@ -590,7 +590,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
             queue.async { [weak self] in
                 guard let self, let cg = self.currentCG else { return }
                 let dets = Detector.nms(self.currentCands, conf: Float(conf), iou: CGFloat(iou),
-                                        mode: nmsMode, sigma: Float(sigma), maxDet: maxDet)
+                                        maxDet: maxDet, mode: nmsMode, sigma: Float(sigma))
                 let det = self.detector
                 let includePolys = det?.isSegment == true && (!self.resultsTiled || self.tiledMasksKept)
                 let insts = annotationInstances(dets, detector: det, raw: self.currentRaw, includePolygons: includePolys)
@@ -657,7 +657,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         let det = videoDet, names = detNames
         Task {
             guard let cg = await extractFrame(input, atSeconds: time) else { return }
-            let dets = Detector.nms(cands, conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma), maxDet: maxDet)
+            let dets = Detector.nms(cands, conf: Float(conf), iou: CGFloat(iou), maxDet: maxDet, mode: nmsMode, sigma: Float(sigma))
             var masks: [MaskBitmap] = [], drawBoxes = true
             if let det, let raw, overlay != .boxes {
                 masks = dets.compactMap { det.maskImage($0, raw) }

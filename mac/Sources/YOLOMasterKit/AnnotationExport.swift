@@ -257,7 +257,7 @@ public func exportAnnotationsFolder(_ items: [FolderItem], output: URL, names: [
     var nInstances = 0
     var usedStems = Set<String>()
     for (i, item) in items.enumerated() {
-        let dets = Detector.nms(item.candidates, conf: conf, iou: iou, mode: nmsMode, sigma: sigma, maxDet: maxDet)
+        let dets = Detector.nms(item.candidates, conf: conf, iou: iou, maxDet: maxDet, mode: nmsMode, sigma: sigma)
         var raw: Detector.RawOutput? = nil
         var w = item.width, h = item.height
         if includePolygons, let det = detector, let cg = loadCGImage(item.url) {
@@ -337,7 +337,7 @@ public func exportAnnotationsVideo(input: URL, root: URL, framesCands: [[Detecti
         guard let cg = cictx.createCGImage(ci, from: ci.extent) else { n += 1; continue }
         let frameStem = String(format: "%@_%06d", stem, n)
         saveCGImage(cg, to: framesDir.appendingPathComponent(frameStem + ".jpg"))
-        let dets = Detector.nms(framesCands[n], conf: conf, iou: iou, mode: nmsMode, sigma: sigma, maxDet: maxDet)
+        let dets = Detector.nms(framesCands[n], conf: conf, iou: iou, maxDet: maxDet, mode: nmsMode, sigma: sigma)
         let raw = n < raws.count ? raws[n] : nil
         let insts = annotationInstances(dets, detector: detector, raw: raw, includePolygons: includePolygons)
         let img = AnnotatedImage(name: frameStem, width: cg.width, height: cg.height, instances: insts)
