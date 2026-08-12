@@ -51,6 +51,41 @@ run -m "$ONNX" -s "$OUT/corrupt" --no-save 2>&1 | grep -q "skip. unreadable.*bad
 "$BIN" -m "$ONNX" -s "$IMG" --imgsz 512 --no-save >/dev/null 2>&1; [ $? -eq 0 ] && ok "T15 no crash on imgsz mismatch" || no T15
 run -m "$ONNX" -s "$IMG" --out "$OUT/w" >/dev/null 2>&1; ls "$OUT"/w/*.jpg >/dev/null 2>&1 && ok "T16 writes annotated output" || no T16
 
+echo "== output-shape assertions (count what actually lands on disk) =="
+# T17: a video source must yield ONE annotated mp4 (no per-frame jpg spam / overwrites)
+# and one --save-txt file PER FRAME (frame-indexed names).
+if [ -f "$OUT/test.mp4" ]; then
+  run -m "$ONNX" -s "$OUT/test.mp4" --quiet --out "$OUT/v" --save-txt "$OUT/vtxt" >/dev/null 2>&1
+  NFRAMES=$(run -m "$ONNX" -s "$OUT/test.mp4" --quiet --no-save 2>&1 | grep -o "frames=[0-9]*" | head -1 | cut -d= -f2)
+  MP4S=$(ls "$OUT"/v/*_annotated.mp4 2>/dev/null | wc -l)
+  JPGS=$(ls "$OUT"/v/*.jpg 2>/dev/null | wc -l)
+  TXTS=$(ls "$OUT"/vtxt/*.txt 2>/dev/null | wc -l)
+  [ "$MP4S" = 1 ] && [ "$JPGS" = 0 ] && [ "$TXTS" = "$NFRAMES" ] \
+    && ok "T17 video -> one mp4 + per-frame txt ($NFRAMES frames)" \
+    || no "T17 video output shape (mp4=$MP4S jpg=$JPGS txt=$TXTS frames=$NFRAMES)"
+else
+  echo "  SKIP  T17 (no test video; opencv-python missing)"
+fi
+# T18: duplicate stems (1.jpg + 1.png in one dir) must yield one DISTINCT output per input
+# in every stem-keyed writer: annotated jpgs, --save-txt, YOLO label export.
+mkdir -p "$OUT/dup"
+cp "$IMG" "$OUT/dup/1.jpg"
+python3 - "$IMG" "$OUT/dup/1.png" <<'PY' 2>/dev/null || cp "$IMG" "$OUT/dup/1.png"
+import sys
+try:
+    import cv2
+    cv2.imwrite(sys.argv[2], cv2.imread(sys.argv[1]))
+except Exception:
+    raise SystemExit(1)
+PY
+run -m "$ONNX" -s "$OUT/dup" --quiet --out "$OUT/dout" --save-txt "$OUT/dtxt" --export-labels "$OUT/dlbl" >/dev/null 2>&1
+DJ=$(ls "$OUT"/dout/*.jpg 2>/dev/null | wc -l)
+DT=$(ls "$OUT"/dtxt/*.txt 2>/dev/null | wc -l)
+DL=$(ls "$OUT"/dlbl/*.txt 2>/dev/null | grep -vc classes)
+[ "$DJ" = 2 ] && [ "$DT" = 2 ] && [ "$DL" = 2 ] \
+  && ok "T18 duplicate stems -> distinct outputs" \
+  || no "T18 duplicate-stem collision (jpg=$DJ txt=$DT lbl=$DL, want 2 each)"
+
 rm -rf "$OUT"
 echo "======================================"
 echo "RESULT: $P passed, $F failed"

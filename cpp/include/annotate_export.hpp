@@ -4,6 +4,7 @@
 #pragma once
 #include "yolomaster.hpp"
 #include "annotate.hpp"
+#include <set>
 
 namespace yolomaster {
 
@@ -32,6 +33,8 @@ std::vector<annot::Instance> annotation_instances(
 //   YOLO: <labels_dir>/<stem>.txt per add() + classes.txt at finish()
 //   VOC : <labels_dir>/<stem>.xml per add()
 //   COCO: accumulates; finish() writes ONE json to <coco_path>
+// Duplicate stems within one run (e.g. 1.jpg + 1.png in a folder) are suffixed -2, -3, ...
+// instead of silently overwriting the earlier file.
 // Files are written binary (LF endings). add() returns false (and finish() reports the
 // error) on the first failed write.
 class AnnotationSink {
@@ -49,10 +52,16 @@ private:
     std::vector<std::string> names_;
     bool seg_dialect_;
     int images_ = 0, instances_ = 0;
+    std::set<std::string> used_names_;   // stems already written this run (collision guard)
     std::vector<annot::Image> coco_images_;
     std::vector<std::string> coco_names_;
     std::vector<int> coco_ids_;
 };
+
+// "stem", or "stem-2", "stem-3", ... if already in `used`; inserts the result. The shared
+// collision guard for every per-source-file writer (annotated jpgs, --save-txt, labels):
+// two sources with the same stem (1.jpg + 1.png) must never overwrite each other's output.
+std::string unique_stem(std::set<std::string>& used, const std::string& stem);
 
 // JPEG writer via stb (quality 90) - shared so the GUI's export paths skip cv::imgcodecs
 // exactly like the CLI does.

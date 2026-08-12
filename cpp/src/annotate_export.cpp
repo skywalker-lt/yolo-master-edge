@@ -134,6 +134,12 @@ static bool write_text(const std::string& path, const std::string& body, std::st
     return true;
 }
 
+std::string unique_stem(std::set<std::string>& used, const std::string& stem) {
+    std::string s = stem;
+    for (int i = 2; !used.insert(s).second; ++i) s = stem + "-" + std::to_string(i);
+    return s;
+}
+
 AnnotationSink::AnnotationSink(annot::Format fmt, std::string labels_dir, std::string coco_path,
                                std::vector<std::string> names, bool seg_dialect)
     : fmt_(fmt), labels_dir_(std::move(labels_dir)), coco_path_(std::move(coco_path)),
@@ -145,14 +151,14 @@ bool AnnotationSink::add(const annot::Image& img, const std::string& coco_file_n
     instances_ += static_cast<int>(img.instances.size());
     switch (fmt_) {
     case annot::Format::YoloTXT:
-        return write_text(labels_dir_ + "/" + img.name + ".txt",
+        return write_text(labels_dir_ + "/" + unique_stem(used_names_, img.name) + ".txt",
                           annot::yolo_lines(img, seg_dialect_), error_);
     case annot::Format::PascalVOC: {
         // folder element = the destination dir's basename (Mac parity)
         std::string folder = labels_dir_;
         const size_t cut = folder.find_last_of("/\\");
         if (cut != std::string::npos) folder = folder.substr(cut + 1);
-        return write_text(labels_dir_ + "/" + img.name + ".xml",
+        return write_text(labels_dir_ + "/" + unique_stem(used_names_, img.name) + ".xml",
                           annot::voc_xml(img, names_, folder), error_);
     }
     case annot::Format::CocoJSON:

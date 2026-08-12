@@ -219,6 +219,7 @@ int main(int argc, char** argv) {
     // Video sources: annotated output becomes ONE mp4 (per-frame jpgs would overwrite each
     // other - "11.mp4#930" stems to "11"), and --save-txt gets frame-indexed names.
     const bool video_mode = (kind == SourceKind::Video);
+    std::set<std::string> out_stems, txt_stems;    // collision guards: 1.jpg + 1.png in one dir
     double src_fps = 30.0;
 #ifdef HAVE_VIDEOIO
     cv::VideoWriter vwriter;                       // lazily opened on the first saved frame
@@ -294,7 +295,8 @@ int main(int argc, char** argv) {
                 if (vwriter.isOpened()) vwriter.write(vis);
             } else
 #endif
-            imwrite_jpg((fs::path(outdir) / (fs::path(tag).stem().string() + ".jpg")).string(), vis);
+            imwrite_jpg((fs::path(outdir) /
+                (unique_stem(out_stems, fs::path(tag).stem().string()) + ".jpg")).string(), vis);
         }
         if (!savetxt.empty()) {                       // 'class conf x1 y1 x2 y2' (pixel xyxy)
             std::string tstem = fs::path(tag).stem().string();
@@ -304,7 +306,8 @@ int main(int argc, char** argv) {
                               coco_id - 1);
                 tstem = b;
             }
-            std::ofstream f((fs::path(savetxt) / (tstem + ".txt")).string());
+            std::ofstream f((fs::path(savetxt) /
+                (unique_stem(txt_stems, tstem) + ".txt")).string());
             for (const auto& d : dets)
                 f << d.class_id << ' ' << d.conf << ' ' << d.box.x << ' ' << d.box.y << ' '
                   << (d.box.x + d.box.width) << ' ' << (d.box.y + d.box.height) << '\n';
