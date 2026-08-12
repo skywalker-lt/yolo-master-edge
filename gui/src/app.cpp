@@ -1462,6 +1462,28 @@ static std::string path_stem(const std::string& p) {
     return std::filesystem::path(p).stem().string();
 }
 
+// The folder picker selects an EXISTING directory, so bulk exports create an enclosed,
+// source-named subfolder inside it instead of dumping files at the picked root (the Mac
+// runner gets this from the save panel's name-a-folder idiom). An existing non-empty
+// folder of the same name is left alone: the export gets "name-2", "name-3", ...
+static std::string enclosed_dir(const std::string& base, const std::string& name) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path dir = fs::path(base) / name;
+    for (int i = 2; fs::exists(dir, ec) && !fs::is_empty(dir, ec); ++i)
+        dir = fs::path(base) / (name + "-" + std::to_string(i));
+    fs::create_directories(dir, ec);
+    return dir.string();
+}
+
+// last path component as a display/export name ("C:/data/val/" -> "val")
+static std::string dir_display_name(const std::string& p) {
+    std::filesystem::path q(p);
+    if (q.filename().empty()) q = q.parent_path();
+    const std::string n = q.filename().string();
+    return n.empty() ? "folder" : n;
+}
+
 // Current run's file dialect (WYSIWYG): seg polygons only when mask data actually exists.
 bool App::export_dialect() const {
     if (is_video_) return !vproto_.empty();
@@ -1751,8 +1773,9 @@ void App::draw_export_card(const Platform& plat) {
     } else if (folder) {
         if (ImGui::Button("This image", ImVec2(-1, 0))) export_render_current(plat);
         if (ImGui::Button("All...", ImVec2(-1, 0)) && plat.open_folder) {
-            const std::string d = plat.open_folder("Choose a folder for the rendered images");
-            if (!d.empty()) start_folder_render_export(d);
+            const std::string d = plat.open_folder("Choose where to save the rendered images");
+            if (!d.empty())
+                start_folder_render_export(enclosed_dir(d, dir_display_name(folder_path_) + "-rendered"));
         }
     } else {
         if (ImGui::Button("Save image...", ImVec2(-1, 0))) export_render_current(plat);
@@ -1772,13 +1795,15 @@ void App::draw_export_card(const Platform& plat) {
     if (ImGui::Button("Export labels...", ImVec2(-1, 0))) {
         if (is_video_) {
             if (plat.open_folder) {
-                const std::string d = plat.open_folder("Choose a folder for frames + labels");
-                if (!d.empty()) start_video_label_export(d);
+                const std::string d = plat.open_folder("Choose where to save frames + labels");
+                if (!d.empty())
+                    start_video_label_export(enclosed_dir(d, path_stem(video_path_) + "-labels"));
             }
         } else if (folder) {
             if (plat.open_folder) {
-                const std::string d = plat.open_folder("Choose a folder for the labels");
-                if (!d.empty()) start_folder_label_export(d);
+                const std::string d = plat.open_folder("Choose where to save the labels");
+                if (!d.empty())
+                    start_folder_label_export(enclosed_dir(d, dir_display_name(folder_path_) + "-labels"));
             }
         } else {
             export_labels_current(plat);
