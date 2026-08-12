@@ -1,7 +1,7 @@
-// yolomaster-coreml — command-line Core ML runner. Thin CLI over YOLOMasterKit
+// yolomaster-coreml - command-line Core ML runner. Thin CLI over YOLOMasterKit
 // (shared inference backend + folder/video pipelines).
 //
-// --source: image | folder/ | video.(mp4|mov|m4v) — mode auto-detected. Modes:
+// --source: image | folder/ | video.(mp4|mov|m4v) - mode auto-detected. Modes:
 //   image   -> annotated image (--out out.jpg)
 //   folder  -> annotated folder (--out preds/) + batch timing
 //   video   -> annotated video  (--out out.mp4), size/fps preserved
@@ -30,7 +30,8 @@ func fps(_ ms: Double) -> String { f1(ms > 0 ? 1000 / ms : 0) }
 guard let modelPath = argValue("--model"), let srcPath = argValue("--source") else {
     die("usage: yolomaster-coreml --model M.mlpackage --source img|dir/|vid.mp4 [--out o] " +
         "[--conf 0.25] [--iou 0.5] [--compute cpuAndGPU|all|cpu] [--style hud|solid|neon] " +
-        "[--label full|min|off] [--resize N] [--benchmark [--iters 200]] [--no-save]", 2)
+        "[--label full|min|off] [--resize N] [--benchmark [--iters 200]] [--no-save] " +
+        "[--slicing off|dense|sparse [--tile-size N] [--slicing-masks]] [--cw-nms [--sigma 0.1]]", 2)
 }
 let conf = Float(argValue("--conf", "0.25")!) ?? 0.25
 let iouT = CGFloat(Float(argValue("--iou", "0.5")!) ?? 0.5)
@@ -42,6 +43,15 @@ let iters = Int(argValue("--iters", "200")!) ?? 200
 let resize = Int(argValue("--resize", "0")!) ?? 0
 let boxStyle = BoxStyle(rawValue: (argValue("--style", "hud")!).lowercased()) ?? .hud
 let labelMode = LabelMode(rawValue: (argValue("--label", "full")!).lowercased()) ?? .full
+// --slicing is the user-facing name; --tiling accepted as a compat alias
+let slicingArg = argValue("--slicing") ?? argValue("--tiling", "off")!
+let tilingMode = TilingMode(rawValue: slicingArg.lowercased()) ?? .off
+// --tile-size: clamped per image in Kit to [model imgsz, max(imgsz, shortSide/4)]
+let tileSizeArg = Int(argValue("--tile-size", "0")!) ?? 0
+let tilingCfg = TilingConfig(mode: tilingMode, tileSize: tileSizeArg > 0 ? tileSizeArg : nil,
+                             keepGlobalMasks: hasFlag("--slicing-masks") || hasFlag("--tiling-masks"))
+let nmsMode: NMSMode = hasFlag("--cw-nms") ? .clusterWeighted : .standard
+let sigma = Float(argValue("--sigma", "0.1")!) ?? 0.1
 
 // ---------- backend (shared) ----------
 let detector: Detector
@@ -53,8 +63,17 @@ print("[model] \(detector.summary)")
 func processImage(_ path: String, _ outPath: String) {
     guard var cg = loadCGImage(URL(fileURLWithPath: path)) else { logErr("skip (unreadable): \(path)"); return }
     if resize > 0 { cg = resizeLong(cg, resize) }
-    guard let res = try? detector.detect(cg, conf: conf, iou: iouT) else { logErr("predict failed: \(path)"); return }
-    print("[det] \((path as NSString).lastPathComponent)  dets=\(res.detections.count)  infer=\(f1(res.inferMs))ms")
+    let res: Detector.Result
+    var tileNote = ""
+    if tilingMode == .off {
+        guard let r = try? detector.detect(cg, conf: conf, iou: iouT, mode: nmsMode, sigma: sigma) else { logErr("predict failed: \(path)"); return }
+        res = r
+    } else {
+        guard let (r, t) = try? detector.detectTiled(cg, conf: conf, iou: iouT, tiling: tilingCfg, nmsMode: nmsMode, sigma: sigma) else { logErr("predict failed: \(path)"); return }
+        res = r
+        tileNote = "  tiles=\(t.tilesRun)/\(t.tilesTotal) @\(t.tileSizeUsed)px" + (t.usedFallback ? " (fallback)" : "") + (t.capped ? " (capped)" : "")
+    }
+    print("[det] \((path as NSString).lastPathComponent)  dets=\(res.detections.count)  infer=\(f1(res.inferMs))ms" + tileNote)
     if !noSave, let a = annotate(cg, res.detections, names: detector.classNames, style: boxStyle, label: labelMode) {
         saveCGImage(a, to: URL(fileURLWithPath: outPath))
         print("[saved] \(outPath)")
@@ -91,10 +110,12 @@ if benchmark {
 } else {
     switch classifySource(src) {
     case .video:
+        if tilingMode != .off { logErr("[warn] slicing applies to images/folders only - video runs single-pass") }
         let out = URL(fileURLWithPath: outArg ?? "out.mp4")
         do {
             let s = try await runVideo(detector, input: src, output: out, conf: conf, iou: iouT,
-                                       style: boxStyle, label: labelMode, resize: resize) { n, _ in
+                                       style: boxStyle, label: labelMode, resize: resize,
+                                       nmsMode: nmsMode, sigma: sigma) { n, _ in
                 if n % 60 == 0 { logErr("  \(n) frames…") }
             }
             print("[video] \(s.frames) frames -> \(out.path)  (\(s.outW)x\(s.outH) @\(s.fps)fps)")
@@ -104,7 +125,8 @@ if benchmark {
         let out = noSave ? nil : URL(fileURLWithPath: outArg ?? "preds")
         print("[batch] \(src.lastPathComponent) -> \(out?.path ?? "(--no-save)")")
         let s = runFolder(detector, input: src, output: out, conf: conf, iou: iouT,
-                          style: boxStyle, label: labelMode, resize: resize)
+                          style: boxStyle, label: labelMode, resize: resize,
+                          tiling: tilingCfg, nmsMode: nmsMode, sigma: sigma)
         print("[batch] \(s.processed)/\(s.total) ok  |  model-infer mean \(f1(s.meanMs))ms -> \(fps(s.meanMs)) img/s steady")
     case .image:
         processImage(srcPath, outArg ?? "out.jpg")

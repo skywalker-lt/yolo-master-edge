@@ -12,7 +12,7 @@
 #             BUNDLE_ID=com.you.app                     ARCHS="arm64 x86_64"
 set -eo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"        # .../mac
-VERSION="${1:-1.0.0}"
+VERSION="${1:-1.1.0}"
 PROFILE="${NOTARY_PROFILE:-ac-notary}"
 
 echo "== release: YOLO-Master CoreML Runner $VERSION =="
