@@ -1,4 +1,4 @@
-// YOLOMasterKit — shared Core ML inference backend for YOLO-Master detectors.
+// YOLOMasterKit - shared Core ML inference backend for YOLO-Master detectors.
 //
 // Extracted VERBATIM from the CLI runner (Sources/YOLOMasterCoreML/main.swift) so the
 // command-line tool and the SwiftUI app run the exact same letterbox → Core ML →
@@ -7,9 +7,10 @@ import Foundation
 import CoreML
 import CoreGraphics
 import CoreVideo
+import Accelerate   // batched mask math: SGEMM (AMX) + vectorized sigmoid
 
 /// IEEE half bits (UInt16) -> Float32, done by hand. `Float16` is entirely UNAVAILABLE in macOS on
-/// x86_64 (arm64-only type), so it can't be named at all — half-precision Core ML tensors are read
+/// x86_64 (arm64-only type), so it can't be named at all - half-precision Core ML tensors are read
 /// as raw UInt16 straight from `dataPointer` (`load(fromByteOffset:as:)`) and converted here. Keeps
 /// the universal (arm64 + x86_64) build compiling with identical numerics on both slices.
 @inline(__always) func halfToFloat(_ h: UInt16) -> Float32 {
@@ -82,6 +83,16 @@ public enum ComputeMode: String, CaseIterable, Sendable {
 
 public enum DetectorError: Error { case inputBuildFailed, badOutput }
 
+/// Which NMS variant post-processing uses. `.standard` is the classic greedy suppression.
+/// `.clusterWeighted` (CW-NMS, from upstream YOLO-Master) runs the same greedy selection and
+/// then REFINES each survivor's coordinates as the score-and-proximity-weighted average of its
+/// same-class cluster in the pre-NMS candidate pool - trading a little post-processing time for
+/// better localization. Survivor count, scores and classes are identical to `.standard`.
+public enum NMSMode: String, CaseIterable, Sendable {
+    case standard, clusterWeighted
+    public var label: String { self == .standard ? "Standard" : "Cluster-Weighted" }
+}
+
 /// IoU of two rects (used by NMS).
 func rectIoU(_ a: CGRect, _ b: CGRect) -> CGFloat {
     let i = a.intersection(b); if i.isNull { return 0 }
@@ -132,7 +143,7 @@ public final class Detector {
             return nil
         }()
         let ncResolved = ncFromShape ?? metaNames.count
-        // Input resolution is FIXED at export time — read it from the model ([1,3,H,W]).
+        // Input resolution is FIXED at export time - read it from the model ([1,3,H,W]).
         let szResolved: Int = {
             if let shape = md.inputDescriptionsByName[inName]?.multiArrayConstraint?.shape,
                shape.count >= 4, shape[2].intValue > 0 { return shape[2].intValue }
@@ -161,7 +172,7 @@ public final class Detector {
 
     // ---------- preprocess ----------
     /// How the source image is fit into the model's fixed imgsz×imgsz input. This is a PREPROCESSING
-    /// choice (changes the forward-pass input), not a tuning param — switching it requires re-inference.
+    /// choice (changes the forward-pass input), not a tuning param - switching it requires re-inference.
     /// `.letterbox`: aspect-preserving fit + gray padding (YOLO default). `.stretch`: force-resize the
     /// whole image to imgsz×imgsz (no padding; the size the model was trained on), distorting aspect.
     public enum PreprocessMode: String, CaseIterable, Sendable { case letterbox, stretch }
@@ -258,21 +269,61 @@ public final class Detector {
         return dets
     }
 
-    /// Filter cached `candidates` by `conf` + per-class greedy NMS (cap 300). Cheap — no model call.
-    public static func nms(_ dets: [Detection], conf: Float, iou iouT: CGFloat, maxDet: Int = 300) -> [Detection] {
+    /// Filter cached `candidates` by `conf` + per-class greedy NMS (cap 300). Cheap - no model call.
+    /// `mode: .clusterWeighted` additionally rewrites survivor coordinates via CW refinement
+    /// (see `cwRefine`); defaults keep every existing call site's behavior byte-identical.
+    public static func nms(_ dets: [Detection], conf: Float, iou iouT: CGFloat, maxDet: Int = 300,
+                           mode: NMSMode = .standard, sigma: Float = 0.1) -> [Detection] {
         var keep: [Detection] = []
-        for d in dets where d.score > conf {
+        for d in dets {
+            if d.score <= conf { break }   // input is score-sorted (see candidates()) -> nothing further passes
             if keep.count >= maxDet { break }
             if !keep.contains(where: { $0.cls == d.cls && rectIoU($0.rect, d.rect) > iouT }) { keep.append(d) }
         }
-        return keep
+        guard mode == .clusterWeighted, !keep.isEmpty else { return keep }
+        return cwRefine(keep, pool: dets, conf: conf, iou: iouT, sigma: sigma)
+    }
+
+    /// Cluster-Weighted refinement - the `cluster` variant of upstream YOLO-Master's CW-NMS
+    /// (ultralytics/utils/nms.py, commit 31c3fe3). One shot, no iteration:
+    ///   pool  = pre-NMS candidates with score > conf, capped at the top 3000 (input is score-sorted,
+    ///           so prefix(while:) + prefix(3000) equals upstream's `scores > conf` + `topk(3000)`)
+    ///   w_km  = score_m * exp(-(1 - IoU_km)^2 / sigma) for same-class pool boxes with IoU_km > iouT
+    ///           (upstream separates classes via the class-offset trick; `cls ==` is equivalent.
+    ///            NOTE the exponent is /sigma exactly - NOT the Gaussian /(2*sigma^2))
+    ///   box_k = (sum_m w_km * box_m) / (sum_m w_km + 1e-6), all from ORIGINAL pre-update coords
+    /// Kept set, scores, classes and mask coeffs are unchanged; only survivor rects move.
+    /// Deliberate deviation from upstream: a survivor whose weight sum is ~0 keeps its original
+    /// rect (upstream's top-3000 cap can collapse such a box to (0,0,0,0) - a latent bug).
+    private static func cwRefine(_ keep: [Detection], pool dets: [Detection], conf: Float,
+                                 iou iouT: CGFloat, sigma: Float) -> [Detection] {
+        let pool = Array(dets.prefix(while: { $0.score > conf }).prefix(3000))
+        guard !pool.isEmpty else { return keep }
+        return keep.map { k in
+            var sw: Float = 0, ax1: Float = 0, ay1: Float = 0, ax2: Float = 0, ay2: Float = 0
+            for m in pool where m.cls == k.cls {
+                let ov = rectIoU(k.rect, m.rect)
+                guard ov > iouT else { continue }
+                let w = m.score * expf(-powf(1 - Float(ov), 2) / sigma)
+                sw += w
+                ax1 += w * Float(m.rect.minX); ay1 += w * Float(m.rect.minY)
+                ax2 += w * Float(m.rect.maxX); ay2 += w * Float(m.rect.maxY)
+            }
+            guard sw > 1e-6 else { return k }
+            let inv = 1 / (sw + 1e-6)
+            let x1 = CGFloat(ax1 * inv), y1 = CGFloat(ay1 * inv)
+            let x2 = CGFloat(ax2 * inv), y2 = CGFloat(ay2 * inv)
+            return Detection(cls: k.cls, score: k.score,
+                             rect: CGRect(x: x1, y: y1, width: max(0, x2 - x1), height: max(0, y2 - y1)),
+                             maskCoeffs: k.maskCoeffs)
+        }
     }
 
     // ---------- public inference ----------
     public struct Result: Sendable { public let detections: [Detection]; public let inferMs: Double }
 
     /// Cached forward-pass output + letterbox geometry. Hold onto this and re-decode with
-    /// different conf/iou via `decode(_:conf:iou:)` — no second model call. Post-processing
+    /// different conf/iou via `decode(_:conf:iou:)` - no second model call. Post-processing
     /// (conf/iou threshold, NMS) is a frontend concern, not an inference one.
     public final class RawOutput {
         fileprivate let y: MLMultiArray
@@ -284,6 +335,16 @@ public final class Detector {
                          origW: Int, origH: Int, inferMs: Double) {
             self.y = y; self.proto = proto; self.scaleX = scaleX; self.scaleY = scaleY; self.padX = padX; self.padY = padY
             self.origW = origW; self.origH = origH; self.inferMs = inferMs
+        }
+
+        /// A copy retaining ONLY what mask rendering needs (proto tensor + letterbox geometry),
+        /// dropping the detection tensor `y` - the larger half of a RawOutput. Per-frame video
+        /// caches keep these: ~halves seg-video memory. nil for non-seg outputs.
+        /// (maskImage/maskOverlay never touch `y`; a 1-element placeholder satisfies the field.)
+        public func maskOnly() -> RawOutput? {
+            guard let p = proto, let tiny = try? MLMultiArray(shape: [1], dataType: .float32) else { return nil }
+            return RawOutput(y: tiny, proto: p, scaleX: scaleX, scaleY: scaleY, padX: padX, padY: padY,
+                             origW: origW, origH: origH, inferMs: inferMs)
         }
     }
 
@@ -309,6 +370,40 @@ public final class Detector {
         return try forward(cg)
     }
 
+    /// Forward a tile crop, padded bottom-right with gray 114 to tileSize×tileSize and (when
+    /// tileSize > imgsz) letterboxed down to the model input - upstream `_pad_slice`
+    /// (predictor.py:523-530) followed by its standard preprocess. tileSize == imgsz is the
+    /// native-scale fast path (scale 1). Returned geometry: scale = imgsz/tileSize, pads = 0,
+    /// origW/H = CROP dims so `candidates()`'s existing clamp trims detections to real crop
+    /// content (deliberate deviation from upstream, which lets boxes live on the padding).
+    /// Precondition: crop ≤ tileSize in both axes (guaranteed by `tileGrid`).
+    internal func forwardPadded(_ crop: CGImage, tileSize: Int? = nil) throws -> RawOutput {
+        let tile = tileSize ?? imgsz
+        let cw = crop.width, ch = crop.height
+        precondition(cw <= tile && ch <= tile, "tile crop exceeds tile size")
+        let s = CGFloat(imgsz) / CGFloat(tile)   // 1 when tile == imgsz; <1 shrinks bigger tiles
+        var px = [UInt8](repeating: 114, count: imgsz * imgsz * 4)
+        px.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(data: raw.baseAddress, width: imgsz, height: imgsz, bitsPerComponent: 8,
+                                      bytesPerRow: imgsz * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
+            ctx.interpolationQuality = .high
+            // Same no-flip convention as letterbox(): raster top-left = CG-space y (imgsz - ch*s).
+            ctx.draw(crop, in: CGRect(x: 0, y: CGFloat(imgsz) - CGFloat(ch) * s,
+                                      width: CGFloat(cw) * s, height: CGFloat(ch) * s))
+        }
+        guard let input = fillInput(px) else { throw DetectorError.inputBuildFailed }
+        let t0 = Date()
+        let out = try model.prediction(from: input)
+        let infMs = Date().timeIntervalSince(t0) * 1000
+        guard let y = out.featureValue(for: outputName)?.multiArrayValue, y.shape.count == 3 else {
+            throw DetectorError.badOutput
+        }
+        // proto deliberately nil: tile coeffs are meaningless against a full-image proto tensor.
+        return RawOutput(y: y, proto: nil, scaleX: s, scaleY: s, padX: 0, padY: 0,
+                         origW: cw, origH: ch, inferMs: infMs)
+    }
+
     /// Cheap BGRA `CVPixelBuffer` → `CGImage` (one memcpy via a buffer-backed context; no Core Image).
     static func cgImage(from pb: CVPixelBuffer) -> CGImage? {
         CVPixelBufferLockBaseAddress(pb, .readOnly)
@@ -322,15 +417,17 @@ public final class Detector {
         return ctx.makeImage()
     }
 
-    /// Decode + per-class NMS from a cached forward pass. Cheap — no model call.
-    public func decode(_ raw: RawOutput, conf: Float, iou iouT: CGFloat) -> [Detection] {
-        Detector.nms(candidates(raw, confFloor: conf), conf: conf, iou: iouT)
+    /// Decode + per-class NMS from a cached forward pass. Cheap - no model call.
+    public func decode(_ raw: RawOutput, conf: Float, iou iouT: CGFloat,
+                       mode: NMSMode = .standard, sigma: Float = 0.1) -> [Detection] {
+        Detector.nms(candidates(raw, confFloor: conf), conf: conf, iou: iouT, mode: mode, sigma: sigma)
     }
 
     /// Convenience: forward + decode in one call (used by the CLI). `inferMs` is model-only latency.
-    public func detect(_ image: CGImage, conf: Float = 0.25, iou iouT: CGFloat = 0.5) throws -> Result {
+    public func detect(_ image: CGImage, conf: Float = 0.25, iou iouT: CGFloat = 0.5,
+                       mode: NMSMode = .standard, sigma: Float = 0.1) throws -> Result {
         let raw = try forward(image)
-        return Result(detections: decode(raw, conf: conf, iou: iouT), inferMs: raw.inferMs)
+        return Result(detections: decode(raw, conf: conf, iou: iouT, mode: mode, sigma: sigma), inferMs: raw.inferMs)
     }
 
     // ---------- segmentation masks ----------
@@ -391,22 +488,106 @@ public final class Detector {
     /// Transparent original-image-sized overlay compositing every detection's instance mask (box-clipped),
     /// for the Canvas-based stages (video / live camera) that draw over a raw frame rather than through
     /// `annotate`. Returns nil for non-seg models or when no mask survives. `dets` should be post-NMS.
+    ///
+    /// BATCHED math (Accelerate): the old path ran a scalar coeffs·proto matmul PER DETECTION,
+    /// re-reading (and for fp16 re-converting) the whole proto tensor each time - seconds at
+    /// hundreds of detections. Now: proto is unpacked to contiguous Float32 ONCE, all
+    /// detections' coefficients form one [N,nm] matrix, and a single SGEMM ([N,nm]x[nm,plane],
+    /// dispatched to the AMX matrix units) plus vectorized sigmoid produce every mask grid in
+    /// one shot. Only the cheap per-pixel tint + the GPU-backed CG composite remain per mask.
     public func maskOverlay(_ dets: [Detection], _ raw: RawOutput) -> CGImage? {
-        guard isSegment, raw.proto != nil, !dets.isEmpty else { return nil }
+        guard isSegment, let proto = raw.proto, proto.shape.count == 4, !dets.isEmpty else { return nil }
         let w = raw.origW, h = raw.origH
-        guard w > 0, h > 0,
-              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+        guard w > 0, h > 0 else { return nil }
+        let cm = proto.shape[1].intValue, mh = proto.shape[2].intValue, mw = proto.shape[3].intValue
+        let plane = mh * mw
+        guard cm > 0, plane > 0 else { return nil }
+        let usable = dets.filter { !$0.maskCoeffs.isEmpty }
+        guard !usable.isEmpty else { return nil }
+        let N = usable.count
+
+        // ---- proto -> contiguous [cm, plane] Float32, once ----
+        let s1 = proto.strides[1].intValue, s2 = proto.strides[2].intValue, s3 = proto.strides[3].intValue
+        var protoF = [Float](repeating: 0, count: cm * plane)
+        if proto.dataType == .float16 {
+            let rp = proto.dataPointer
+            protoF.withUnsafeMutableBufferPointer { dst in
+                for k in 0..<cm {
+                    let ko = k * plane
+                    for i in 0..<mh {
+                        let ro = ko + i * mw, so = k * s1 + i * s2
+                        for j in 0..<mw {
+                            dst[ro + j] = halfToFloat(rp.load(fromByteOffset: (so + j * s3) * 2, as: UInt16.self))
+                        }
+                    }
+                }
+            }
+        } else {
+            proto.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+                guard let pp = buf.baseAddress else { return }
+                protoF.withUnsafeMutableBufferPointer { dst in
+                    for k in 0..<cm {
+                        let ko = k * plane
+                        for i in 0..<mh {
+                            let ro = ko + i * mw, so = k * s1 + i * s2
+                            for j in 0..<mw { dst[ro + j] = pp[so + j * s3] }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- one SGEMM for all masks + batch sigmoid ----
+        var A = [Float](repeating: 0, count: N * cm)
+        for (r, d) in usable.enumerated() {
+            let nmv = min(cm, d.maskCoeffs.count)
+            for k in 0..<nmv { A[r * cm + k] = d.maskCoeffs[k] }
+        }
+        var acc = [Float](repeating: 0, count: N * plane)
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, Int32(N), Int32(plane), Int32(cm),
+                    1, A, Int32(cm), protoF, Int32(plane), 0, &acc, Int32(plane))
+        var cnt = Int32(N * plane)
+        vDSP_vneg(acc, 1, &acc, 1, vDSP_Length(N * plane))       // -x
+        vvexpf(&acc, acc, &cnt)                                   // e^-x
+        var one: Float = 1
+        vDSP_vsadd(acc, 1, &one, &acc, 1, vDSP_Length(N * plane)) // 1 + e^-x
+        vvrecf(&acc, acc, &cnt)                                   // sigmoid
+
+        // ---- per-mask tint + composite (identical visual pipeline to maskImage) ----
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         ctx.interpolationQuality = .high   // bilinear upscale proto->full res -> smooth mask edges
+        let sz = CGFloat(imgsz)
+        let crop = CGRect(x: raw.padX / sz, y: raw.padY / sz,
+                          width: CGFloat(raw.origW) * raw.scaleX / sz, height: CGFloat(raw.origH) * raw.scaleY / sz)
+        let threshold: Float = 0.5, alphaMax: Float = 165
+        let band: Float = 0.14, e0 = threshold - band, e1 = threshold + band, inv = 1 / (e1 - e0)
         var drew = false
-        for d in dets {
-            guard let m = maskImage(d, raw) else { continue }
-            let pc = m.protoCrop, iw = CGFloat(m.image.width), ih = CGFloat(m.image.height)
-            let sub = CGRect(x: pc.minX * iw, y: pc.minY * ih, width: pc.width * iw, height: pc.height * ih)
-            guard sub.width > 0, sub.height > 0, let cropped = m.image.cropping(to: sub) else { continue }
+        var px = [UInt8](repeating: 0, count: plane * 4)
+        for (r, d) in usable.enumerated() {
+            let comps = classColor(d.cls).components ?? [1, 0.25, 0.25, 1]
+            let cr = Float(comps[0]), cg = Float(comps[1]), cb = Float(comps[2])
+            for i in 0..<plane * 4 { px[i] = 0 }
+            let row = r * plane
+            for i in 0..<plane {
+                var t = (acc[row + i] - e0) * inv
+                if t <= 0 { continue }
+                if t > 1 { t = 1 }
+                let a = t * t * (3 - 2 * t) * alphaMax
+                let o = i * 4
+                px[o] = UInt8(min(255, cr * a)); px[o + 1] = UInt8(min(255, cg * a))
+                px[o + 2] = UInt8(min(255, cb * a)); px[o + 3] = UInt8(min(255, a))
+            }
+            guard let mctx = CGContext(data: &px, width: mw, height: mh, bitsPerComponent: 8, bytesPerRow: mw * 4,
+                                       space: CGColorSpaceCreateDeviceRGB(),
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+                  let img = mctx.makeImage() else { continue }
+            let sub = CGRect(x: crop.minX * CGFloat(mw), y: crop.minY * CGFloat(mh),
+                             width: crop.width * CGFloat(mw), height: crop.height * CGFloat(mh))
+            guard sub.width > 0, sub.height > 0, let cropped = img.cropping(to: sub) else { continue }
             ctx.saveGState()
-            ctx.clip(to: CGRect(x: m.clip.minX, y: CGFloat(h) - m.clip.maxY, width: m.clip.width, height: m.clip.height))
+            ctx.clip(to: CGRect(x: d.rect.minX, y: CGFloat(h) - d.rect.maxY, width: d.rect.width, height: d.rect.height))
             ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))  // upright, matches Canvas top-left mapping
             ctx.restoreGState()
             drew = true
@@ -414,7 +595,200 @@ public final class Detector {
         return drew ? ctx.makeImage() : nil
     }
 
-    /// Model-only forward (no decode/draw) — for latency benchmarking. Returns ms.
+    // ---------- segmentation mask -> polygon contours (annotation export) ----------
+    /// Contours of one detection's instance mask, in ORIGINAL-image pixels (top-left origin).
+    /// Used by the annotation exporters (YOLO-seg / COCO polygons).
+    ///
+    /// Semantics match what the preview shows: hard threshold at the CENTER of `maskImage`'s
+    /// smoothstep band (sigmoid(coeffs . proto) > threshold), restricted to `det.rect` (the
+    /// preview clips masks to the box). OUTER contours only - holes are unrepresentable in
+    /// YOLO-seg and COCO-polygon anyway. Components smaller than 2 proto cells are dropped
+    /// (speckle). Rings are Douglas-Peucker-simplified with `epsilon` in original pixels,
+    /// sorted by area (desc) and capped at `maxPolygons`.
+    ///
+    /// Bias note: contours pass through proto CELL CENTERS, so polygons sit up to half a proto
+    /// cell (~2 px at 640/160) inside the rendered mask edge - comparable to `epsilon`, and
+    /// tight-side annotations are the safer convention.
+    /// Returns [] for non-seg models, missing proto, empty coeffs, or an all-background mask.
+    public func maskPolygons(_ det: Detection, _ raw: RawOutput, threshold: Float = 0.5,
+                             epsilon: CGFloat = 2.0, maxPolygons: Int = 8) -> [[CGPoint]] {
+        guard let proto = raw.proto, proto.shape.count == 4, !det.maskCoeffs.isEmpty else { return [] }
+        let cm = proto.shape[1].intValue, mh = proto.shape[2].intValue, mw = proto.shape[3].intValue
+        guard mh > 0, mw > 0 else { return [] }
+        let nmv = min(cm, det.maskCoeffs.count)
+        let s1 = proto.strides[1].intValue, s2 = proto.strides[2].intValue, s3 = proto.strides[3].intValue
+        let coeffs = det.maskCoeffs
+        let sz = CGFloat(imgsz)
+
+        // det.rect (original px) <-> proto grid (same mapping as maskImage's protoCrop, K:468-473):
+        //   grid = (pad + orig * scale) / imgsz * gridDim
+        func gridX(_ x: CGFloat) -> CGFloat { (raw.padX + x * raw.scaleX) / sz * CGFloat(mw) }
+        func gridY(_ y: CGFloat) -> CGFloat { (raw.padY + y * raw.scaleY) / sz * CGFloat(mh) }
+        func origX(_ gx: CGFloat) -> CGFloat { (gx / CGFloat(mw) * sz - raw.padX) / raw.scaleX }
+        func origY(_ gy: CGFloat) -> CGFloat { (gy / CGFloat(mh) * sz - raw.padY) / raw.scaleY }
+
+        // sub-grid covering det.rect, expanded by 1 cell, clamped to the proto
+        let gx0 = max(0, Int(gridX(det.rect.minX).rounded(.down)) - 1)
+        let gy0 = max(0, Int(gridY(det.rect.minY).rounded(.down)) - 1)
+        let gx1 = min(mw, Int(gridX(det.rect.maxX).rounded(.up)) + 1)
+        let gy1 = min(mh, Int(gridY(det.rect.maxY).rounded(.up)) + 1)
+        guard gx1 > gx0, gy1 > gy0 else { return [] }
+        let subW = gx1 - gx0, subH = gy1 - gy0
+        // padded (+2 each axis) with a guaranteed-false border ring so every contour closes
+        let gw = subW + 2, gh = subH + 2
+        var grid = [Bool](repeating: false, count: gw * gh)
+
+        func fill(_ at: (Int, Int, Int) -> Float32) {
+            for i in 0..<subH {
+                let pi = gy0 + i
+                let cy = origY(CGFloat(pi) + 0.5)
+                if cy < det.rect.minY || cy > det.rect.maxY { continue }   // preview clips to box
+                for j in 0..<subW {
+                    let pj = gx0 + j
+                    let cx = origX(CGFloat(pj) + 0.5)
+                    if cx < det.rect.minX || cx > det.rect.maxX { continue }
+                    var acc: Float = 0
+                    for k in 0..<nmv { acc += coeffs[k] * Float(at(k, pi, pj)) }
+                    if 1 / (1 + expf(-acc)) > threshold { grid[(i + 1) * gw + (j + 1)] = true }
+                }
+            }
+        }
+        if proto.dataType == .float16 {
+            let rp = proto.dataPointer   // Float16 unnameable on x86_64; read half bits (cf. maskImage)
+            fill { k, i, j in halfToFloat(rp.load(fromByteOffset: (k * s1 + i * s2 + j * s3) * 2, as: UInt16.self)) }
+        } else {
+            proto.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+                guard let pp = buf.baseAddress else { return }
+                fill { k, i, j in pp[k * s1 + i * s2 + j * s3] }
+            }
+        }
+
+        // ---- 8-connected component labeling (iterative flood fill); < 2 cells = speckle ----
+        var label = [Int](repeating: 0, count: gw * gh)
+        var starts: [Int] = []                       // topmost-leftmost cell per kept component
+        var nextLabel = 0
+        var stack: [Int] = []
+        for idx0 in 0..<(gw * gh) where grid[idx0] && label[idx0] == 0 {
+            nextLabel += 1
+            var count = 0
+            stack.removeAll(keepingCapacity: true)
+            stack.append(idx0); label[idx0] = nextLabel
+            while let idx = stack.popLast() {
+                count += 1
+                let cy = idx / gw, cx = idx % gw
+                for dy in -1...1 {
+                    for dx in -1...1 where dx != 0 || dy != 0 {
+                        let ny = cy + dy, nx = cx + dx
+                        guard ny >= 0, ny < gh, nx >= 0, nx < gw else { continue }
+                        let nidx = ny * gw + nx
+                        if grid[nidx] && label[nidx] == 0 { label[nidx] = nextLabel; stack.append(nidx) }
+                    }
+                }
+            }
+            if count >= 2 { starts.append(idx0) }    // row-major scan => idx0 is topmost-leftmost
+        }
+        guard !starts.isEmpty else { return [] }
+
+        // ---- Moore-neighbor boundary trace (clockwise, Jacob's stopping criterion) ----
+        // Neighbor offsets clockwise from West in a top-down grid.
+        let nbr: [(dx: Int, dy: Int)] = [(-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1)]
+        func traceRing(from start: Int, component: Int) -> [(x: Int, y: Int)] {
+            let sx = start % gw, sy = start / gw
+            var ring: [(x: Int, y: Int)] = [(sx, sy)]
+            var cur = (x: sx, y: sy)
+            var back = 0                              // entered scanning from West (border ring guarantees background there)
+            var firstDir = -1
+            let maxSteps = 4 * gw * gh
+            for _ in 0..<maxSteps {
+                var found = false
+                for t in 0..<8 {
+                    let d = (back + 1 + t) % 8        // clockwise from just past the backtrack
+                    let nx = cur.x + nbr[d].dx, ny = cur.y + nbr[d].dy
+                    guard nx >= 0, nx < gw, ny >= 0, ny < gh, label[ny * gw + nx] == component else { continue }
+                    // Jacob's criterion: back at start entering in the same direction as the first move
+                    if nx == sx && ny == sy {
+                        if firstDir == -1 { firstDir = d }
+                        else if d == firstDir { return ring }
+                    }
+                    if firstDir == -1 { firstDir = d }
+                    cur = (nx, ny)
+                    if !(nx == sx && ny == sy) { ring.append(cur) }
+                    back = (d + 4) % 8               // backtrack = direction we came FROM
+                    found = true
+                    break
+                }
+                if !found { return ring }            // isolated pair edge case: ring so far
+                if cur.x == sx && cur.y == sy && ring.count > 1 { return ring }
+            }
+            return ring
+        }
+
+        // ---- Douglas-Peucker on an open polyline ----
+        func perpDist(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+            let vx = b.x - a.x, vy = b.y - a.y
+            let len = (vx * vx + vy * vy).squareRoot()
+            if len < 1e-9 { return ((p.x - a.x) * (p.x - a.x) + (p.y - a.y) * (p.y - a.y)).squareRoot() }
+            return abs(vx * (a.y - p.y) - (a.x - p.x) * vy) / len
+        }
+        func dp(_ pts: [CGPoint]) -> [CGPoint] {
+            guard pts.count > 2 else { return pts }
+            var keep = [Bool](repeating: false, count: pts.count)
+            keep[0] = true; keep[pts.count - 1] = true
+            var spans: [(Int, Int)] = [(0, pts.count - 1)]
+            while let (i0, i1) = spans.popLast() {
+                guard i1 > i0 + 1 else { continue }
+                var maxD: CGFloat = -1; var maxI = i0
+                for i in (i0 + 1)..<i1 {
+                    let d = perpDist(pts[i], pts[i0], pts[i1])
+                    if d > maxD { maxD = d; maxI = i }
+                }
+                if maxD > epsilon { keep[maxI] = true; spans.append((i0, maxI)); spans.append((maxI, i1)) }
+            }
+            return pts.indices.filter { keep[$0] }.map { pts[$0] }
+        }
+        func shoelace(_ pts: [CGPoint]) -> CGFloat {
+            guard pts.count >= 3 else { return 0 }
+            var a: CGFloat = 0
+            for i in pts.indices {
+                let q = pts[(i + 1) % pts.count]
+                a += pts[i].x * q.y - q.x * pts[i].y
+            }
+            return abs(a) / 2
+        }
+
+        var rings: [[CGPoint]] = []
+        for start in starts {
+            let cells = traceRing(from: start, component: label[start])
+            guard cells.count >= 3 else { continue }
+            // padded-grid cell centers -> original px, clamped to det.rect intersect image
+            let pts = cells.map { c -> CGPoint in
+                let gx = CGFloat(gx0 + c.x - 1) + 0.5, gy = CGFloat(gy0 + c.y - 1) + 0.5
+                let x = min(max(origX(gx), max(0, det.rect.minX)), min(CGFloat(raw.origW), det.rect.maxX))
+                let y = min(max(origY(gy), max(0, det.rect.minY)), min(CGFloat(raw.origH), det.rect.maxY))
+                return CGPoint(x: x, y: y)
+            }
+            // closed-ring DP: anchor at the pair of farthest-apart vertices, DP each half
+            var farI = 0; var farD: CGFloat = -1
+            for i in pts.indices {
+                let dx = pts[i].x - pts[0].x, dy = pts[i].y - pts[0].y
+                let d = dx * dx + dy * dy
+                if d > farD { farD = d; farI = i }
+            }
+            let simplified: [CGPoint]
+            if farI > 0 {
+                let half1 = dp(Array(pts[0...farI]))
+                let half2 = dp(Array(pts[farI...]) + [pts[0]])
+                simplified = half1 + half2.dropFirst().dropLast()
+            } else {
+                simplified = dp(pts)
+            }
+            if simplified.count >= 3 { rings.append(simplified) }
+        }
+        rings.sort { shoelace($0) > shoelace($1) }
+        return Array(rings.prefix(maxPolygons))
+    }
+
+    /// Model-only forward (no decode/draw) - for latency benchmarking. Returns ms.
     @discardableResult
     public func inferOnly(_ image: CGImage) throws -> Double {
         let lb = letterbox(image)

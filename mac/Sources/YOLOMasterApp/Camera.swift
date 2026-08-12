@@ -2,9 +2,9 @@
 //   • AVCaptureVideoPreviewLayer shows the raw camera feed (hardware, zero-latency, always smooth).
 //   • AVCaptureVideoDataOutput(alwaysDiscardsLateVideoFrames = true) delivers frames on a private
 //     serial queue; while we're inferring, AVFoundation DROPS the frames that pile up and hands us
-//     only the next fresh one — so we always process the newest frame and never accrue a backlog.
+//     only the next fresh one - so we always process the newest frame and never accrue a backlog.
 //   • A SwiftUI Canvas overlays boxes from the latest inference (lags the live feed by ~one inference
-//     period, imperceptibly). conf/iou/style/label are read live — no re-inference to tune them.
+//     period, imperceptibly). conf/iou/style/label are read live - no re-inference to tune them.
 import SwiftUI
 import AppKit
 import AVFoundation
@@ -18,7 +18,7 @@ import QuartzCore
 final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {   // guarded by camQueue + main-hops
     let session = AVCaptureSession()
     // Raw per-frame output (pre-NMS). CameraStage applies conf/iou/overlay reactively via SwiftUI props
-    // — so tuning is instant and never routed through a side channel that could miss updates.
+    // - so tuning is instant and never routed through a side channel that could miss updates.
     @Published var candidates: [Detection] = []     // pre-NMS, camera-pixel coords, confFloor 0.05
     @Published var lastRaw: Detector.RawOutput?     // this frame's proto/geometry (for seg masks)
     @Published var isSegment = false                // active model is segmentation
@@ -31,7 +31,7 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
 
     private let camQueue = DispatchQueue(label: "com.yolomaster.camera", qos: .userInteractive)
     private let output = AVCaptureVideoDataOutput()
-    private var detector: Detector?                 // inference — touched only on camQueue
+    private var detector: Detector?                 // inference - touched only on camQueue
     private var maskDet: Detector?                  // same model, used for main-thread mask compositing (read-only math)
     private var configured = false
     private var mirrored = true                     // selfie mirror (applied to the data-output connection)
@@ -52,7 +52,7 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
     }
 
     /// Compose the seg mask overlay for `dets` from the latest frame's proto. Called on main from the
-    /// view (read-only proto math on an immutable RawOutput snapshot — no model call, safe off camQueue).
+    /// view (read-only proto math on an immutable RawOutput snapshot - no model call, safe off camQueue).
     func makeMask(_ dets: [Detection]) -> CGImage? {
         guard let det = maskDet, let raw = lastRaw else { return nil }
         return det.maskOverlay(dets, raw)
@@ -105,7 +105,7 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
             guard self.session.canAddOutput(self.output) else { self.session.commitConfiguration(); return false }
             self.session.addOutput(self.output)
             // Mirror the delivered frames (selfie view). Inference + candidates + masks are then all in
-            // mirrored coordinates, matching the mirrored preview layer — so the overlay stays aligned.
+            // mirrored coordinates, matching the mirrored preview layer - so the overlay stays aligned.
             if let conn = self.output.connection(with: .video), conn.isVideoMirroringSupported {
                 conn.automaticallyAdjustsVideoMirroring = false
                 conn.isVideoMirrored = self.mirrored
@@ -125,7 +125,7 @@ final class CameraController: NSObject, ObservableObject, AVCaptureVideoDataOutp
                 }
             }
         default:
-            DispatchQueue.main.async { self.errorMsg = "Camera access denied — enable it in System Settings ▸ Privacy & Security ▸ Camera." }
+            DispatchQueue.main.async { self.errorMsg = "Camera access denied - enable it in System Settings ▸ Privacy & Security ▸ Camera." }
             done(false)
         }
     }
@@ -161,7 +161,7 @@ final class CameraPreviewNSView: NSView {
     override func layout() { super.layout(); disableHardwareMirror() }
     // Keep the preview's OWN connection un-mirrored. The visual selfie flip is applied in SwiftUI
     // (.scaleEffect on the view) so it works even on cameras whose preview connection doesn't support
-    // isVideoMirrored — the exact case that left the preview un-mirrored while the data output/overlay
+    // isVideoMirrored - the exact case that left the preview un-mirrored while the data output/overlay
     // was mirrored. Retry until the connection exists (it's nil right after the session attaches).
     private func disableHardwareMirror(retries: Int = 15) {
         if let c = previewLayer.connection {
@@ -181,12 +181,13 @@ struct CameraPreviewView: NSViewRepresentable {
 
 // ---------- lifecycle owner: builds the detector, starts/stops the session, isolates observation ----------
 // Owns the CameraController via @StateObject so it's built once and only THIS subtree re-renders per
-// frame — the parent (sidebar) never observes the high-frequency stats. Start/stop follow view presence.
+// frame - the parent (sidebar) never observes the high-frequency stats. Start/stop follow view presence.
 struct LiveCameraView: View {
     let modelURL: URL?
     let compute: ComputeMode
     let preprocess: Detector.PreprocessMode
     let conf: Double, iou: Double
+    let nmsMode: NMSMode, sigma: Double
     let overlay: SegOverlay
     let style: BoxStyle, label: LabelMode
     @Binding var isSegment: Bool                    // reported up so the sidebar can show the Overlay control
@@ -195,7 +196,7 @@ struct LiveCameraView: View {
 
     var body: some View {
         // conf/iou/overlay are plain props of CameraStage -> tuning is instantly reactive (no side channel)
-        CameraStage(cam: cam, conf: conf, iou: iou, overlay: overlay, style: style, label: label, mirror: $mirror)
+        CameraStage(cam: cam, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, overlay: overlay, style: style, label: label, mirror: $mirror)
             .onAppear { cam.setMirrored(mirror); rebuild { cam.start(detector: $0) } }
             .onChange(of: mirror) { cam.setMirrored(mirror) }
             .onDisappear { cam.stop() }
@@ -221,11 +222,12 @@ struct LiveCameraView: View {
 struct CameraStage: View {
     @ObservedObject var cam: CameraController
     let conf: Double, iou: Double
+    let nmsMode: NMSMode, sigma: Double
     let overlay: SegOverlay
     let style: BoxStyle, label: LabelMode
     @Binding var mirror: Bool
     var body: some View {
-        let dets = Detector.nms(cam.candidates, conf: Float(conf), iou: CGFloat(iou))   // live conf/iou
+        let dets = Detector.nms(cam.candidates, conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma))   // live conf/iou/NMS-mode
         let masksOnly = cam.isSegment && overlay == .masks
         let drawBoxes = !masksOnly
         let mask: CGImage? = (cam.isSegment && overlay != .boxes) ? cam.makeMask(dets) : nil
