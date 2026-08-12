@@ -31,7 +31,7 @@ guard let modelPath = argValue("--model"), let srcPath = argValue("--source") el
     die("usage: yolomaster-coreml --model M.mlpackage --source img|dir/|vid.mp4 [--out o] " +
         "[--conf 0.25] [--iou 0.5] [--compute cpuAndGPU|all|cpu] [--style hud|solid|neon] " +
         "[--label full|min|off] [--resize N] [--benchmark [--iters 200]] [--no-save] " +
-        "[--tiling off|dense|sparse [--tile-size N] [--tiling-masks]] [--cw-nms [--sigma 0.1]]", 2)
+        "[--slicing off|dense|sparse [--tile-size N] [--slicing-masks]] [--cw-nms [--sigma 0.1]]", 2)
 }
 let conf = Float(argValue("--conf", "0.25")!) ?? 0.25
 let iouT = CGFloat(Float(argValue("--iou", "0.5")!) ?? 0.5)
@@ -43,11 +43,13 @@ let iters = Int(argValue("--iters", "200")!) ?? 200
 let resize = Int(argValue("--resize", "0")!) ?? 0
 let boxStyle = BoxStyle(rawValue: (argValue("--style", "hud")!).lowercased()) ?? .hud
 let labelMode = LabelMode(rawValue: (argValue("--label", "full")!).lowercased()) ?? .full
-let tilingMode = TilingMode(rawValue: (argValue("--tiling", "off")!).lowercased()) ?? .off
+// --slicing is the user-facing name; --tiling accepted as a compat alias
+let slicingArg = argValue("--slicing") ?? argValue("--tiling", "off")!
+let tilingMode = TilingMode(rawValue: slicingArg.lowercased()) ?? .off
 // --tile-size: clamped per image in Kit to [model imgsz, max(imgsz, shortSide/4)]
 let tileSizeArg = Int(argValue("--tile-size", "0")!) ?? 0
 let tilingCfg = TilingConfig(mode: tilingMode, tileSize: tileSizeArg > 0 ? tileSizeArg : nil,
-                             keepGlobalMasks: hasFlag("--tiling-masks"))
+                             keepGlobalMasks: hasFlag("--slicing-masks") || hasFlag("--tiling-masks"))
 let nmsMode: NMSMode = hasFlag("--cw-nms") ? .clusterWeighted : .standard
 let sigma = Float(argValue("--sigma", "0.1")!) ?? 0.1
 
@@ -108,7 +110,7 @@ if benchmark {
 } else {
     switch classifySource(src) {
     case .video:
-        if tilingMode != .off { logErr("[warn] tiling applies to images/folders only - video runs single-pass") }
+        if tilingMode != .off { logErr("[warn] slicing applies to images/folders only - video runs single-pass") }
         let out = URL(fileURLWithPath: outArg ?? "out.mp4")
         do {
             let s = try await runVideo(detector, input: src, output: out, conf: conf, iou: iouT,
