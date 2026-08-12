@@ -18,7 +18,7 @@ else()
   find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio)   # -DOpenCV_DIR=... on Windows
 endif()
 
-# SDK roots — override per platform:
+# SDK roots - override per platform:
 #   Linux : cmake -DONNXRUNTIME_ROOT=/path -DNCNN_ROOT=/path ..
 #   Windows: cmake -DONNXRUNTIME_ROOT=C:/dev/onnxruntime -DNCNN_ROOT=C:/dev/ncnn -DOpenCV_DIR=C:/dev/opencv/build ..
 set(ONNXRUNTIME_ROOT "${CMAKE_SOURCE_DIR}/../third_party/onnxruntime" CACHE PATH "ONNXRuntime root")
@@ -30,7 +30,8 @@ option(USE_NCNN "Build ncnn backend"        ON)
 option(USE_MNN  "Build MNN backend"         ON)
 option(USE_TRT  "Build TensorRT backend (GPU .engine inference; Jetson/CUDA)" OFF)
 
-set(SRC  src/common.cpp src/main.cpp src/stb_impl.cpp)
+set(SRC  src/common.cpp src/slicing.cpp src/annotate_writers.cpp src/annotate_export.cpp
+         src/main.cpp src/stb_impl.cpp)
 set(INCS include third_party ${OpenCV_INCLUDE_DIRS})
 set(LIBS ${OpenCV_LIBS})
 set(DEFS "")
