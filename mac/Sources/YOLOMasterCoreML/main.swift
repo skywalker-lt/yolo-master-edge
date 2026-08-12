@@ -1,7 +1,7 @@
-// yolomaster-coreml — command-line Core ML runner. Thin CLI over YOLOMasterKit
+// yolomaster-coreml - command-line Core ML runner. Thin CLI over YOLOMasterKit
 // (shared inference backend + folder/video pipelines).
 //
-// --source: image | folder/ | video.(mp4|mov|m4v) — mode auto-detected. Modes:
+// --source: image | folder/ | video.(mp4|mov|m4v) - mode auto-detected. Modes:
 //   image   -> annotated image (--out out.jpg)
 //   folder  -> annotated folder (--out preds/) + batch timing
 //   video   -> annotated video  (--out out.mp4), size/fps preserved
@@ -108,7 +108,7 @@ if benchmark {
 } else {
     switch classifySource(src) {
     case .video:
-        if tilingMode != .off { logErr("[warn] tiling applies to images/folders only — video runs single-pass") }
+        if tilingMode != .off { logErr("[warn] tiling applies to images/folders only - video runs single-pass") }
         let out = URL(fileURLWithPath: outArg ?? "out.mp4")
         do {
             let s = try await runVideo(detector, input: src, output: out, conf: conf, iou: iouT,

@@ -1,4 +1,4 @@
-// Folder-batch and video pipelines — shared by the CLI and the GUI so both process
+// Folder-batch and video pipelines - shared by the CLI and the GUI so both process
 // images / folders / videos through the same Detector + annotate path. Progress callbacks
 // let a GUI drive a progress bar and live preview.
 import Foundation
@@ -32,7 +32,7 @@ public func listImages(_ dir: URL) -> [URL] {
         .sorted { $0.lastPathComponent < $1.lastPathComponent }
 }
 
-/// Visible (non-hidden) entries in `dir` that are NOT images — subfolders or other file types.
+/// Visible (non-hidden) entries in `dir` that are NOT images - subfolders or other file types.
 /// A non-empty result means the folder is "mixed" and should be rejected for batch inference.
 public func folderNonImages(_ dir: URL) -> [URL] {
     ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
@@ -174,13 +174,13 @@ public func runVideo(_ det: Detector, input: URL, output: URL,
     return VideoStats(frames: n, meanMs: mean, outW: outW, outH: outH, fps: Int(fps.rounded()))
 }
 
-/// Video duration in seconds (0 if unknown) — for a scrubber range.
+/// Video duration in seconds (0 if unknown) - for a scrubber range.
 public func videoDuration(_ url: URL) async -> Double {
     let d = (try? await AVURLAsset(url: url).load(.duration)) ?? .zero
     return d.seconds.isFinite ? d.seconds : 0
 }
 
-/// Decode a single upright frame at `atSeconds` — for the in-app preview/tune finder.
+/// Decode a single upright frame at `atSeconds` - for the in-app preview/tune finder.
 public func extractFrame(_ url: URL, atSeconds t: Double) async -> CGImage? {
     let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
     gen.appliesPreferredTrackTransform = true
@@ -220,7 +220,7 @@ public struct FolderItem: Sendable {
 
 /// Aggregate inference timing over a set of forward passes.
 /// `meanMs`/`fps` are MODEL-ONLY (forward pass). `wallMeanMs`/`wallFps` are OVERALL
-/// (wall-clock ÷ count — includes image/frame decode, candidate decode, I/O).
+/// (wall-clock ÷ count - includes image/frame decode, candidate decode, I/O).
 public struct InferSummary: Sendable {
     public let count: Int, meanMs: Double, minMs: Double, maxMs: Double, totalMs: Double, wallMs: Double
     public var fps: Double { meanMs > 0 ? 1000 / meanMs : 0 }                    // model-only
@@ -238,7 +238,7 @@ public struct InferSummary: Sendable {
 
 /// Phase 1: forward every image once, caching pre-NMS candidates (conf/iou tuning stays cheap).
 /// Returns the cached items + inference timing summary. With `tiling.mode != .off` each image
-/// runs the tiled pipeline instead (FolderItem shape is unchanged — the cache just holds the
+/// runs the tiled pipeline instead (FolderItem shape is unchanged - the cache just holds the
 /// merged pool), `times` entries become the per-image SUM of all forwards, and aggregate tile
 /// stats are returned for the UI.
 public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
@@ -270,7 +270,7 @@ public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
     return (out, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000), stats)
 }
 
-/// Phase 3: write annotated images from cached candidates + the tuned params — NO inference.
+/// Phase 3: write annotated images from cached candidates + the tuned params - NO inference.
 @discardableResult
 public func exportFolderCached(_ items: [FolderItem], output: URL, names: [String],
                                conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode,
@@ -346,7 +346,7 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
         guard reader.status == .reading,
               let sb = rout.copyNextSampleBuffer(), let pb = CMSampleBufferGetImageBuffer(sb) else { return nil }
         // Upright video (the overwhelmingly common case): wrap the BGRA buffer as a CGImage with
-        // ONE memcpy — the CIContext render (full-res color-managed draw) was the decode-stage
+        // ONE memcpy - the CIContext render (full-res color-managed draw) was the decode-stage
         // bottleneck capping overall fps at ~1/3 of model-only. Rotated tracks keep the CI path.
         if orient == .up { return Detector.cgImage(from: pb) }
         let ci = CIImage(cvPixelBuffer: pb).oriented(orient)   // upright, matching AVPlayer

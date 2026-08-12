@@ -1,4 +1,4 @@
-// Zoom & pan for the preview stage — images always, video when paused.
+// Zoom & pan for the preview stage - images always, video when paused.
 //
 // One ZoomModel is shared by the image and video stages (they are mutually exclusive on
 // screen). The container applies .scaleEffect + .offset AFTER layout, so wrapped content
@@ -7,7 +7,7 @@
 //
 // Interactions: trackpad pinch (cursor-anchored), drag-to-pan when zoomed (never intercepts
 // clicks at 1x), double-click reset, ⌘+/⌘−/⌘0 (center-anchored steps). Scroll-wheel zoom is
-// deliberately absent for v1.1.0 — SwiftUI exposes no scroll event; ZoomModel is the seam an
+// deliberately absent for v1.1.0 - SwiftUI exposes no scroll event; ZoomModel is the seam an
 // NSEvent monitor would feed if it's ever wanted.
 import SwiftUI
 
@@ -41,7 +41,7 @@ final class ZoomModel: ObservableObject {
 }
 
 /// Wrap fitted content to make it zoomable. `enabled: false` renders passthrough (used for
-/// video during playback — zoom auto-resets on play via the app's onChange wiring).
+/// video during playback - zoom auto-resets on play via the app's onChange wiring).
 struct ZoomContainer<Content: View>: View {
     @ObservedObject var zoom: ZoomModel
     var enabled: Bool = true
@@ -73,7 +73,7 @@ struct ZoomContainer<Content: View>: View {
             }
                 .overlay(alignment: .topTrailing) {
                     if zoom.isZoomed {
-                        Text("\(Int((zoom.scale * 100).rounded()))% — double-click to reset")
+                        Text("\(Int((zoom.scale * 100).rounded()))% - double-click to reset")
                             .font(.caption2).padding(.horizontal, 8).padding(.vertical, 3)
                             .background(.ultraThinMaterial, in: Capsule())
                             .padding(8)
