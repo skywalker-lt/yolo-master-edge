@@ -1,5 +1,6 @@
 #include "trt_backend.hpp"
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -33,12 +34,16 @@ TrtBackend::TrtBackend(const std::string& engine_path) {
     ctx_.reset(engine_->createExecutionContext());
     CUDA_CHECK(cudaStreamCreate(&stream_));
 
-    // discover I/O tensors (TensorRT 10 named-tensor API)
+    // discover I/O tensors (TensorRT 10 named-tensor API): input [1,3,H,W];
+    // the rank-3 output is the detection head, a rank-4 output is a seg proto tensor.
     for (int i = 0; i < engine_->getNbIOTensors(); ++i) {
         const char* nm = engine_->getIOTensorName(i);
         auto dims = engine_->getTensorShape(nm);
         if (engine_->getTensorIOMode(nm) == nvinfer1::TensorIOMode::kINPUT) {
-            in_name_ = nm; in_sz_ = dims.d[2];                    // [1,3,H,W]
+            in_name_ = nm; in_sz_ = dims.d[2];                                // [1,3,H,W]
+        } else if (dims.nbDims == 4) {
+            proto_name_ = nm;
+            pc_ = dims.d[1]; ph_ = dims.d[2]; pw_ = dims.d[3];                // [1,nm,mh,mw]
         } else {
             out_name_ = nm; feat_dim_ = dims.d[1]; num_anchors_ = dims.d[2];  // [1,feat,anchors]
         }
@@ -48,17 +53,44 @@ TrtBackend::TrtBackend(const std::string& engine_path) {
     fixed_imgsz = in_sz_;
     active_ep = "TRT-CUDA";
 
+    // metadata sidecar (engines embed no names/imgsz): <engine-minus-ext>.metadata.yaml,
+    // then metadata.yaml next to the engine. Same format as the ncnn/mnn exports, so the
+    // parser is shared. --classes on the CLI still overrides.
+    {
+        namespace fs = std::filesystem;
+        const fs::path ep(engine_path);
+        for (const fs::path& p : { fs::path(ep).replace_extension(".metadata.yaml"),
+                                   ep.parent_path() / "metadata.yaml" }) {
+            std::vector<std::string> names; int misz = 0;
+            std::error_code ec;
+            if (fs::exists(p, ec) && meta::read_ncnn_yaml(p.string(), names, misz)) {
+                meta_names = std::move(names);
+                meta_imgsz = misz;
+                if (misz > 0 && misz != in_sz_)
+                    std::cerr << "[trt] warn: sidecar imgsz=" << misz << " but engine input is "
+                              << in_sz_ << "px (" << p.string() << ")\n";
+                break;
+            }
+        }
+    }
+
     CUDA_CHECK(cudaMalloc(&d_in_,  size_t(3) * in_sz_ * in_sz_ * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_out_, size_t(feat_dim_) * num_anchors_ * sizeof(float)));
     h_out_.resize(size_t(feat_dim_) * num_anchors_);
     ctx_->setTensorAddress(in_name_.c_str(),  d_in_);
     ctx_->setTensorAddress(out_name_.c_str(), d_out_);
+    if (pc_ > 0) {
+        CUDA_CHECK(cudaMalloc(&d_proto_, size_t(pc_) * ph_ * pw_ * sizeof(float)));
+        h_proto_.resize(size_t(pc_) * ph_ * pw_);
+        ctx_->setTensorAddress(proto_name_.c_str(), d_proto_);
+    }
 }
 
 TrtBackend::~TrtBackend() {
-    if (d_in_)   cudaFree(d_in_);
-    if (d_out_)  cudaFree(d_out_);
-    if (stream_) cudaStreamDestroy(stream_);
+    if (d_in_)    cudaFree(d_in_);
+    if (d_out_)   cudaFree(d_out_);
+    if (d_proto_) cudaFree(d_proto_);
+    if (stream_)  cudaStreamDestroy(stream_);
 }
 
 std::vector<Detection> TrtBackend::infer(const cv::Mat& bgr, const Config& cfg) {
@@ -85,11 +117,26 @@ std::vector<Detection> TrtBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     if (!ctx_->enqueueV3(stream_)) throw std::runtime_error("TRT enqueueV3 failed");
     CUDA_CHECK(cudaMemcpyAsync(h_out_.data(), d_out_, h_out_.size() * sizeof(float),
                                cudaMemcpyDeviceToHost, stream_));
+    if (pc_ > 0)
+        CUDA_CHECK(cudaMemcpyAsync(h_proto_.data(), d_proto_, h_proto_.size() * sizeof(float),
+                                   cudaMemcpyDeviceToHost, stream_));
     CUDA_CHECK(cudaStreamSynchronize(stream_));
     infer_ms = ms_since(t1);
 
+    // "forward once, tune cheap": cache the pre-NMS candidates + letterbox (+ proto for
+    // seg engines) so slicing, cached re-NMS and annotation export work like every other
+    // backend (mirrors ort_backend.cpp).
     auto t2 = clk::now();
-    auto dets = decode(h_out_.data(), feat_dim_, num_anchors_, cfg, lb);
+    candidates = decode_candidates(h_out_.data(), feat_dim_, num_anchors_, cfg, lb);
+    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
+    if (pc_ > 0) {
+        proto = h_proto_;
+        proto_c = pc_; proto_h = ph_; proto_w = pw_;
+    } else {
+        proto.clear();
+        proto_c = proto_h = proto_w = 0;
+    }
+    auto dets = nms_and_cap(candidates, cfg, lb.orig_w, lb.orig_h);
     post_ms = ms_since(t2);
     return dets;
 }

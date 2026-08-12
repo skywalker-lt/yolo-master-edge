@@ -154,10 +154,6 @@ int main(int argc, char** argv) {
     cfg.stretch = stretch;
     cfg.nms_mode = cw_nms ? NmsMode::ClusterWeighted : NmsMode::Standard;
     cfg.cw_sigma = std::min(0.5f, std::max(0.01f, sigma));
-    if (slice_mode != SliceMode::Off && backend == "trt") {
-        std::cerr << "[warn] slicing requires cached candidates; unsupported on the TensorRT backend - running single-pass\n";
-        slice_mode = SliceMode::Off;
-    }
     int want = imgsz > 0 ? imgsz : (be->meta_imgsz > 0 ? be->meta_imgsz : 640);
     if (be->fixed_imgsz > 0 && want != be->fixed_imgsz) {
         std::cerr << "[warn] model requires fixed imgsz=" << be->fixed_imgsz
