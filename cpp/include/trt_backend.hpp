@@ -1,4 +1,4 @@
-// TensorRT backend for YOLO-Master-EsMoE-N — GPU inference from a prebuilt .engine.
+// TensorRT backend for YOLO-Master-EsMoE-N - GPU inference from a prebuilt .engine.
 // Loads an engine built on-device by trtexec (jetson/10_trt_bench.sh) and runs it on CUDA.
 #pragma once
 #include "yolomaster.hpp"

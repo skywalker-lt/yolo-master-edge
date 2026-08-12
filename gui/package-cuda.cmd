@@ -22,7 +22,7 @@ rem  package, and matching CUDA + cuDNN installs.
 rem ============================================================================
 
 set "VERSION=%~1"
-if "%VERSION%"=="" set "VERSION=1.0.0"
+if "%VERSION%"=="" set "VERSION=1.1.0"
 set "FULL=%~2"
 
 rem SDK paths come from your own sdk-paths.cmd (see sdk-paths.example.cmd),
