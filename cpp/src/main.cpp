@@ -2,6 +2,8 @@
 // Runtime model loading (no baked-in weights), backend/classes/imgsz auto-detected
 // from the model, versatile --source (image / dir / video / dataset.yaml).
 #include "yolomaster.hpp"
+#include "slicing.hpp"
+#include "annotate_export.hpp"
 #ifdef USE_ORT
 #include "ort_backend.hpp"
 #endif
@@ -54,6 +56,10 @@ int main(int argc, char** argv) {
     int imgsz = 0, threads = 4, limit = 0, max_det = 300;
     float conf = 0.25f, iou = 0.50f;
     bool no_save = false, quiet = false, multilabel = false, stretch = false;
+    std::string slicing = "off", label_format = "yolo", sampling = "1s", export_labels;
+    int tile_size = 0;
+    bool slicing_masks = false, cw_nms = false;
+    float sigma = 0.1f;
 
     app.add_option("-m,--model", model, "model: .onnx file, or ncnn dir / .param")->required();
     app.add_option("-s,--source", source, "image / directory / video / dataset.yaml")->required();
@@ -72,7 +78,24 @@ int main(int argc, char** argv) {
     app.add_flag("--stretch", stretch, "preprocess by stretching to square instead of aspect-preserving letterbox");
     app.add_flag("--no-save", no_save, "do not write annotated outputs");
     app.add_flag("--quiet", quiet, "suppress per-image logs");
+    app.add_option("--slicing", slicing, "off|dense|sparse: global pass + tile passes (Sparse SAHI); images/dirs only")->default_str("off");
+    app.add_option("--tile-size", tile_size, "requested tile edge in source px (0 = model imgsz); clamped per image to [imgsz, max(imgsz, shortSide/4)]");
+    app.add_flag("--slicing-masks", slicing_masks, "keep the global pass's masks (+proto) in sliced runs (seg models)");
+    app.add_flag("--cw-nms", cw_nms, "Cluster-Weighted NMS: refine survivor boxes by their cluster's weighted average");
+    app.add_option("--sigma", sigma, "CW-NMS weight falloff (0.01-0.5)")->capture_default_str();
+    app.add_option("--export-labels", export_labels, "dir to write annotation labels (WYSIWYG at the current conf/iou/nms settings)");
+    app.add_option("--label-format", label_format, "yolo|coco|voc")->default_str("yolo");
+    app.add_option("--sampling", sampling, "video label export: all|1s|N (every Nth frame)")->default_str("1s");
     CLI11_PARSE(app, argc, argv);
+
+    SliceMode slice_mode = SliceMode::Off;
+    if (slicing == "dense") slice_mode = SliceMode::Dense;
+    else if (slicing == "sparse") slice_mode = SliceMode::Sparse;
+    else if (slicing != "off") { std::cerr << "unknown --slicing mode: " << slicing << "\n"; return 2; }
+    annot::Format lfmt = annot::Format::YoloTXT;
+    if (label_format == "coco") lfmt = annot::Format::CocoJSON;
+    else if (label_format == "voc") lfmt = annot::Format::PascalVOC;
+    else if (label_format != "yolo") { std::cerr << "unknown --label-format: " << label_format << "\n"; return 2; }
 
     // ---- backend auto-detect from the model path ----
     if (backend == "auto") {
@@ -129,6 +152,12 @@ int main(int argc, char** argv) {
     cfg.max_det = max_det;
     cfg.multi_label = multilabel;
     cfg.stretch = stretch;
+    cfg.nms_mode = cw_nms ? NmsMode::ClusterWeighted : NmsMode::Standard;
+    cfg.cw_sigma = std::min(0.5f, std::max(0.01f, sigma));
+    if (slice_mode != SliceMode::Off && backend == "trt") {
+        std::cerr << "[warn] slicing requires cached candidates; unsupported on the TensorRT backend - running single-pass\n";
+        slice_mode = SliceMode::Off;
+    }
     int want = imgsz > 0 ? imgsz : (be->meta_imgsz > 0 ? be->meta_imgsz : 640);
     if (be->fixed_imgsz > 0 && want != be->fixed_imgsz) {
         std::cerr << "[warn] model requires fixed imgsz=" << be->fixed_imgsz
@@ -151,24 +180,84 @@ int main(int argc, char** argv) {
 
     // ---- run over the source ----
     const SourceKind kind = classify_source(source);
+    if (slice_mode != SliceMode::Off && kind == SourceKind::Video) {
+        std::cerr << "[warn] slicing applies to images and folders only - video runs single-pass\n";
+        slice_mode = SliceMode::Off;
+    }
+    SliceConfig sconf;
+    sconf.mode = slice_mode;
+    sconf.tile_size = tile_size;
+    sconf.keep_global_masks = slicing_masks;
+    TileStats tstats;
+
+    // Label export: the sink is created lazily after the first forward, when the run's
+    // dialect is known (WYSIWYG: seg polygons only when the backend actually carries mask
+    // data for this run - sliced without --slicing-masks degrades to boxes).
+    std::unique_ptr<AnnotationSink> sink;
+    std::string labels_dir = export_labels, frames_dir;
+    if (!export_labels.empty()) {
+        std::error_code ec;
+        if (kind == SourceKind::Video) {
+            frames_dir = (fs::path(export_labels) / "frames").string();
+            fs::create_directories(frames_dir, ec);
+            if (lfmt != annot::Format::CocoJSON) {
+                labels_dir = (fs::path(export_labels) / "labels").string();
+                fs::create_directories(labels_dir, ec);
+            }
+        } else fs::create_directories(export_labels, ec);
+    }
+    auto ensure_sink = [&]() -> AnnotationSink& {
+        if (!sink) {
+            const bool dialect = be->is_seg();
+            sink = std::make_unique<AnnotationSink>(
+                lfmt, labels_dir, (fs::path(export_labels) / "annotations.coco.json").string(),
+                cfg.class_names, dialect);
+        }
+        return *sink;
+    };
+
     auto t_start = std::chrono::high_resolution_clock::now();
     long frames = 0, total_dets = 0;
     double sum_pre = 0, sum_inf = 0, sum_post = 0;
 
-    auto run_one = [&](const cv::Mat& img, const std::string& tag) {
+    // coco_file/coco_id: the COCO doc's file_name (may carry "frames/") and explicit image
+    // id (0 = sequence). export=false skips label emission (non-sampled video frames).
+    auto run_one = [&](const cv::Mat& img, const std::string& tag,
+                       bool do_export = true, const std::string& coco_file = "", int coco_id = 0) {
         if (img.empty()) { std::cerr << "  [skip] unreadable: " << tag << "\n"; return; }
         std::vector<Detection> dets;
+        std::string slice_note;
         try {
-            dets = be->infer(img, cfg);
+            if (slice_mode != SliceMode::Off) {
+                const SliceOutput so = sliced_candidates(*be, img, cfg, sconf);
+                dets = nms_and_cap(be->candidates, cfg, img.cols, img.rows);
+                tstats.add(so.tiles_run, so.tiles_total, so.tile_size_used,
+                           so.used_fallback, so.capped);
+                slice_note = "  tiles=" + std::to_string(so.tiles_run) + "/"
+                           + std::to_string(so.tiles_total) + " @" + std::to_string(so.tile_size_used) + "px"
+                           + (so.used_fallback ? " [fallback]" : "") + (so.capped ? " [capped]" : "");
+            } else {
+                dets = be->infer(img, cfg);
+            }
         } catch (const std::exception& e) {
             std::cerr << "  [skip] inference error on " << tag << ": " << e.what() << "\n";
             return;
+        }
+        if (!export_labels.empty() && do_export) {
+            AnnotationSink& s = ensure_sink();
+            annot::Image aimg;
+            aimg.name = fs::path(tag).stem().string();
+            if (coco_id > 0) aimg.name = fs::path(coco_file).stem().string();
+            aimg.width = img.cols; aimg.height = img.rows;
+            aimg.instances = annotation_instances(dets, be->is_seg(), be->proto, be->proto_c,
+                                                  be->proto_h, be->proto_w, be->cand_lb, cfg.imgsz);
+            s.add(aimg, coco_file.empty() ? fs::path(tag).filename().string() : coco_file, coco_id);
         }
         frames++; total_dets += static_cast<long>(dets.size());
         sum_pre += be->pre_ms; sum_inf += be->infer_ms; sum_post += be->post_ms;
         if (!quiet)
             std::cout << "  " << tag << "  dets=" << dets.size()
-                      << "  infer=" << be->infer_ms << "ms\n";
+                      << "  infer=" << be->infer_ms << "ms" << slice_note << "\n";
         if (!no_save) {
             cv::Mat vis = img.clone();
             if (be->is_seg()) {                       // alpha-composite segmentation masks under the boxes
@@ -201,10 +290,31 @@ int main(int argc, char** argv) {
 #ifdef HAVE_VIDEOIO
         cv::VideoCapture cap(source);
         if (!cap.isOpened()) { std::cerr << "cannot open video: " << source << "\n"; return 4; }
+        // label-export sampling stride: all=1, 1s=round(fps), N=every Nth
+        int stride = 1;
+        if (!export_labels.empty()) {
+            if (sampling == "1s") {
+                const double fps = cap.get(cv::CAP_PROP_FPS);
+                stride = std::max(1, static_cast<int>(std::lround(fps > 0 ? fps : 30)));
+            } else if (sampling != "all") {
+                try { stride = std::max(1, std::stoi(sampling)); }
+                catch (...) { std::cerr << "unknown --sampling: " << sampling << "\n"; return 2; }
+            }
+        }
+        const std::string vstem = fs::path(source).stem().string();
         cv::Mat frame; long idx = 0;
         while (cap.read(frame)) {
             if (limit > 0 && idx >= limit) break;
-            run_one(frame, source + "#" + std::to_string(idx));
+            const bool sampled = !export_labels.empty() && idx % stride == 0;
+            std::string coco_file;
+            if (sampled) {
+                char fn[64];
+                std::snprintf(fn, sizeof(fn), "%s_%06ld.jpg", vstem.c_str(), idx);
+                write_jpg((fs::path(frames_dir) / fn).string(), frame);
+                coco_file = std::string("frames/") + fn;
+            }
+            run_one(frame, source + "#" + std::to_string(idx), sampled, coco_file,
+                    static_cast<int>(idx) + 1);
             ++idx;
         }
 #else
@@ -223,7 +333,20 @@ int main(int argc, char** argv) {
     std::cout << "\n[summary] frames=" << frames << "  total_dets=" << total_dets
               << "  avg/frame: pre=" << sum_pre / frames << " infer=" << sum_inf / frames
               << " post=" << sum_post / frames << " total=" << avg << "ms"
-              << "  model-FPS=" << 1000.0 / avg << "  wall=" << wall << "s\n";
+              << "  model-FPS=" << 1000.0 / avg << "  wall=" << wall << "s";
+    if (cfg.nms_mode == NmsMode::ClusterWeighted)
+        std::cout << "  nms=cw(sigma=" << cfg.cw_sigma << ")";
+    std::cout << "\n";
+    if (slice_mode != SliceMode::Off)
+        std::cout << "[slicing] mode=" << slicing << "  tiles=" << tstats.tiles_run << "/"
+                  << tstats.tiles_total << "  size=" << tstats.tile_size_label()
+                  << "  fallbacks=" << tstats.fallbacks << "  capped=" << tstats.capped << "\n";
+    if (sink) {
+        const AnnotationSink::Result r = sink->finish();
+        if (!r.error.empty()) std::cerr << "[labels] export failed: " << r.error << "\n";
+        else std::cout << "[labels] " << annot::label(lfmt) << "  images=" << r.images
+                       << "  instances=" << r.instances << " -> " << export_labels << "/\n";
+    }
     if (!no_save) std::cout << "[saved] annotated -> " << outdir << "/\n";
     return 0;
 }
