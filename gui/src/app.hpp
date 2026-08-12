@@ -13,6 +13,8 @@
 #include <condition_variable>
 #include <opencv2/opencv.hpp>
 #include "yolomaster.hpp"
+#include "slicing.hpp"
+#include "annotate_export.hpp"
 
 namespace gui {
 
@@ -30,6 +32,10 @@ struct Platform {
     std::function<bool(const cv::Mat& rgba, Texture& tex)> upload;
     // Native open-file dialog; returns "" if cancelled. `filter` is a platform-specific spec.
     std::function<std::string(const char* title, const char* filter)> open_file;
+    // Native save-file dialog; returns "" if cancelled. `def_name` seeds the file name,
+    // `def_ext` (no dot) is appended when the user types none.
+    std::function<std::string(const char* title, const char* filter,
+                              const char* def_name, const char* def_ext)> save_file;
     // Native folder-picker; returns "" if cancelled.
     std::function<std::string(const char* title)> open_folder;
     // Open a URL in the default browser.
@@ -136,6 +142,8 @@ private:
     bool        ares_dirty_ = false;
     bool        async_mode_ = false;   // true while a video/webcam worker owns the backend
     bool        seg_model_ = false;    // stable is_seg() flag (safe to read from the main thread)
+    bool        model_is_seg_ = false; // the loaded MODEL has a seg head (survives sliced runs
+                                       // that drop masks; cleared only on load_model)
 
     // ---- results ("forward once, tune cheap") ----
     std::vector<yolomaster::Detection> dets_;
@@ -155,6 +163,30 @@ private:
     Overlay    overlay_ = Overlay::Both;
     Device     device_ = Device::CPU;
 
+    // ---- slicing (images + folders; video/webcam stay single-pass) ----
+    yolomaster::SliceMode slice_mode_ = yolomaster::SliceMode::Off;
+    int  tile_size_req_ = 0;            // requested tile edge, source px (0 = model imgsz)
+    bool slice_masks_ = false;          // keep the global pass's masks in sliced runs
+    bool sliced_run_ = false;           // current single-image cache came from a sliced run
+    yolomaster::SliceOutput sstats_;    // per-image slicing stats (single-image mode)
+    yolomaster::TileStats   tstats_;    // folder aggregate (published live by finfer thread)
+    yolomaster::SliceConfig slice_config() const;
+
+    // ---- zoom/pan (image + paused video; header stays ImGui-free -> plain floats) ----
+    float zoom_ = 1.f;                  // 1..kZoomMax
+    float pan_x_ = 0.f, pan_y_ = 0.f;   // pan offset in preview points
+    static constexpr float kZoomMax = 8.f;
+    void reset_zoom() { zoom_ = 1.f; pan_x_ = pan_y_ = 0.f; }
+
+    // ---- annotation / rendered export ----
+    int  label_fmt_ = 0;                // 0 YOLO (TXT), 1 COCO (JSON), 2 Pascal VOC (XML)
+    int  sampling_sel_ = 1;             // 0 every frame, 1 one per second, 2/3/4 every 5/10/30th
+    bool exporting_ = false;
+    std::thread export_;
+    std::atomic<int>  eprogress_{0}, etotal_{0};
+    std::atomic<bool> export_done_{false}, export_cancel_{false};
+    std::string export_msg_;            // completion / error line under the card
+
     static constexpr float kConfFloor = 0.05f;   // cache candidates down to here
 
     void load_model(const Platform& plat);
@@ -163,7 +195,8 @@ private:
     void load_image(const std::string& path, const Platform& plat);
     void load_folder(const std::string& dir, const Platform& plat);
     void select_index(int i, const Platform& plat);   // show folder_imgs_[i] from cache
-    void folder_preinfer(std::vector<std::string> paths, yolomaster::Config c);  // background: infer all
+    void folder_preinfer(std::vector<std::string> paths, yolomaster::Config c,
+                         yolomaster::SliceConfig sc);  // background: infer all
     void show_folder_item(int idx, const Platform& plat);     // decode pixels + cached overlay
     void overlay_folder_item(int idx, const Platform& plat);  // re-NMS + mask from cache (no decode)
     void close_folder(const Platform* plat = nullptr);
@@ -192,6 +225,21 @@ private:
     void recompute_nms();             // cheap: nms_and_cap on cached candidates
     void rebuild_overlay(const Platform& plat);   // recomposite seg masks -> mask_tex_
     void draw_sidebar(const Platform& plat);
+    void draw_export_card(const Platform& plat);     // EXPORT card (rendered + labels)
+    // rendered-frame composition (CPU): frame + seg overlay (per the Overlay mode) + boxes
+    cv::Mat compose_render(const cv::Mat& bgr, const std::vector<yolomaster::Detection>& dets,
+                           const std::vector<float>& proto, int pc, int ph, int pw,
+                           const yolomaster::LetterboxInfo& lb) const;
+    bool export_dialect() const;                     // seg polygons in label files right now?
+    void export_render_current(const Platform& plat);   // save-file dialog + write current frame
+    void export_labels_current(const Platform& plat);   // single image -> one label file
+    void begin_export(int total);                    // shared thread-state setup
+    void start_folder_render_export(const std::string& dir);
+    void start_video_render_export(const std::string& path);
+    void start_folder_label_export(const std::string& dir);
+    void start_video_label_export(const std::string& root);
+    void poll_export();                              // join the finished export thread
+    void cancel_export();                            // request + join (Cancel button, dtor)
     void draw_filelist(const Platform& plat);   // folder-batch navigator panel
     void draw_finder_icons(const Platform& plat);
     void draw_finder_list(const Platform& plat);

@@ -6,6 +6,7 @@
 #include <cfloat>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -31,7 +32,15 @@ static ImU32 text_on(int cls) {
     return lum > 0.6f ? IM_COL32(0,0,0,255) : IM_COL32(255,255,255,255);
 }
 
-App::~App() { close_camera(); close_video(); close_folder(); }   // join all background threads
+App::~App() { cancel_export(); close_camera(); close_video(); close_folder(); }   // join all background threads
+
+SliceConfig App::slice_config() const {
+    SliceConfig sc;
+    sc.mode = slice_mode_;
+    sc.tile_size = tile_size_req_;
+    sc.keep_global_masks = slice_masks_;
+    return sc;
+}
 
 std::string App::gpu_device_str() const {
     return device_ == Device::GPU ? "gpu" : "cpu";   // make_backend maps "gpu" per backend
@@ -48,6 +57,7 @@ void App::load_model(const Platform& plat) {
     be_.reset();
     dets_.clear();
     be_err_.clear();
+    model_is_seg_ = false;
     const char* names[] = {"auto", "onnx", "ncnn", "mnn"};
     std::string resolved, err;
     auto be = make_backend(model_path_, names[backend_sel_], threads_, gpu_device_str(), resolved, err);
@@ -64,6 +74,7 @@ void App::load_model(const Platform& plat) {
                : (be_->meta_imgsz > 0 ? be_->meta_imgsz : 640);
     cfg_.max_det = 300;
     cfg_.multi_label = false;
+    reset_zoom();
     if (cam)                     { start_worker(); submit_job(img_bgr_); }   // resume live feed
     else if (vid && !vpath.empty()) open_video(vpath, plat);                 // re-infer the clip
     else if (fold && !fdir.empty()) load_folder(fdir, plat);                 // re-infer the folder
@@ -114,6 +125,7 @@ void App::load_image(const std::string& path, const Platform& plat) {
     cv::Mat rgba;
     cv::cvtColor(bgr, rgba, cv::COLOR_BGR2RGBA);
     if (!plat.upload(rgba, img_tex_)) { load_err_ = "GPU texture upload failed"; return; }
+    reset_zoom();
     need_reinfer_ = (be_ != nullptr);
 }
 
@@ -130,7 +142,7 @@ void App::close_folder(const Platform* plat) {
 
 // Background: forward-pass EVERY image once, caching per-image candidates (+ proto for seg)
 // and timings (per-image model ms, plus folder mean/min/max and wall clock).
-void App::folder_preinfer(std::vector<std::string> paths, Config c) {
+void App::folder_preinfer(std::vector<std::string> paths, Config c, SliceConfig sc) {
     using clk = std::chrono::steady_clock;
     const auto t_start = clk::now();
     double sum = 0, lo = 0, hi = 0; int n = 0;
@@ -138,7 +150,17 @@ void App::folder_preinfer(std::vector<std::string> paths, Config c) {
         cv::Mat bgr = cv::imread(paths[i], cv::IMREAD_COLOR);
         if (!bgr.empty()) {
             try {
-                be_->infer(bgr, c);
+                if (sc.mode != SliceMode::Off) {
+                    // postcondition restores be_->candidates/lb/proto -> snapshot below unchanged
+                    const SliceOutput so = sliced_candidates(*be_, bgr, c, sc, kConfFloor,
+                                                             &finfer_cancel_);
+                    if (so.cancelled) break;
+                    model_is_seg_ = so.model_is_seg;
+                    tstats_.add(so.tiles_run, so.tiles_total, so.tile_size_used,
+                                so.used_fallback, so.capped);
+                } else {
+                    be_->infer(bgr, c);
+                }
                 FolderItem it;
                 it.cands = be_->candidates; it.lb = be_->cand_lb;
                 it.ow = be_->cand_orig_w;   it.oh = be_->cand_orig_h;
@@ -172,11 +194,12 @@ void App::load_folder(const std::string& dir, const Platform& plat) {
     if (!be_) { folder_imgs_.clear(); load_err_ = "load a model first"; return; }
     fcache_.assign(folder_imgs_.size(), FolderItem{});
     folder_ready_ = false; fprogress_ = 0; finfer_done_ = false;
+    tstats_ = TileStats{};
     cur_idx_ = 0; scroll_to_cur_ = true;
     show_folder_item(0, plat);              // show first image now; boxes appear when pre-infer finishes
     Config c = cfg_;
     c.conf_thresh = kConfFloor; c.iou_thresh = iou_; c.stretch = (prep_ == Preprocess::Stretch);
-    finfer_ = std::thread(&App::folder_preinfer, this, folder_imgs_, c);
+    finfer_ = std::thread(&App::folder_preinfer, this, folder_imgs_, c, slice_config());
 }
 
 // re-NMS + mask for a cached image (no decode) - used on conf/IoU change
@@ -186,6 +209,7 @@ void App::overlay_folder_item(int idx, const Platform& plat) {
     }
     const FolderItem& it = fcache_[idx];
     seg_model_ = !it.proto.empty();
+    if (seg_model_) model_is_seg_ = true;
     inf_ms_ = it.ms; pre_ms_ = 0; post_ms_ = 0;   // this image's model-only time
     Config c = cfg_; c.conf_thresh = conf_; c.iou_thresh = iou_;
     dets_ = nms_and_cap(it.cands, c, it.ow, it.oh);
@@ -204,6 +228,7 @@ void App::show_folder_item(int idx, const Platform& plat) {
     img_bgr_ = bgr; img_path_ = folder_imgs_[idx];
     cv::Mat rgba; cv::cvtColor(bgr, rgba, cv::COLOR_BGR2RGBA);
     plat.upload(rgba, img_tex_);
+    reset_zoom();
     if (folder_ready_) overlay_folder_item(idx, plat);
     else { dets_.clear(); has_mask_ = false; }
 }
@@ -265,6 +290,7 @@ void App::open_video(const std::string& path, const Platform& plat) {
     if (!cap_.open(path)) { load_err_ = "cannot open video: " + path; return; }
     is_video_ = true; playing_ = false; play_accum_ = 0.0; frame_idx_ = 0;
     video_ready_ = false; vprogress_ = 0; vinfer_done_ = false;
+    reset_zoom();
     video_path_ = path;
     total_frames_ = (int)cap_.get(cv::CAP_PROP_FRAME_COUNT);
     const double fps = cap_.get(cv::CAP_PROP_FPS);
@@ -330,6 +356,7 @@ void App::open_camera(const Platform& plat) {
     cam_.set(cv::CAP_PROP_FRAME_WIDTH, 1280);      // 720p is plenty; we downscale to imgsz anyway
     cam_.set(cv::CAP_PROP_FRAME_HEIGHT, 720);
     is_cam_ = true; cam_fps_ema_ = cam_ms_ema_ = 0.0;
+    reset_zoom();
     start_worker();
 }
 
@@ -344,6 +371,7 @@ void App::clear_preview(const Platform* plat) {
     class_counts_.clear();
     has_mask_ = false; seg_model_ = false;
     inf_ms_ = pre_ms_ = post_ms_ = 0;
+    reset_zoom();
 }
 
 void App::close_camera(const Platform* plat) {
@@ -445,10 +473,22 @@ void App::run_inference() {
     c.iou_thresh  = iou_;
     c.stretch     = (prep_ == Preprocess::Stretch);
     cfg_.stretch  = c.stretch;   // keep display cfg in sync (recompute_nms uses cfg_)
-    try { dets_ = be_->infer(img_bgr_, c); }
+    try {
+        if (slice_mode_ != SliceMode::Off) {
+            // sliced_candidates restores the backend's cached state to describe the merged
+            // run, so recompute_nms/rebuild_overlay below work unchanged.
+            sstats_ = sliced_candidates(*be_, img_bgr_, c, slice_config(), kConfFloor);
+            sliced_run_ = true;
+            pre_ms_ = 0; inf_ms_ = be_->infer_ms; post_ms_ = 0;   // sum of all forwards
+        } else {
+            dets_ = be_->infer(img_bgr_, c);
+            sliced_run_ = false;
+            pre_ms_ = be_->pre_ms; inf_ms_ = be_->infer_ms; post_ms_ = be_->post_ms;
+        }
+    }
     catch (const std::exception& e) { be_err_ = std::string("inference error: ") + e.what(); return; }
-    pre_ms_ = be_->pre_ms; inf_ms_ = be_->infer_ms; post_ms_ = be_->post_ms;
     seg_model_ = be_->is_seg();
+    model_is_seg_ = sliced_run_ ? sstats_.model_is_seg : seg_model_;
     need_reinfer_ = false;
     need_renms_ = true;   // apply the real conf/iou below
 }
@@ -484,6 +524,7 @@ void App::rebuild_overlay(const Platform& plat) {
 
 void App::frame(const Platform& plat) {
     if (!tried_default_) load_default_model(plat);   // bundled model, once at startup
+    if (exporting_) poll_export();                   // join a finished export thread
 
     // sync inference for a single still image only (video/camera/folder own the backend elsewhere)
     if (!async_mode_ && !is_video_ && folder_imgs_.empty()) {
@@ -569,9 +610,27 @@ void App::frame(const Platform& plat) {
                 else if (back) select_index(cur_idx_ - 1, plat);
             }
         } else if (is_video_) {
-            if (ImGui::IsKeyPressed(ImGuiKey_Space)) playing_ = !playing_;
+            if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
+                playing_ = !playing_;
+                if (playing_) reset_zoom();          // zoom is for stills and paused frames
+            }
             if (!playing_ && fwd)  seek_video(frame_idx_ + 1, plat);   // step frames while paused
             if (!playing_ && back) seek_video(frame_idx_ - 1, plat);
+        }
+        // zoom shortcuts (center-anchored): Ctrl+= / Ctrl+- step, Ctrl+0 reset
+        const bool zoom_ok = img_tex_.id && !is_cam_ && (!is_video_ || (video_ready_ && !playing_));
+        if (zoom_ok && ImGui::GetIO().KeyCtrl) {
+            auto step = [&](float f) {
+                const float z = std::clamp(zoom_ * f, 1.f, kZoomMax);
+                const float r = z / zoom_;
+                zoom_ = z; pan_x_ *= r; pan_y_ *= r;
+                if (zoom_ < 1.02f) reset_zoom();
+            };
+            if (ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd))
+                step(1.25f);
+            if (ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract))
+                step(1.f / 1.25f);
+            if (ImGui::IsKeyPressed(ImGuiKey_0)) reset_zoom();
         }
     }
 
@@ -601,7 +660,8 @@ void App::frame(const Platform& plat) {
     }
 
     ImGui::SameLine();
-    ImGui::BeginChild("preview", ImVec2(0, 0), true);
+    // NoScrollWithMouse: the wheel zooms the preview instead of scrolling the child
+    ImGui::BeginChild("preview", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollWithMouse);
     draw_preview(plat);
     ImGui::EndChild();
 
@@ -658,7 +718,7 @@ void App::draw_sidebar(const Platform& plat) {
     // APPEARANCE and DETECTION (conf/IoU) stay live throughout - both are cheap re-renders.
     const bool busy = (is_video_ && !video_ready_) ||
                       (!folder_imgs_.empty() && !folder_ready_);
-    const bool lock = is_cam_ || busy;
+    const bool lock = is_cam_ || busy || exporting_;   // exports read the caches -> freeze them
 
     // ---- MODEL (auto-loads; no Load button) ----
     begin_card("MODEL");
@@ -734,14 +794,90 @@ void App::draw_sidebar(const Platform& plat) {
     ImGui::EndDisabled();
     end_card();
 
+    // ---- SLICING (images + folders; video/webcam stay single-pass) ----
+    begin_card("SLICING");
+    {
+        const bool na = is_video_ || is_cam_;
+        ImGui::BeginDisabled(lock || na);
+        field_label("Mode");
+        int sm = (int)slice_mode_;
+        const char* sms[] = {"Off", "Dense", "Sparse SAHI"};
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("##slicemode", &sm, sms, IM_ARRAYSIZE(sms)) && (SliceMode)sm != slice_mode_) {
+            slice_mode_ = (SliceMode)sm;
+            if (!folder_imgs_.empty()) load_folder(folder_path_, plat);   // re-infer the folder
+            else                       need_reinfer_ = !img_bgr_.empty();
+        }
+        if (slice_mode_ != SliceMode::Off) {
+            // per-source tile-size bound [model imgsz, max(imgsz, shortSide/4)]
+            int ceiling = cfg_.imgsz;
+            if (!folder_imgs_.empty()) {
+                for (const auto& it : fcache_)
+                    if (it.done) ceiling = std::max(ceiling,
+                        clamped_tile_size(1 << 20, cfg_.imgsz, it.ow, it.oh));
+            } else if (!img_bgr_.empty()) {
+                ceiling = clamped_tile_size(1 << 20, cfg_.imgsz, img_bgr_.cols, img_bgr_.rows);
+            }
+            field_label("Tile size");
+            if (ceiling > cfg_.imgsz) {
+                int ts = tile_size_req_ > 0 ? std::clamp(tile_size_req_, cfg_.imgsz, ceiling)
+                                            : cfg_.imgsz;
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderInt("##tilesize", &ts, cfg_.imgsz, ceiling, "%d px");
+                // commit on release: every change re-runs the whole source
+                if (ImGui::IsItemDeactivatedAfterEdit() && ts != tile_size_req_) {
+                    tile_size_req_ = ts;
+                    if (!folder_imgs_.empty()) load_folder(folder_path_, plat);
+                    else                       need_reinfer_ = !img_bgr_.empty();
+                }
+            } else {
+                ImGui::BeginDisabled(true);
+                int ts = cfg_.imgsz;
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderInt("##tilesize", &ts, cfg_.imgsz, cfg_.imgsz, "%d px");
+                ImGui::EndDisabled();
+                ImGui::TextWrapped("The input dimensions are too small for larger tiles. "
+                                   "Slicing runs at the model input (%d px).", cfg_.imgsz);
+            }
+            if (model_is_seg_ || slice_masks_) {
+                bool km = slice_masks_;
+                if (ImGui::Checkbox("Masks (global pass)", &km) && km != slice_masks_) {
+                    slice_masks_ = km;
+                    if (!folder_imgs_.empty()) load_folder(folder_path_, plat);
+                    else                       need_reinfer_ = !img_bgr_.empty();
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Keep the global pass's segmentation masks in sliced runs.\n"
+                                      "Tile detections are always boxes only.");
+            }
+        }
+        ImGui::EndDisabled();
+        if (na) ImGui::TextDisabled("Images and folders only");
+    }
+    end_card();
+
     // ---- DETECTION ----
-    begin_card("DETECTION");   // always live: conf/IoU are cheap re-NMS, even on a running camera
+    begin_card("DETECTION");   // always live: conf/IoU/NMS are cheap re-NMS, even on a running camera
     field_label("Confidence");
     ImGui::SetNextItemWidth(-1);
     if (ImGui::SliderFloat("##conf", &conf_, 0.05f, 0.95f, "%.2f")) need_renms_ = true;
-    field_label("IoU (NMS)");
+    field_label("IoU");
     ImGui::SetNextItemWidth(-1);
     if (ImGui::SliderFloat("##iou", &iou_, 0.10f, 0.90f, "%.2f")) need_renms_ = true;
+    field_label("NMS");
+    int nm = cfg_.nms_mode == NmsMode::ClusterWeighted ? 1 : 0;
+    const char* nms[] = {"Standard", "Cluster-Weighted"};
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::Combo("##nmsmode", &nm, nms, IM_ARRAYSIZE(nms))) {
+        cfg_.nms_mode = nm ? NmsMode::ClusterWeighted : NmsMode::Standard;
+        need_renms_ = true;
+    }
+    if (cfg_.nms_mode == NmsMode::ClusterWeighted) {
+        field_label("Sigma");
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##sigma", &cfg_.cw_sigma, 0.01f, 0.50f, "%.2f"))
+            need_renms_ = true;
+    }
     end_card();
 
     // ---- APPEARANCE ----
@@ -766,6 +902,9 @@ void App::draw_sidebar(const Platform& plat) {
     ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##labels", &lm, lms, IM_ARRAYSIZE(lms))) labels_ = (LabelMode)lm;
     end_card();
+
+    // ---- EXPORT (rendered frames + annotation labels; not for the live webcam) ----
+    if (!is_cam_ && be_ && !img_bgr_.empty()) draw_export_card(plat);
 
     // ---- DEVICE ----
     begin_card("DEVICE");
@@ -801,10 +940,32 @@ void App::draw_sidebar(const Platform& plat) {
                 ImGui::Text("Total"); ImGui::SameLine(110 * ui);
                 ImGui::TextDisabled("%d imgs  \xc2\xb7  %.2f s", fcount_, fwall_s_);
             }
+            if (slice_mode_ != SliceMode::Off && tstats_.tiles_total > 0) {
+                ImGui::Text("Slicing"); ImGui::SameLine(110 * ui);
+                ImGui::TextDisabled("%s", slice_mode_ == SliceMode::Dense ? "Dense" : "Sparse SAHI");
+                ImGui::Text("Tile size"); ImGui::SameLine(110 * ui);
+                ImGui::TextDisabled("%s px", tstats_.tile_size_label().c_str());
+                ImGui::Text("Tiles"); ImGui::SameLine(110 * ui);
+                ImGui::TextDisabled("%d / %d", tstats_.tiles_run, tstats_.tiles_total);
+                if (tstats_.fallbacks > 0 || tstats_.capped > 0) {
+                    ImGui::Text("Fallbacks"); ImGui::SameLine(110 * ui);
+                    ImGui::TextDisabled("%d  \xc2\xb7  capped %d", tstats_.fallbacks, tstats_.capped);
+                }
+            }
         } else {
             const double total = pre_ms_ + inf_ms_ + post_ms_;
             ImGui::Text("Overall"); ImGui::SameLine(110 * ui);
             ImGui::TextDisabled("%.1f ms  \xc2\xb7  %.0f fps", total, total > 0 ? 1000.0 / total : 0.0);
+            if (sliced_run_) {
+                ImGui::Text("Slicing"); ImGui::SameLine(110 * ui);
+                ImGui::TextDisabled("%s", slice_mode_ == SliceMode::Dense ? "Dense" : "Sparse SAHI");
+                ImGui::Text("Tile size"); ImGui::SameLine(110 * ui);
+                ImGui::TextDisabled("%d px", sstats_.tile_size_used);
+                ImGui::Text("Tiles"); ImGui::SameLine(110 * ui);
+                ImGui::TextDisabled("%d / %d%s%s", sstats_.tiles_run, sstats_.tiles_total,
+                                    sstats_.used_fallback ? "  \xc2\xb7  fallback" : "",
+                                    sstats_.capped ? "  \xc2\xb7  capped" : "");
+            }
         }
         ImGui::Text("Detections"); ImGui::SameLine(110 * ui); ImGui::TextDisabled("%d", (int)dets_.size());
         if (!class_counts_.empty()) {
@@ -1029,7 +1190,10 @@ static void draw_box(ImDrawList* dl, const Detection& d, BoxStyle style, LabelMo
 }
 
 void App::draw_transport(const Platform& plat) {
-    if (ImGui::Button(playing_ ? "Pause" : "Play ")) playing_ = !playing_;
+    if (ImGui::Button(playing_ ? "Pause" : "Play ")) {
+        playing_ = !playing_;
+        if (playing_) reset_zoom();
+    }
     ImGui::SameLine();
     int f = frame_idx_;
     ImGui::SetNextItemWidth(-150);
@@ -1204,21 +1368,74 @@ void App::draw_preview(const Platform& plat) {
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float ctrlH = is_video_ ? ImGui::GetFrameHeightWithSpacing() : 0.f;
     const float imgH = std::max(1.f, avail.y - ctrlH);
-    const float scale = std::min(avail.x / img_tex_.w, imgH / img_tex_.h);
-    const ImVec2 disp(img_tex_.w * scale, img_tex_.h * scale);
-    const ImVec2 origin(cur.x + (avail.x - disp.x) * 0.5f, cur.y + (imgH - disp.y) * 0.5f);
+    float scale = std::min(avail.x / img_tex_.w, imgH / img_tex_.h);
+    ImVec2 disp(img_tex_.w * scale, img_tex_.h * scale);
+    ImVec2 origin(cur.x + (avail.x - disp.x) * 0.5f, cur.y + (imgH - disp.y) * 0.5f);
+
+    // ---- zoom & pan (image always; video only while paused; never the live webcam) ----
+    const bool zoom_ok = !is_cam_ && (!is_video_ || (video_ready_ && !playing_));
+    ImGuiIO& io = ImGui::GetIO();
+    if (zoom_ok) {
+        // interaction item over the image area (created first so it owns the mouse there;
+        // drawing below uses absolute draw-list coords, unaffected by the cursor)
+        ImGui::SetCursorScreenPos(cur);
+        ImGui::InvisibleButton("##zoomarea", ImVec2(std::max(1.f, avail.x), imgH));
+        const ImVec2 C(cur.x + avail.x * 0.5f, cur.y + imgH * 0.5f);   // zoom anchor frame center
+        auto clamp_pan = [&]() {
+            const float mx = (zoom_ - 1.f) * avail.x * 0.5f, my = (zoom_ - 1.f) * imgH * 0.5f;
+            pan_x_ = std::clamp(pan_x_, -mx, mx);
+            pan_y_ = std::clamp(pan_y_, -my, my);
+        };
+        if (ImGui::IsItemHovered() && io.MouseWheel != 0.f) {
+            // cursor-anchored wheel zoom: the pixel under the cursor stays put
+            const float z = std::clamp(zoom_ * std::pow(1.25f, io.MouseWheel), 1.f, kZoomMax);
+            const float r = z / zoom_;
+            const float px = io.MousePos.x - C.x, py = io.MousePos.y - C.y;
+            pan_x_ = px - (px - pan_x_) * r;
+            pan_y_ = py - (py - pan_y_) * r;
+            zoom_ = z;
+            if (zoom_ < 1.02f) reset_zoom();          // snap home near 1x
+            clamp_pan();
+        }
+        if (ImGui::IsItemActive() && zoom_ > 1.001f) {   // click-and-drag pan when zoomed
+            pan_x_ += io.MouseDelta.x;
+            pan_y_ += io.MouseDelta.y;
+            clamp_pan();
+        }
+    }
+    if (zoom_ > 1.001f) {   // apply about the frame center; boxes and masks follow for free
+        const ImVec2 C(cur.x + avail.x * 0.5f, cur.y + imgH * 0.5f);
+        origin.x = C.x + (origin.x - C.x) * zoom_ + pan_x_;
+        origin.y = C.y + (origin.y - C.y) * zoom_ + pan_y_;
+        scale *= zoom_;
+        disp.x *= zoom_; disp.y *= zoom_;
+    }
 
     const bool show_masks = seg_model_ && overlay_ != Overlay::Boxes && has_mask_;
     // masks-only hides the box outline but keeps the labels
     const bool box_shape  = !seg_model_ || overlay_ != Overlay::Masks;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect(cur, ImVec2(cur.x + avail.x, cur.y + imgH), true);   // zoomed content stays inside
     const ImVec2 br(origin.x + disp.x, origin.y + disp.y);
     dl->AddImage((ImTextureID)img_tex_.id, origin, br);
     if (show_masks)   // seg overlay is same dims as the image -> same rect, alpha-blended by ImGui
         dl->AddImage((ImTextureID)mask_tex_.id, origin, br);
     for (const auto& d : dets_)
         draw_box(dl, d, style_, labels_, cfg_, origin, scale, box_shape);
+    dl->PopClipRect();
+
+    if (zoom_ > 1.001f) {   // zoom badge, top-right pill
+        char zb[48];
+        std::snprintf(zb, sizeof(zb), "%d%% - Ctrl+0 to reset", (int)std::lround(zoom_ * 100));
+        const ImVec2 ts = ImGui::CalcTextSize(zb);
+        const float padX = 8.f, padY = 3.f;
+        const ImVec2 p1(cur.x + avail.x - 10.f, cur.y + 10.f);
+        const ImVec2 p0(p1.x - ts.x - 2 * padX, p1.y);
+        dl->AddRectFilled(p0, ImVec2(p1.x, p1.y + ts.y + 2 * padY),
+                          IM_COL32(15, 17, 20, 205), (ts.y + 2 * padY) * 0.5f);
+        dl->AddText(ImVec2(p0.x + padX, p0.y + padY), IM_COL32(220, 224, 230, 255), zb);
+    }
 
     if (is_cam_) draw_camera_hud();
 
@@ -1236,6 +1453,364 @@ void App::draw_preview(const Platform& plat) {
                                ImVec2(-1, 0), ov);
         }
     }
+}
+
+// ---------------- export (rendered frames + annotation labels) ----------------
+
+static std::string path_stem(const std::string& p) {
+    return std::filesystem::path(p).stem().string();
+}
+
+// The folder picker selects an EXISTING directory, so bulk exports create an enclosed,
+// source-named subfolder inside it instead of dumping files at the picked root (the Mac
+// runner gets this from the save panel's name-a-folder idiom). An existing non-empty
+// folder of the same name is left alone: the export gets "name-2", "name-3", ...
+static std::string enclosed_dir(const std::string& base, const std::string& name) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path dir = fs::path(base) / name;
+    for (int i = 2; fs::exists(dir, ec) && !fs::is_empty(dir, ec); ++i)
+        dir = fs::path(base) / (name + "-" + std::to_string(i));
+    fs::create_directories(dir, ec);
+    return dir.string();
+}
+
+// last path component as a display/export name ("C:/data/val/" -> "val")
+static std::string dir_display_name(const std::string& p) {
+    std::filesystem::path q(p);
+    if (q.filename().empty()) q = q.parent_path();
+    const std::string n = q.filename().string();
+    return n.empty() ? "folder" : n;
+}
+
+// Current run's file dialect (WYSIWYG): seg polygons only when mask data actually exists.
+bool App::export_dialect() const {
+    if (is_video_) return !vproto_.empty();
+    if (!folder_imgs_.empty())
+        return model_is_seg_ && (slice_mode_ == SliceMode::Off || slice_masks_);
+    return be_ && !be_->proto.empty();
+}
+
+// Compose the annotated frame CPU-side: seg overlay (per the Overlay mode) under draw()'s
+// boxes. Rendered files use the shared draw() style; the ImGui-only hud/neon looks are a
+// screen affordance, not an export format.
+cv::Mat App::compose_render(const cv::Mat& bgr, const std::vector<Detection>& dets,
+                            const std::vector<float>& proto, int pc, int ph, int pw,
+                            const LetterboxInfo& lb) const {
+    cv::Mat vis = bgr.clone();
+    if (!proto.empty() && pc > 0 && overlay_ != Overlay::Boxes) {
+        cv::Mat ov = seg_overlay(dets, proto, pc, ph, pw, lb, cfg_.imgsz, bgr.cols, bgr.rows);
+        for (int y = 0; y < vis.rows; ++y) {
+            const uint8_t* o = ov.ptr<uint8_t>(y);
+            uint8_t* v = vis.ptr<uint8_t>(y);
+            for (int x = 0; x < vis.cols; ++x) {
+                const float a = o[x * 4 + 3] / 255.f;
+                if (a <= 0) continue;
+                v[x * 3 + 0] = (uint8_t)(v[x * 3 + 0] * (1 - a) + o[x * 4 + 2] * a);
+                v[x * 3 + 1] = (uint8_t)(v[x * 3 + 1] * (1 - a) + o[x * 4 + 1] * a);
+                v[x * 3 + 2] = (uint8_t)(v[x * 3 + 2] * (1 - a) + o[x * 4 + 0] * a);
+            }
+        }
+    }
+    if (!(!proto.empty() && overlay_ == Overlay::Masks))   // masks-only: no boxes
+        draw(vis, dets, cfg_);
+    return vis;
+}
+
+void App::begin_export(int total) {
+    if (export_.joinable()) export_.join();   // reclaim a previous (finished) thread
+    eprogress_ = 0; etotal_ = total;
+    export_cancel_ = false; export_done_ = false;
+    exporting_ = true;
+    export_msg_.clear();
+}
+
+void App::poll_export() {
+    if (!export_done_) return;
+    if (export_.joinable()) export_.join();
+    export_done_ = false;
+    exporting_ = false;
+}
+
+void App::cancel_export() {
+    export_cancel_ = true;
+    if (export_.joinable()) export_.join();
+    export_done_ = false;
+    exporting_ = false;
+}
+
+void App::export_render_current(const Platform& plat) {
+    if (!plat.save_file || img_bgr_.empty()) return;
+    std::string def = path_stem(img_path_.empty() ? "frame" : img_path_);
+    if (is_video_) def += "_" + std::to_string(frame_idx_);
+    const std::string p = plat.save_file("Save rendered image",
+        "JPEG\0*.jpg;*.jpeg\0All\0*.*\0", (def + ".jpg").c_str(), "jpg");
+    if (p.empty()) return;
+    cv::Mat vis;
+    if (is_video_ && frame_idx_ < (int)vproto_.size())
+        vis = compose_render(img_bgr_, dets_, vproto_[frame_idx_], vproto_c_, vproto_h_,
+                             vproto_w_, vlb_);
+    else if (!folder_imgs_.empty() && cur_idx_ >= 0 && cur_idx_ < (int)fcache_.size())
+        vis = compose_render(img_bgr_, dets_, fcache_[cur_idx_].proto, fcache_[cur_idx_].pc,
+                             fcache_[cur_idx_].ph, fcache_[cur_idx_].pw, fcache_[cur_idx_].lb);
+    else if (be_)
+        vis = compose_render(img_bgr_, dets_, be_->proto, be_->proto_c, be_->proto_h,
+                             be_->proto_w, be_->cand_lb);
+    else
+        vis = compose_render(img_bgr_, dets_, {}, 0, 0, 0, LetterboxInfo{});
+    export_msg_ = write_jpg(p, vis) ? "Saved " + std::filesystem::path(p).filename().string()
+                                    : "Save failed";
+}
+
+void App::export_labels_current(const Platform& plat) {
+    if (!plat.save_file || !be_ || img_bgr_.empty()) return;
+    const annot::Format fmt = label_fmt_ == 1 ? annot::Format::CocoJSON
+                            : label_fmt_ == 2 ? annot::Format::PascalVOC
+                                              : annot::Format::YoloTXT;
+    const std::string stem = path_stem(img_path_.empty() ? "image" : img_path_);
+    const char* ext = annot::file_extension(fmt);
+    char filter[96];
+    std::snprintf(filter, sizeof(filter), "%s%c*.%s%cAll%c*.*%c",
+                  annot::label(fmt), 0, ext, 0, 0, 0);   // embedded NULs for the Win32 filter
+    const std::string p = plat.save_file("Export labels", filter,
+                                         (stem + "." + ext).c_str(), ext);
+    if (p.empty()) return;
+    const bool dialect = export_dialect();
+    annot::Image aimg;
+    aimg.name = stem;
+    aimg.width = img_bgr_.cols; aimg.height = img_bgr_.rows;
+    aimg.instances = annotation_instances(dets_, dialect, be_->proto, be_->proto_c,
+                                          be_->proto_h, be_->proto_w, be_->cand_lb, cfg_.imgsz);
+    std::string body;
+    switch (fmt) {
+    case annot::Format::YoloTXT:  body = annot::yolo_lines(aimg, dialect); break;
+    case annot::Format::PascalVOC:
+        body = annot::voc_xml(aimg, cfg_.class_names,
+                              std::filesystem::path(p).parent_path().filename().string());
+        break;
+    default:
+        body = annot::coco_json({aimg}, {std::filesystem::path(img_path_).filename().string()},
+                                cfg_.class_names, dialect);
+    }
+    std::ofstream f(p, std::ios::binary);
+    f << body;
+    bool ok = (bool)f;
+    if (ok && fmt == annot::Format::YoloTXT) {   // classes.txt beside the label file
+        std::ofstream cf((std::filesystem::path(p).parent_path() / "classes.txt").string(),
+                         std::ios::binary);
+        cf << annot::classes_txt(cfg_.class_names);
+        ok = (bool)cf;
+    }
+    export_msg_ = ok ? std::to_string(aimg.instances.size()) + " instances -> "
+                       + std::filesystem::path(p).filename().string()
+                     : "Export failed";
+}
+
+void App::start_folder_render_export(const std::string& dir) {
+    begin_export((int)folder_imgs_.size());
+    Config c = cfg_;
+    c.conf_thresh = conf_; c.iou_thresh = iou_;
+    export_ = std::thread([this, dir, c] {
+        int n = 0;
+        for (int i = 0; i < (int)fcache_.size() && !export_cancel_; ++i) {
+            eprogress_ = i + 1;
+            if (!fcache_[i].done) continue;
+            cv::Mat bgr = cv::imread(folder_imgs_[i], cv::IMREAD_COLOR);
+            if (bgr.empty()) continue;
+            const FolderItem& it = fcache_[i];
+            const auto dets = nms_and_cap(it.cands, c, it.ow, it.oh);
+            cv::Mat vis = compose_render(bgr, dets, it.proto, it.pc, it.ph, it.pw, it.lb);
+            if (write_jpg(dir + "/" + path_stem(folder_imgs_[i]) + ".jpg", vis)) ++n;
+        }
+        export_msg_ = export_cancel_ ? "Cancelled"
+                                     : std::to_string(n) + " rendered images -> "
+                                       + std::filesystem::path(dir).filename().string();
+        export_done_ = true;
+    });
+}
+
+void App::start_video_render_export(const std::string& path) {
+    begin_export(total_frames_);
+    Config c = cfg_;
+    c.conf_thresh = conf_; c.iou_thresh = iou_;
+    export_ = std::thread([this, path, c] {
+        cv::VideoCapture cap(video_path_);   // own capture: never touch the playback cap_
+        cv::VideoWriter vw(path, cv::VideoWriter::fourcc('m', 'p', '4', 'v'),
+                           video_fps_, cv::Size(vorig_w_, vorig_h_));
+        if (!cap.isOpened() || !vw.isOpened()) {
+            export_msg_ = "Cannot write video";
+            export_done_ = true;
+            return;
+        }
+        cv::Mat f;
+        int n = 0;
+        while (!export_cancel_ && n < (int)vcache_.size() && cap.read(f) && !f.empty()) {
+            const auto dets = nms_and_cap(vcache_[n], c, vorig_w_, vorig_h_);
+            const bool seg = n < (int)vproto_.size();
+            cv::Mat vis = seg
+                ? compose_render(f, dets, vproto_[n], vproto_c_, vproto_h_, vproto_w_, vlb_)
+                : compose_render(f, dets, {}, 0, 0, 0, vlb_);
+            vw.write(vis);
+            eprogress_ = ++n;
+        }
+        vw.release();
+        export_msg_ = export_cancel_ ? "Cancelled"
+                                     : std::to_string(n) + " frames -> "
+                                       + std::filesystem::path(path).filename().string();
+        export_done_ = true;
+    });
+}
+
+void App::start_folder_label_export(const std::string& dir) {
+    begin_export((int)folder_imgs_.size());
+    Config c = cfg_;
+    c.conf_thresh = conf_; c.iou_thresh = iou_;
+    const annot::Format fmt = label_fmt_ == 1 ? annot::Format::CocoJSON
+                            : label_fmt_ == 2 ? annot::Format::PascalVOC
+                                              : annot::Format::YoloTXT;
+    const bool dialect = export_dialect();
+    export_ = std::thread([this, dir, c, fmt, dialect] {
+        AnnotationSink sink(fmt, dir, dir + "/annotations.coco.json", c.class_names, dialect);
+        int ninst = 0;
+        for (int i = 0; i < (int)fcache_.size() && !export_cancel_; ++i) {
+            eprogress_ = i + 1;
+            if (!fcache_[i].done) continue;
+            const FolderItem& it = fcache_[i];
+            annot::Image aimg;
+            aimg.name = path_stem(folder_imgs_[i]);
+            aimg.width = it.ow; aimg.height = it.oh;
+            const auto dets = nms_and_cap(it.cands, c, it.ow, it.oh);
+            aimg.instances = annotation_instances(dets, dialect, it.proto, it.pc, it.ph,
+                                                  it.pw, it.lb, c.imgsz);
+            ninst += (int)aimg.instances.size();
+            sink.add(aimg, std::filesystem::path(folder_imgs_[i]).filename().string());
+        }
+        const auto r = sink.finish();
+        export_msg_ = export_cancel_ ? "Cancelled"
+                    : !r.error.empty() ? "Export failed: " + r.error
+                    : std::to_string(r.images) + " images  \xc2\xb7  " + std::to_string(ninst)
+                      + " instances -> " + std::filesystem::path(dir).filename().string();
+        export_done_ = true;
+    });
+}
+
+void App::start_video_label_export(const std::string& root) {
+    begin_export(total_frames_);
+    Config c = cfg_;
+    c.conf_thresh = conf_; c.iou_thresh = iou_;
+    const annot::Format fmt = label_fmt_ == 1 ? annot::Format::CocoJSON
+                            : label_fmt_ == 2 ? annot::Format::PascalVOC
+                                              : annot::Format::YoloTXT;
+    const bool dialect = export_dialect();
+    const int strides[] = {1, std::max(1, (int)std::lround(video_fps_)), 5, 10, 30};
+    const int stride = strides[std::clamp(sampling_sel_, 0, 4)];
+    export_ = std::thread([this, root, c, fmt, dialect, stride] {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const std::string frames_dir = (fs::path(root) / "frames").string();
+        const std::string labels_dir = fmt == annot::Format::CocoJSON
+            ? root : (fs::path(root) / "labels").string();
+        fs::create_directories(frames_dir, ec);
+        if (fmt != annot::Format::CocoJSON) fs::create_directories(labels_dir, ec);
+        AnnotationSink sink(fmt, labels_dir, (fs::path(root) / "annotations.coco.json").string(),
+                            c.class_names, dialect);
+        cv::VideoCapture cap(video_path_);   // own capture (precedent: video_preinfer)
+        if (!cap.isOpened()) { export_msg_ = "Cannot reopen video"; export_done_ = true; return; }
+        const std::string stem = path_stem(video_path_);
+        cv::Mat f;
+        int n = 0, nimg = 0, ninst = 0;
+        while (!export_cancel_ && n < (int)vcache_.size() && cap.read(f) && !f.empty()) {
+            if (n % stride == 0) {
+                char fn[64];
+                std::snprintf(fn, sizeof(fn), "%s_%06d", stem.c_str(), n);
+                write_jpg(frames_dir + "/" + fn + ".jpg", f);
+                annot::Image aimg;
+                aimg.name = fn;
+                aimg.width = f.cols; aimg.height = f.rows;
+                const auto dets = nms_and_cap(vcache_[n], c, vorig_w_, vorig_h_);
+                const bool seg = dialect && n < (int)vproto_.size();
+                aimg.instances = annotation_instances(dets, dialect,
+                    seg ? vproto_[n] : std::vector<float>{}, seg ? vproto_c_ : 0,
+                    vproto_h_, vproto_w_, vlb_, c.imgsz);
+                ninst += (int)aimg.instances.size();
+                ++nimg;
+                sink.add(aimg, std::string("frames/") + fn + ".jpg", n + 1);
+            }
+            eprogress_ = ++n;
+        }
+        const auto r = sink.finish();
+        export_msg_ = export_cancel_ ? "Cancelled"
+                    : !r.error.empty() ? "Export failed: " + r.error
+                    : std::to_string(nimg) + " frames  \xc2\xb7  " + std::to_string(ninst)
+                      + " instances -> " + std::filesystem::path(root).filename().string();
+        export_done_ = true;
+    });
+}
+
+void App::draw_export_card(const Platform& plat) {
+    const bool folder = !folder_imgs_.empty();
+    const bool ready = folder ? folder_ready_ : (!is_video_ || video_ready_);
+    begin_card("EXPORT");
+    if (exporting_) {
+        const int done = eprogress_.load(), tot = etotal_.load();
+        char ov[48];
+        std::snprintf(ov, sizeof(ov), "Exporting  %d / %d", done, tot);
+        ImGui::ProgressBar(tot > 0 ? (float)done / tot : 0.f, ImVec2(-1, 0), ov);
+        if (ImGui::Button("Cancel export", ImVec2(-1, 0))) cancel_export();
+        end_card();
+        return;
+    }
+    ImGui::BeginDisabled(!ready);
+    field_label("Rendered");
+    if (is_video_) {
+        if (ImGui::Button("This frame", ImVec2(-1, 0))) export_render_current(plat);
+        if (ImGui::Button("All (annotated video)...", ImVec2(-1, 0)) && plat.save_file) {
+            const std::string p = plat.save_file("Save annotated video",
+                "MP4\0*.mp4\0All\0*.*\0", (path_stem(video_path_) + "_annotated.mp4").c_str(), "mp4");
+            if (!p.empty()) start_video_render_export(p);
+        }
+    } else if (folder) {
+        if (ImGui::Button("This image", ImVec2(-1, 0))) export_render_current(plat);
+        if (ImGui::Button("All...", ImVec2(-1, 0)) && plat.open_folder) {
+            const std::string d = plat.open_folder("Choose where to save the rendered images");
+            if (!d.empty())
+                start_folder_render_export(enclosed_dir(d, dir_display_name(folder_path_) + "-rendered"));
+        }
+    } else {
+        if (ImGui::Button("Save image...", ImVec2(-1, 0))) export_render_current(plat);
+    }
+    ImGui::Spacing();
+    field_label("Labels");
+    const char* fmts[] = {"YOLO (TXT)", "COCO (JSON)", "Pascal VOC (XML)"};
+    ImGui::SetNextItemWidth(-1);
+    ImGui::Combo("##labelfmt", &label_fmt_, fmts, IM_ARRAYSIZE(fmts));
+    if (is_video_) {
+        field_label("Frames");
+        const char* samps[] = {"Every frame", "One per second", "Every 5th", "Every 10th",
+                               "Every 30th"};
+        ImGui::SetNextItemWidth(-1);
+        ImGui::Combo("##sampling", &sampling_sel_, samps, IM_ARRAYSIZE(samps));
+    }
+    if (ImGui::Button("Export labels...", ImVec2(-1, 0))) {
+        if (is_video_) {
+            if (plat.open_folder) {
+                const std::string d = plat.open_folder("Choose where to save frames + labels");
+                if (!d.empty())
+                    start_video_label_export(enclosed_dir(d, path_stem(video_path_) + "-labels"));
+            }
+        } else if (folder) {
+            if (plat.open_folder) {
+                const std::string d = plat.open_folder("Choose where to save the labels");
+                if (!d.empty())
+                    start_folder_label_export(enclosed_dir(d, dir_display_name(folder_path_) + "-labels"));
+            }
+        } else {
+            export_labels_current(plat);
+        }
+    }
+    ImGui::EndDisabled();
+    if (!export_msg_.empty()) ImGui::TextDisabled("%s", export_msg_.c_str());
+    end_card();
 }
 
 } // namespace gui
