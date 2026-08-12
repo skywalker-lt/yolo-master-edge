@@ -1,4 +1,4 @@
-// Shared backend construction — used by both the CLI (main.cpp) and the GUI so the
+// Shared backend construction - used by both the CLI (main.cpp) and the GUI so the
 // two never drift. Header-only; guarded by the same USE_* defines as CMake sets.
 #pragma once
 #include <memory>

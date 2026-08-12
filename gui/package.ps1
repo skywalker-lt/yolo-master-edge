@@ -9,7 +9,7 @@
 # the gpu build -- otherwise the ~600 MB CUDA provider DLL gets bundled.
 #
 # Usage:  ./package.ps1                 (edit the default paths below, or pass them)
-#         ./package.ps1 -Version 1.0.0
+#         ./package.ps1 -Version 1.1.0
 param(
   [string]$OnnxRoot  = "C:/dev/onnxruntime-win-x64-1.18.1",             # CPU ORT (not gpu)
   [string]$NcnnRoot  = "C:/dev/ncnn-20260526-windows-vs2022-shared/x64",
@@ -17,7 +17,7 @@ param(
   [string]$OpenCVDir = "C:/dev/opencv/build/x64/vc16/lib",
   [string]$ModelsDir = "../models",                                     # source of model files
   [string[]]$Models  = @("v0.1-seg-n.onnx","v0.1-seg-n.mnn","v0.1-seg-n.metadata.yaml","v0.1-seg-n_ncnn"),
-  [string]$Version   = "1.0.0",
+  [string]$Version   = "1.1.0",
   [string]$Generator = ""
 )
 

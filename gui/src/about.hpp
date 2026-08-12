@@ -6,7 +6,7 @@ namespace gui {
 
 inline const char* kAppName     = "YOLO-Master";
 inline const char* kAppSubtitle = "Windows runner (GUI)";
-inline const char* kAppVersion  = "1.0.0";
+inline const char* kAppVersion  = "1.1.0";
 inline const char* kAppTagline  = "On-device YOLO-Master detection & segmentation via ONNX Runtime / ncnn / MNN.";
 inline const char* kAuthor     = "(Thomas) Ruiheng Li";
 inline const char* kAuthorAffil= "The Hong Kong University of Science and Technology";
