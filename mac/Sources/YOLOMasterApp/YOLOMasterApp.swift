@@ -1066,7 +1066,7 @@ struct ContentView: View {
     private var controls: some View {
         VStack(spacing: 14) {
             HStack(spacing: 10) {
-                Image(nsImage: NSImage(named: "NSApplicationIcon") ?? NSImage())
+                Image(nsImage: appMark())
                     .resizable().frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 0) {
                     Text("YOLO-Master").font(.headline)

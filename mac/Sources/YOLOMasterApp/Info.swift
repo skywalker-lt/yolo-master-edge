@@ -24,11 +24,33 @@ let acknowledgements: [Ack] = [
         repo: "https://github.com/apple/coremltools"),
 ]
 
-/// Load a bundled acknowledgement logo (Resources/ack/<name>.<ext>); nil if not bundled.
+/// Dev fallback root: when running WITHOUT an app bundle (`swift run` / the bare .build
+/// binary) there is no Contents/Resources, so resolve mac/Resources/ from this source file's
+/// compile-time path instead. Nil when the checkout isn't present (i.e. a real install, where
+/// the bundle path below always wins anyway).
+private let devResourcesRoot: URL? = {
+    let root = URL(fileURLWithPath: #filePath)          // .../mac/Sources/YOLOMasterApp/Info.swift
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Resources")
+    return FileManager.default.fileExists(atPath: root.path) ? root : nil
+}()
+
+/// Load an acknowledgement logo: bundle first (Resources/ack/<name>.<ext>, the v1.0.0 path),
+/// then the dev checkout fallback so `swift run` shows the real logos too.
 func ackLogo(_ name: String, _ ext: String) -> NSImage? {
     let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "ack")
         ?? Bundle.main.url(forResource: name, withExtension: ext)
+        ?? devResourcesRoot?.appendingPathComponent("ack/\(name).\(ext)")
     return url.flatMap { NSImage(contentsOf: $0) }
+}
+
+/// The app mark for the sidebar header: the bundle's icon when packaged; the checkout's
+/// AppIcon.png under `swift run`; the generic app icon as the last resort.
+func appMark() -> NSImage {
+    if Bundle.main.url(forResource: "AppIcon", withExtension: "icns") != nil,
+       let i = NSImage(named: "NSApplicationIcon") { return i }
+    if let root = devResourcesRoot, let i = NSImage(contentsOf: root.appendingPathComponent("AppIcon.png")) { return i }
+    return NSImage(named: "NSApplicationIcon") ?? NSImage()
 }
 
 struct InfoView: View {
