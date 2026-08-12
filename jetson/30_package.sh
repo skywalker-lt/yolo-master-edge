@@ -34,6 +34,11 @@ done
 patchelf --set-rpath '$ORIGIN/lib' "$OUT/yolomaster_edge"
 
 cp "$ONNX" "$OUT/models/" 2>/dev/null || echo "  [warn] no .onnx at $ONNX — add it to models/ before shipping"
+# metadata sidecar: the runner reads class names + imgsz from metadata.yaml next to the
+# engine (v1.1.0), so --classes is no longer needed when this ships.
+for MD in "${ONNX%.onnx}.metadata.yaml" "$(dirname "$ONNX")/metadata.yaml"; do
+  [ -f "$MD" ] && { cp "$MD" "$OUT/models/metadata.yaml"; break; }
+done
 
 cat > "$OUT/build_engine.sh" <<'EOS'
 #!/usr/bin/env bash
@@ -50,7 +55,7 @@ fi
   --saveEngine=models/esmoe_n_fp16.engine \
   --memPoolSize=workspace:256 --builderOptimizationLevel=3 --maxAuxStreams=0
 echo "engine -> models/esmoe_n_fp16.engine"
-echo "run:  ./yolomaster_edge --model models/esmoe_n_fp16.engine --source <img|dir> --classes visdrone --out out"
+echo "run:  ./yolomaster_edge --model models/esmoe_n_fp16.engine --source <img|dir|video> --out out"
 EOS
 chmod +x "$OUT/build_engine.sh"
 
@@ -65,8 +70,23 @@ Prebuilt aarch64 GPU runner. Runs on any **Jetson Orin** (Nano / NX / AGX, sm87)
     # ~10-15 min; writes models/esmoe_n_fp16.engine (FP16). Adds an 8G swapfile if none exists.
 
 ## 2. Run on the GPU
-    ./yolomaster_edge --model models/esmoe_n_fp16.engine --source <image|dir> \
-        --classes visdrone --conf 0.25 --out out
+    ./yolomaster_edge --model models/esmoe_n_fp16.engine --source <image|dir|video> \
+        --conf 0.25 --out out
+
+Class names + input size come from `models/metadata.yaml` (shipped); `--classes visdrone`
+still overrides. Video sources decode through the bundled ffmpeg-based OpenCV.
+
+## 3. v1.1.0 features
+    --slicing off|dense|sparse    sliced inference (Sparse SAHI) for small objects
+    --tile-size N                 tile edge in source px (0 = model input)
+    --slicing-masks               keep global-pass masks in sliced runs (seg engines)
+    --cw-nms --sigma S            Cluster-Weighted NMS refinement
+    --export-labels DIR           write annotations (YOLO TXT / COCO JSON / Pascal VOC XML)
+    --label-format yolo|coco|voc  --sampling all|1s|N (video frame sampling)
+
+Segmentation engines work too: build one from a seg .onnx (e.g. v0.1-seg-n.onnx) with
+build_engine.sh and put its metadata.yaml next to it — masks render and label export
+emits real polygons.
 
 Validated on Orin Nano 4GB: 35.7 FPS, 0.3488 mAP50 (VisDrone val, -0.46% vs FP32).
 EOS

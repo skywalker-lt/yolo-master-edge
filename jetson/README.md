@@ -46,6 +46,24 @@ ship one `.onnx`, ORT builds+caches the engine on first run and picks INT8 (wher
 layer automatically. On bleeding-edge CUDA (e.g. 13.x) a prebuilt Jetson ORT-gpu may not exist yet →
 build ORT from source or use the native TRT path.
 
+## v1.1.0
+
+The TensorRT backend now implements the full runner contract, so every v1.1.0 feature works
+from a `.engine`:
+
+- **Slicing** (`--slicing dense|sparse`, `--tile-size`, `--slicing-masks`) — Sparse SAHI for
+  small objects on large frames; tiles re-letterbox into the engine's fixed input.
+- **Cluster-Weighted NMS** (`--cw-nms --sigma S`).
+- **Annotation export** (`--export-labels DIR --label-format yolo|coco|voc`, video sampling
+  via `--sampling all|1s|N`) — segmentation engines export real mask polygons.
+- **Video sources + video export**: `21_build_trt_runner.sh` now builds a lean local OpenCV
+  (ffmpeg videoio, no GStreamer) once into `third_party/opencv-lean`, so `--source clip.mp4`
+  works and the packaged bundle stays small.
+- **Metadata sidecar**: the backend reads `<engine>.metadata.yaml` or a sibling
+  `metadata.yaml` (same file the ncnn/MNN exports ship) for class names + imgsz — no more
+  mandatory `--classes visdrone`. Segmentation engines (e.g. built from `v0.1-seg-n.onnx`)
+  are auto-detected by their proto output.
+
 ## Notes
 
 - **FP16 build bug (Orin/TRT 10.16.2):** pure `--fp16` at `OPT<=2` fails with a KTM `sm80`-shader
