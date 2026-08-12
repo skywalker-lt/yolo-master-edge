@@ -229,7 +229,7 @@ struct CameraStage: View {
     let style: BoxStyle, label: LabelMode
     @Binding var mirror: Bool
     var body: some View {
-        let dets = Detector.nms(cam.candidates, conf: Float(conf), iou: CGFloat(iou), mode: nmsMode, sigma: Float(sigma), maxDet: maxDet)   // live conf/iou/NMS-mode
+        let dets = Detector.nms(cam.candidates, conf: Float(conf), iou: CGFloat(iou), maxDet: maxDet, mode: nmsMode, sigma: Float(sigma))   // live conf/iou/NMS-mode
         let masksOnly = cam.isSegment && overlay == .masks
         let drawBoxes = !masksOnly
         let mask: CGImage? = (cam.isSegment && overlay != .boxes) ? cam.makeMask(dets) : nil

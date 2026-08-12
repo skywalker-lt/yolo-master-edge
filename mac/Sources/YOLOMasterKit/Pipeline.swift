@@ -296,7 +296,7 @@ public func exportFolderCached(_ items: [FolderItem], output: URL, names: [Strin
     var usedStems = Set<String>()
     for (i, item) in items.enumerated() {
         if let cg = loadCGImage(item.url) {
-            let dets = Detector.nms(item.candidates, conf: conf, iou: iou, mode: nmsMode, sigma: sigma, maxDet: maxDet)
+            let dets = Detector.nms(item.candidates, conf: conf, iou: iou, maxDet: maxDet, mode: nmsMode, sigma: sigma)
             var masks: [MaskBitmap] = [], drawBoxes = true
             if seg, overlay != .boxes, let det = detector, let raw = try? det.forward(cg) {
                 masks = dets.compactMap { det.maskImage($0, raw) }
@@ -428,7 +428,7 @@ public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]
         guard var cg = cictx.createCGImage(ci, from: ci.extent) else { n += 1; continue }
         if resize > 0 { cg = resizeExact(cg, outW, outH) }
         let dets = Detector.nms(n < framesCands.count ? framesCands[n] : [], conf: conf, iou: iou,
-                                mode: nmsMode, sigma: sigma, maxDet: maxDet)
+                                maxDet: maxDet, mode: nmsMode, sigma: sigma)
         var masks: [MaskBitmap] = []
         if seg, let det = detector, n < raws.count, let raw = raws[n] { masks = dets.compactMap { det.maskImage($0, raw) } }
         let drawBoxes = !(detector?.isSegment == true && overlay == .masks)
