@@ -10,9 +10,9 @@ the model's fixed 640-px input.
 
 Applies to **images and folder batches**; video and webcam stay single-pass.
 
-- **Dense** — a global full-image pass plus every 640-px tile of a 20%-overlap grid.
+- **Dense** - a global full-image pass plus every 640-px tile of a 20%-overlap grid.
   Slowest, best small-object recall.
-- **Sparse SAHI** — the global pass paints a 1/8-resolution objectness map from its own
+- **Sparse SAHI** - the global pass paints a 1/8-resolution objectness map from its own
   detections; only tiles where that map exceeds 0.15 run. If *no* tile qualifies, every tile
   runs (the upstream all-or-nothing fallback). Near-dense accuracy at a fraction of the tiles.
 - Tile counts (run / grid, fallback, cap) appear in the Inference stats card.
@@ -20,7 +20,7 @@ Applies to **images and folder batches**; video and webcam stay single-pass.
   reported as "(capped)".
 - **Tile size is adjustable**: from the model input size (native scale, the default) up to
   1/4 of the source's short side. Larger tiles are letterboxed down to the model input
-  (fewer forwards, coarser detail — upstream `slice_size` semantics). The bound is enforced
+  (fewer forwards, coarser detail - upstream `slice_size` semantics). The bound is enforced
   per image, so a mixed-size folder clamps each image to its own limit; the stats card shows
   the tile size actually used (a range when it varies).
 - Changing the tiling mode, tile size, or the masks toggle re-runs inference (like the
@@ -28,18 +28,18 @@ Applies to **images and folder batches**; video and webcam stay single-pass.
   candidate pool. The tile-size slider commits on release, not per drag tick.
 - **Segmentation masks in tiled modes are opt-in via "Masks (global pass)"**: when enabled,
   detections from the full-image pass render masks as in 1.0.0, while tile detections stay
-  boxes-only — tile mask coefficients are meaningless against a full-image prototype tensor,
+  boxes-only - tile mask coefficients are meaningless against a full-image prototype tensor,
   and caching a prototype tensor per tile would be prohibitive in folder mode. With the
   toggle off, tiled modes are boxes-only and the Overlay picker hides.
 
 ## New: NMS mode (Detection section)
 
-- **Standard** — the classic greedy suppression (unchanged default).
-- **Cluster-Weighted** — after standard selection, each surviving box's coordinates are
+- **Standard** - the classic greedy suppression (unchanged default).
+- **Cluster-Weighted** - after standard selection, each surviving box's coordinates are
   refined as the score-and-proximity-weighted average of its same-class overlapping
   candidates (`w = score · exp(-(1-IoU)²/σ)`, σ adjustable 0.01-0.5, default 0.1).
   Survivor count, scores and classes are identical to Standard; only localization changes.
-  Applies everywhere: images, folders, video, live camera, exports — and it is the merge
+  Applies everywhere: images, folders, video, live camera, exports - and it is the merge
   used for tiled inference when selected.
 
 ## New: Zoom (images + paused video)
@@ -52,8 +52,8 @@ comparison at magnification.
 
 ## New: annotation export (Export labels…)
 
-Turn inference results into training data, in three formats — **YOLO TXT**, **COCO JSON**,
-**Pascal VOC XML** — exported WYSIWYG at the current conf / IoU / NMS-mode / sigma:
+Turn inference results into training data, in three formats - **YOLO TXT**, **COCO JSON**,
+**Pascal VOC XML** - exported WYSIWYG at the current conf / IoU / NMS-mode / sigma:
 
 - **Single image** -> one annotation file (save panel; YOLO also writes a sibling classes.txt).
 - **Folder** -> `<folder>_labels/` with one file per image (COCO: one `annotations.coco.json`).
@@ -85,7 +85,7 @@ documented deviations:
 
 1. **No per-tile NMS.** Upstream NMSes each tile, then merge-NMSes. This runner pools
    *pre-NMS* candidates from the global pass and all tiles and applies one NMS at the user's
-   conf/IoU — which is what keeps slider tuning instant, and gives CW-NMS the full candidate
+   conf/IoU - which is what keeps slider tuning instant, and gives CW-NMS the full candidate
    pool its weighting is defined over.
 2. **Tile detections are clipped to real crop content.** Upstream lets boxes live on the
    gray padding of edge tiles.

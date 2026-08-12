@@ -1,4 +1,4 @@
-// YOLOMasterApp — SwiftUI frontend for the Core ML runner (YOLOMasterKit backend).
+// YOLOMasterApp - SwiftUI frontend for the Core ML runner (YOLOMasterKit backend).
 //
 // Pipeline:  choose model + source  ->  RUN (infer the whole set once, progress bar)  ->
 //            browse the Finder + tune conf/iou/style/label in real time (cheap NMS/redraw
@@ -75,7 +75,7 @@ struct AsyncThumb: View {
     }
 }
 
-/// Image pixel dims from the header only (no decode) — cheap even across a large folder.
+/// Image pixel dims from the header only (no decode) - cheap even across a large folder.
 /// File-scope (not actor-isolated) so background tasks can call it.
 func imagePixelSize(_ url: URL) -> (w: Int, h: Int)? {
     guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -137,7 +137,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         baked = []; bakedKey = ""; bakeGen += 1; detsCacheKey = ""; detsCacheVal = []
         bakeCancel?.withLock { $0 = true }; bakeCancel = nil
         stopVideoOverlayLoop(); videoOverlayImg = nil
-        status = "Ready — press Run."
+        status = "Ready - press Run."
     }
 
     // ---- image / video-frame: forward one (or tiled), cache candidates, render ----
@@ -212,7 +212,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                     self.modelInfo = info; self.infer = summary; self.hasResults = !items.isEmpty
                     self.busy = false; self.progress = nil; self.modelIsSegment = det.isSegment
                     self.tileStats = stats
-                    self.status = "Inferred \(items.count) images — browse & tune, then Export"
+                    self.status = "Inferred \(items.count) images - browse & tune, then Export"
                 }
                 self.render(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
             } catch { self.publish(error: "Inference failed: \(error.localizedDescription)") }
@@ -318,7 +318,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                     self.videoFps = fps; self.videoInput = input; self.videoURL = input; self.videoSize = size
                     self.modelInfo = info; self.infer = summary; self.hasResults = !frames.isEmpty
                     self.busy = false; self.progress = nil
-                    self.status = "Inferred \(frames.count) frames — play / scrub & tune, then Export"
+                    self.status = "Inferred \(frames.count) frames - play / scrub & tune, then Export"
                     self.setVideoFrameStats(time: 0, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma)
                     self.requestOverlayFrame(time: 0, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma,
                                              style: style, label: label, overlay: overlay)
@@ -368,7 +368,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         bakeGen += 1
         let gen = bakeGen
         // CANCEL the superseded bake. Without this, every settings change (each TICK of a
-        // slider drag!) spawned a full-video NMS pass that ran to completion — a few drags
+        // slider drag!) spawned a full-video NMS pass that ran to completion - a few drags
         // left dozens of concurrent passes pegging the CPU, the "gets laggier every re-run"
         // syndrome. The token is an unfair-lock-guarded Bool: safe to read off-main.
         bakeCancel?.withLock { $0 = true }
@@ -399,7 +399,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     // state as fast as it can and the view blits the newest image while the preview runs free.
     // Video playback now works identically: while playing, a worker loop chases the player
     // clock, composing boxes + labels + masks for the frame under the playhead into ONE
-    // transparent full-res image (NMS + batched mask math + annotate, all off-main — legal
+    // transparent full-res image (NMS + batched mask math + annotate, all off-main - legal
     // because detection settings are frozen during playback), and the Canvas draws that single
     // image. Paused / scrubbing composes one frame on demand at full detail.
     @Published var videoOverlayImg: CGImage?
@@ -983,7 +983,7 @@ struct ContentView: View {
             if !others.isEmpty {
                 let sample = others.prefix(3).map { $0.lastPathComponent }.joined(separator: ", ")
                 let more = others.count > 3 ? " (+\(others.count - 3) more)" : ""
-                sourceError = "This folder isn’t images-only — it contains: \(sample)\(more). Pick a folder that holds only image files."
+                sourceError = "This folder isn’t images-only - it contains: \(sample)\(more). Pick a folder that holds only image files."
             } else {
                 let imgs = listImages(s)
                 if imgs.isEmpty { sourceError = "This folder has no images." }
@@ -1043,7 +1043,7 @@ struct ContentView: View {
         }
     }
     private func rerender() {
-        if cameraOn { return }   // camera overlay reads conf/iou/style/label live — no engine re-render
+        if cameraOn { return }   // camera overlay reads conf/iou/style/label live - no engine re-render
         if sourceKind == .video {
             refreshVideoOverlays()   // overlay redraws on conf/iou/label automatically
         } else {
@@ -1126,7 +1126,7 @@ struct ContentView: View {
                             Text("Global pass + \(modelInfoImgsz) tiles where the global pass found objects; runs every tile if it found none.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         } else if tiling == .dense {
-                            Text("Global pass + every \(modelInfoImgsz) tile — slowest, best small-object recall.")
+                            Text("Global pass + every \(modelInfoImgsz) tile - slowest, best small-object recall.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
@@ -1150,7 +1150,7 @@ struct ContentView: View {
                     }
                     sectionBox("Appearance", "paintbrush.fill") {
                         if isSegModel && tiledActive && !tilingMasks {
-                            Text("Masks are off in tiled modes — enable \"Masks (global pass)\" in Tiling.")
+                            Text("Masks are off in tiled modes - enable \"Masks (global pass)\" in Tiling.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         if isSegModel && (!tiledActive || tilingMasks) {
@@ -1266,7 +1266,7 @@ struct ContentView: View {
     }
 
     /// Annotation export: a real full-width button (identical chrome/width to every other action
-    /// button — macOS `Menu` hugs its content and never honors a full-width label) opening a
+    /// button - macOS `Menu` hugs its content and never honors a full-width label) opening a
     /// popover with the three formats. Video exports honor the scrubber-bar sampling picker.
     @ViewBuilder private var exportLabelsMenu: some View {
         secondaryButton("Export labels", "doc.badge.arrow.up") { showLabelExport = true }
@@ -1281,7 +1281,7 @@ struct ContentView: View {
                     }
                     if sourceKind == .video {
                         Divider().padding(.vertical, 2)
-                        Text("Sampling: \(sampling.label) — change in the scrubber bar")
+                        Text("Sampling: \(sampling.label) - change in the scrubber bar")
                             .font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 8)
                     }
                 }
@@ -1342,14 +1342,14 @@ struct ContentView: View {
                 VStack(spacing: 8) {
                     Image(systemName: sourceKind == .video ? "film" : "folder").font(.system(size: 48)).foregroundStyle(.tertiary)
                     Text(sourceKind == .video ? "Press Run to infer the video"
-                                              : "\(folderImages.count) images — press Run to infer").foregroundStyle(.secondary)
+                                              : "\(folderImages.count) images - press Run to infer").foregroundStyle(.secondary)
                 }
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: sourceKind == .video ? "film" : "photo").font(.system(size: 48)).foregroundStyle(.tertiary)
                     Text(sourceURL != nil ? "Press Run"
                          : modelURL == nil ? "Choose a model + source"
-                         : "Choose an image / folder / video — or start Live Camera").foregroundStyle(.secondary)
+                         : "Choose an image / folder / video - or start Live Camera").foregroundStyle(.secondary)
                 }
             }
         }
@@ -1420,7 +1420,7 @@ struct ContentView: View {
         }
     }
     /// Tile-size slider. Bound: [model imgsz, shortSide/4 of the source] (Kit re-clamps per
-    /// image). Commits on slider RELEASE — each change re-runs tiled inference, so per-tick
+    /// image). Commits on slider RELEASE - each change re-runs tiled inference, so per-tick
     /// re-inference during a drag would be a storm of forwards.
     @ViewBuilder private var tileSizeRow: some View {
         let degenerate = tileCeil <= tileFloor
@@ -1439,7 +1439,7 @@ struct ContentView: View {
             }
             .disabled(degenerate)
             Text(degenerate
-                 ? "Source too small for larger tiles — tiling runs at the model input (\(tileFloor) px)."
+                 ? "Source too small for larger tiles - tiling runs at the model input (\(tileFloor) px)."
                  : "Min = model input (\(tileFloor) px) · max = 1/4 of the source's short side (\(tileCeil) px). Larger tiles run faster but see less detail.")
                 .font(.caption2).foregroundStyle(.secondary)
         }

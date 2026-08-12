@@ -1,11 +1,11 @@
-// Annotation export — turn cached inference results into training data.
+// Annotation export - turn cached inference results into training data.
 //
 // Three formats (YOLO TXT, COCO JSON, Pascal VOC XML), three source kinds (image, folder,
 // video-with-frame-extraction), det + seg models. Writers are pure functions over a
 // format-neutral intermediate representation so they never touch Detection/Detector.
 //
 // Dialect rule (WYSIWYG): the FILE dialect (det boxes vs seg polygons) follows what the
-// preview shows — seg polygons only when the model is seg AND mask data exists for the run
+// preview shows - seg polygons only when the model is seg AND mask data exists for the run
 // (single-pass, or tiled with keepGlobalMasks). Within a polygon-dialect export, an instance
 // with no usable mask (coeff-less tile detection, or a mask that thresholds to nothing) emits
 // its BOX as a 4-point polygon so every line/segmentation entry stays structurally valid.
@@ -84,7 +84,7 @@ public struct AnnotationExportResult: Sendable {
     }
 }
 
-/// Build the IR from post-NMS detections (WYSIWYG — pass exactly what the preview shows).
+/// Build the IR from post-NMS detections (WYSIWYG - pass exactly what the preview shows).
 /// `includePolygons` = the run's dialect (seg model with mask data available). Instances whose
 /// mask is unavailable/empty in a polygon export fall back to the box as a 4-point polygon.
 public func annotationInstances(_ dets: [Detection], detector: Detector?,

@@ -1,4 +1,4 @@
-// About & Licenses page — acknowledgements (upstream projects) + the full project license.
+// About & Licenses page - acknowledgements (upstream projects) + the full project license.
 import SwiftUI
 import AppKit
 
@@ -14,13 +14,13 @@ struct Ack: Identifiable {
 
 let acknowledgements: [Ack] = [
     Ack(name: "YOLO-Master @ Tencent", logo: "tencent", ext: "png",
-        blurb: "The YOLO-Master detector family this runner packages. © 2026 Tencent — AGPL-3.0.",
+        blurb: "The YOLO-Master detector family this runner packages. © 2026 Tencent - AGPL-3.0.",
         repo: "https://github.com/Tencent/YOLO-Master"),
     Ack(name: "Ultralytics", logo: "ultralytics", ext: "png",
-        blurb: "The YOLO training & inference framework YOLO-Master builds on. © 2025 Ultralytics — AGPL-3.0.",
+        blurb: "The YOLO training & inference framework YOLO-Master builds on. © 2025 Ultralytics - AGPL-3.0.",
         repo: "https://github.com/ultralytics/ultralytics"),
     Ack(name: "Core ML @ Apple", logo: "apple", ext: "jpeg",
-        blurb: "Model conversion and the on-device inference runtime. © 2020–2023 Apple Inc. — BSD-3-Clause.",
+        blurb: "Model conversion and the on-device inference runtime. © 2020-2023 Apple Inc. - BSD-3-Clause.",
         repo: "https://github.com/apple/coremltools"),
 ]
 

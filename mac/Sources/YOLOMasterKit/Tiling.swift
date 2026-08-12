@@ -1,4 +1,4 @@
-// Tiled inference for YOLOMasterKit — a faithful port of upstream YOLO-Master's Sparse SAHI
+// Tiled inference for YOLOMasterKit - a faithful port of upstream YOLO-Master's Sparse SAHI
 // Mode (ultralytics/engine/predictor.py:542-699, `_run_sparse_sahi_single`) plus a dense
 // ("traditional tiling") variant that runs every grid tile unconditionally.
 //
@@ -39,7 +39,7 @@ public enum TilingMode: String, CaseIterable, Sendable {
 public struct TilingConfig: Sendable {
     public var mode: TilingMode = .off
     /// Requested tile edge in source pixels. nil = the model's imgsz (native scale, the
-    /// upstream default). Clamped PER IMAGE to [imgsz, max(imgsz, min(w,h)/4)] — no smaller
+    /// upstream default). Clamped PER IMAGE to [imgsz, max(imgsz, min(w,h)/4)] - no smaller
     /// than the model input, no larger than a quarter of the image's short side; tiles larger
     /// than imgsz are letterboxed down to the model input (upstream slice_size semantics).
     public var tileSize: Int? = nil
@@ -86,7 +86,7 @@ public struct TiledOutput: @unchecked Sendable {   // globalRaw is immutable aft
     public let usedFallback: Bool       // sparse: zero active tiles -> dense fallback fired
     public let capped: Bool             // maxTiles truncation hit
     public let inferMs: Double          // SUM of all model-only forwards (global + tiles)
-    /// The global pass's raw output, retained ONLY when `keepGlobalMasks` on a seg model —
+    /// The global pass's raw output, retained ONLY when `keepGlobalMasks` on a seg model -
     /// hands the app the proto tensor so global-pass detections can still render masks.
     public let globalRaw: Detector.RawOutput?
 }
@@ -107,7 +107,7 @@ extension Detector {
     /// The upstream slice grid (predictor.py:573-590), exactly: stride = sliceSize - overlap
     /// from 0 while < image dim; right/bottom tiles CLIPPED (not shifted back); a tile is
     /// dropped when integer division by the mask scale collapses it in either axis
-    /// (`y/8 == yMax/8` — so a 7-px sliver at offset 1 survives, one at offset 0 doesn't).
+    /// (`y/8 == yMax/8` - so a 7-px sliver at offset 1 survives, one at offset 0 doesn't).
     public static func tileGrid(width: Int, height: Int, sliceSize: Int, overlap: Int)
         -> [(x: Int, y: Int, w: Int, h: Int)] {
         let step = sliceSize - overlap
@@ -126,7 +126,7 @@ extension Detector {
     }
 
     /// Global forward + (dense: all tiles | sparse: mask-selected tiles) -> merged pre-NMS pool.
-    /// See the file header for the exact semantics. `config.mode` must not be `.off` — callers
+    /// See the file header for the exact semantics. `config.mode` must not be `.off` - callers
     /// branch to the ordinary single-pass path before getting here.
     public func tiledCandidates(_ image: CGImage, config: TilingConfig,
                                 confFloor: Float = 0.05) throws -> TiledOutput {
@@ -161,7 +161,7 @@ extension Detector {
             let mH = h / Detector.maskScale + 1, mW = w / Detector.maskScale + 1
             var mask = [Float](repeating: 0, count: mH * mW)
             for d in Detector.nms(globalCands, conf: confFloor, iou: 0.5) {
-                // Upstream: (xyxy / 8).astype(int) — truncation — then clamp to the mask dims.
+                // Upstream: (xyxy / 8).astype(int) - truncation - then clamp to the mask dims.
                 let x1 = max(0, Int(d.rect.minX) / Detector.maskScale)
                 let y1 = max(0, Int(d.rect.minY) / Detector.maskScale)
                 let x2 = min(mW, Int(d.rect.maxX) / Detector.maskScale)

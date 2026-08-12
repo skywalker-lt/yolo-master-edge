@@ -1,4 +1,4 @@
-// Auto-generated verbatim from LICENSE.txt — do not edit by hand.
+// Auto-generated verbatim from LICENSE.txt - do not edit by hand.
 let acknowledgementLicense = """
 ================================================================
 YOLO-Master CoreML Runner
@@ -19,14 +19,14 @@ reproduced below.
 This project is built upon and incorporates the following
 third-party software:
 
-  * YOLO-Master — Copyright (C) 2026 Tencent. Licensed under the
+  * YOLO-Master - Copyright (C) 2026 Tencent. Licensed under the
     AGPL-3.0. YOLO-Master includes modifications by Tencent
     ("Tencent Modifications") and is itself based on:
 
-  * ultralytics — Copyright (c) 2025 Ultralytics original author
+  * ultralytics - Copyright (c) 2025 Ultralytics original author
     and authors. Licensed under the AGPL-3.0.
 
-  * coremltools — Copyright (c) 2020-2023, Apple Inc. All rights
+  * coremltools - Copyright (c) 2020-2023, Apple Inc. All rights
     reserved. Licensed under the BSD-3-Clause License, the full
     text of which is reproduced at the end of this file. Use of
     the name of Apple Inc. or its contributors to endorse or
@@ -41,10 +41,10 @@ modifications.
 ACCEPTABLE USE NOTICE (not a license term):
 The author(s) of this project develop and release it exclusively
 for lawful, civilian, and peaceful purposes. Any use of this
-software in violation of applicable law — including, without
+software in violation of applicable law - including, without
 limitation, use in connection with terrorism, the development or
 deployment of weapons, or other military applications prohibited
-by applicable national or international law — is already
+by applicable national or international law - is already
 prohibited by law and is emphatically condemned by the author(s).
 This notice is a statement of intent and expectation; it does not
 impose additional restrictions on the rights granted under the

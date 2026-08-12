@@ -1,4 +1,4 @@
-// YOLOMasterKit — shared Core ML inference backend for YOLO-Master detectors.
+// YOLOMasterKit - shared Core ML inference backend for YOLO-Master detectors.
 //
 // Extracted VERBATIM from the CLI runner (Sources/YOLOMasterCoreML/main.swift) so the
 // command-line tool and the SwiftUI app run the exact same letterbox → Core ML →
@@ -10,7 +10,7 @@ import CoreVideo
 import Accelerate   // batched mask math: SGEMM (AMX) + vectorized sigmoid
 
 /// IEEE half bits (UInt16) -> Float32, done by hand. `Float16` is entirely UNAVAILABLE in macOS on
-/// x86_64 (arm64-only type), so it can't be named at all — half-precision Core ML tensors are read
+/// x86_64 (arm64-only type), so it can't be named at all - half-precision Core ML tensors are read
 /// as raw UInt16 straight from `dataPointer` (`load(fromByteOffset:as:)`) and converted here. Keeps
 /// the universal (arm64 + x86_64) build compiling with identical numerics on both slices.
 @inline(__always) func halfToFloat(_ h: UInt16) -> Float32 {
@@ -86,7 +86,7 @@ public enum DetectorError: Error { case inputBuildFailed, badOutput }
 /// Which NMS variant post-processing uses. `.standard` is the classic greedy suppression.
 /// `.clusterWeighted` (CW-NMS, from upstream YOLO-Master) runs the same greedy selection and
 /// then REFINES each survivor's coordinates as the score-and-proximity-weighted average of its
-/// same-class cluster in the pre-NMS candidate pool — trading a little post-processing time for
+/// same-class cluster in the pre-NMS candidate pool - trading a little post-processing time for
 /// better localization. Survivor count, scores and classes are identical to `.standard`.
 public enum NMSMode: String, CaseIterable, Sendable {
     case standard, clusterWeighted
@@ -143,7 +143,7 @@ public final class Detector {
             return nil
         }()
         let ncResolved = ncFromShape ?? metaNames.count
-        // Input resolution is FIXED at export time — read it from the model ([1,3,H,W]).
+        // Input resolution is FIXED at export time - read it from the model ([1,3,H,W]).
         let szResolved: Int = {
             if let shape = md.inputDescriptionsByName[inName]?.multiArrayConstraint?.shape,
                shape.count >= 4, shape[2].intValue > 0 { return shape[2].intValue }
@@ -172,7 +172,7 @@ public final class Detector {
 
     // ---------- preprocess ----------
     /// How the source image is fit into the model's fixed imgsz×imgsz input. This is a PREPROCESSING
-    /// choice (changes the forward-pass input), not a tuning param — switching it requires re-inference.
+    /// choice (changes the forward-pass input), not a tuning param - switching it requires re-inference.
     /// `.letterbox`: aspect-preserving fit + gray padding (YOLO default). `.stretch`: force-resize the
     /// whole image to imgsz×imgsz (no padding; the size the model was trained on), distorting aspect.
     public enum PreprocessMode: String, CaseIterable, Sendable { case letterbox, stretch }
@@ -269,7 +269,7 @@ public final class Detector {
         return dets
     }
 
-    /// Filter cached `candidates` by `conf` + per-class greedy NMS (cap 300). Cheap — no model call.
+    /// Filter cached `candidates` by `conf` + per-class greedy NMS (cap 300). Cheap - no model call.
     /// `mode: .clusterWeighted` additionally rewrites survivor coordinates via CW refinement
     /// (see `cwRefine`); defaults keep every existing call site's behavior byte-identical.
     public static func nms(_ dets: [Detection], conf: Float, iou iouT: CGFloat, maxDet: Int = 300,
@@ -284,17 +284,17 @@ public final class Detector {
         return cwRefine(keep, pool: dets, conf: conf, iou: iouT, sigma: sigma)
     }
 
-    /// Cluster-Weighted refinement — the `cluster` variant of upstream YOLO-Master's CW-NMS
+    /// Cluster-Weighted refinement - the `cluster` variant of upstream YOLO-Master's CW-NMS
     /// (ultralytics/utils/nms.py, commit 31c3fe3). One shot, no iteration:
     ///   pool  = pre-NMS candidates with score > conf, capped at the top 3000 (input is score-sorted,
     ///           so prefix(while:) + prefix(3000) equals upstream's `scores > conf` + `topk(3000)`)
     ///   w_km  = score_m * exp(-(1 - IoU_km)^2 / sigma) for same-class pool boxes with IoU_km > iouT
     ///           (upstream separates classes via the class-offset trick; `cls ==` is equivalent.
-    ///            NOTE the exponent is /sigma exactly — NOT the Gaussian /(2*sigma^2))
+    ///            NOTE the exponent is /sigma exactly - NOT the Gaussian /(2*sigma^2))
     ///   box_k = (sum_m w_km * box_m) / (sum_m w_km + 1e-6), all from ORIGINAL pre-update coords
     /// Kept set, scores, classes and mask coeffs are unchanged; only survivor rects move.
     /// Deliberate deviation from upstream: a survivor whose weight sum is ~0 keeps its original
-    /// rect (upstream's top-3000 cap can collapse such a box to (0,0,0,0) — a latent bug).
+    /// rect (upstream's top-3000 cap can collapse such a box to (0,0,0,0) - a latent bug).
     private static func cwRefine(_ keep: [Detection], pool dets: [Detection], conf: Float,
                                  iou iouT: CGFloat, sigma: Float) -> [Detection] {
         let pool = Array(dets.prefix(while: { $0.score > conf }).prefix(3000))
@@ -323,7 +323,7 @@ public final class Detector {
     public struct Result: Sendable { public let detections: [Detection]; public let inferMs: Double }
 
     /// Cached forward-pass output + letterbox geometry. Hold onto this and re-decode with
-    /// different conf/iou via `decode(_:conf:iou:)` — no second model call. Post-processing
+    /// different conf/iou via `decode(_:conf:iou:)` - no second model call. Post-processing
     /// (conf/iou threshold, NMS) is a frontend concern, not an inference one.
     public final class RawOutput {
         fileprivate let y: MLMultiArray
@@ -338,7 +338,7 @@ public final class Detector {
         }
 
         /// A copy retaining ONLY what mask rendering needs (proto tensor + letterbox geometry),
-        /// dropping the detection tensor `y` — the larger half of a RawOutput. Per-frame video
+        /// dropping the detection tensor `y` - the larger half of a RawOutput. Per-frame video
         /// caches keep these: ~halves seg-video memory. nil for non-seg outputs.
         /// (maskImage/maskOverlay never touch `y`; a 1-element placeholder satisfies the field.)
         public func maskOnly() -> RawOutput? {
@@ -371,7 +371,7 @@ public final class Detector {
     }
 
     /// Forward a tile crop, padded bottom-right with gray 114 to tileSize×tileSize and (when
-    /// tileSize > imgsz) letterboxed down to the model input — upstream `_pad_slice`
+    /// tileSize > imgsz) letterboxed down to the model input - upstream `_pad_slice`
     /// (predictor.py:523-530) followed by its standard preprocess. tileSize == imgsz is the
     /// native-scale fast path (scale 1). Returned geometry: scale = imgsz/tileSize, pads = 0,
     /// origW/H = CROP dims so `candidates()`'s existing clamp trims detections to real crop
@@ -417,7 +417,7 @@ public final class Detector {
         return ctx.makeImage()
     }
 
-    /// Decode + per-class NMS from a cached forward pass. Cheap — no model call.
+    /// Decode + per-class NMS from a cached forward pass. Cheap - no model call.
     public func decode(_ raw: RawOutput, conf: Float, iou iouT: CGFloat,
                        mode: NMSMode = .standard, sigma: Float = 0.1) -> [Detection] {
         Detector.nms(candidates(raw, confFloor: conf), conf: conf, iou: iouT, mode: mode, sigma: sigma)
@@ -490,7 +490,7 @@ public final class Detector {
     /// `annotate`. Returns nil for non-seg models or when no mask survives. `dets` should be post-NMS.
     ///
     /// BATCHED math (Accelerate): the old path ran a scalar coeffs·proto matmul PER DETECTION,
-    /// re-reading (and for fp16 re-converting) the whole proto tensor each time — seconds at
+    /// re-reading (and for fp16 re-converting) the whole proto tensor each time - seconds at
     /// hundreds of detections. Now: proto is unpacked to contiguous Float32 ONCE, all
     /// detections' coefficients form one [N,nm] matrix, and a single SGEMM ([N,nm]x[nm,plane],
     /// dispatched to the AMX matrix units) plus vectorized sigmoid produce every mask grid in
@@ -601,13 +601,13 @@ public final class Detector {
     ///
     /// Semantics match what the preview shows: hard threshold at the CENTER of `maskImage`'s
     /// smoothstep band (sigmoid(coeffs . proto) > threshold), restricted to `det.rect` (the
-    /// preview clips masks to the box). OUTER contours only — holes are unrepresentable in
+    /// preview clips masks to the box). OUTER contours only - holes are unrepresentable in
     /// YOLO-seg and COCO-polygon anyway. Components smaller than 2 proto cells are dropped
     /// (speckle). Rings are Douglas-Peucker-simplified with `epsilon` in original pixels,
     /// sorted by area (desc) and capped at `maxPolygons`.
     ///
     /// Bias note: contours pass through proto CELL CENTERS, so polygons sit up to half a proto
-    /// cell (~2 px at 640/160) inside the rendered mask edge — comparable to `epsilon`, and
+    /// cell (~2 px at 640/160) inside the rendered mask edge - comparable to `epsilon`, and
     /// tight-side annotations are the safer convention.
     /// Returns [] for non-seg models, missing proto, empty coeffs, or an all-background mask.
     public func maskPolygons(_ det: Detection, _ raw: RawOutput, threshold: Float = 0.5,
@@ -788,7 +788,7 @@ public final class Detector {
         return Array(rings.prefix(maxPolygons))
     }
 
-    /// Model-only forward (no decode/draw) — for latency benchmarking. Returns ms.
+    /// Model-only forward (no decode/draw) - for latency benchmarking. Returns ms.
     @discardableResult
     public func inferOnly(_ image: CGImage) throws -> Double {
         let lb = letterbox(image)

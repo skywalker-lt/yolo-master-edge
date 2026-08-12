@@ -1,4 +1,4 @@
-// Annotation — HUD / solid / neon box templates + translucent label pills.
+// Annotation - HUD / solid / neon box templates + translucent label pills.
 // Extracted verbatim from the CLI runner so CLI and app render identically.
 import Foundation
 import CoreGraphics
