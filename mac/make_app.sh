@@ -48,12 +48,28 @@ if [ -f "$HERE/Resources/AppIcon.icns" ]; then
   echo "  icon: AppIcon.icns"
 fi
 
-# bundled default model (loaded on launch; user can pick another). Copy any .mlpackage in Resources/.
+# bundled default model (auto-loaded on launch; user can pick another). The .mlpackage is
+# gitignored, so a fresh clone has none - fetch it from the models release, and FAIL rather
+# than ship a model-less app (the 1.1.0 zip shipped without one exactly this way).
+MODEL_URL="https://github.com/skywalker-lt/yolo-master-edge/releases/download/v0.1-seg-n/v0.1-seg-N.mlpackage.zip"
+if ! ls -d "$HERE"/Resources/*.mlpackage >/dev/null 2>&1; then
+  echo "  default model missing - fetching from the v0.1-seg-n release..."
+  curl -fsSL "$MODEL_URL" -o "$HERE/Resources/model.zip" \
+    && unzip -q "$HERE/Resources/model.zip" -d "$HERE/Resources/" \
+    && rm -f "$HERE/Resources/model.zip"
+fi
+FOUND_MODEL=0
 for pkg in "$HERE"/Resources/*.mlpackage; do
   [ -d "$pkg" ] || continue
   cp -R "$pkg" "$APP/Contents/Resources/"
   echo "  default model: $(basename "$pkg")"
+  FOUND_MODEL=1
 done
+if [ "$FOUND_MODEL" = 0 ]; then
+  echo "ERROR: no .mlpackage in mac/Resources/ and the download failed."
+  echo "       Fetch it manually: curl -L $MODEL_URL -o m.zip && unzip m.zip -d mac/Resources/"
+  exit 1
+fi
 
 # acknowledgement logos for the About page (optional; graceful fallback if absent)
 if [ -d "$HERE/Resources/ack" ]; then
