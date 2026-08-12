@@ -6,7 +6,7 @@
 // size and stays aligned with the AVPlayerLayer underneath).
 //
 // Interactions: trackpad pinch (cursor-anchored), drag-to-pan when zoomed (never intercepts
-// clicks at 1x), double-click reset, ⌘+/⌘−/⌘0 (center-anchored steps). Scroll-wheel zoom is
+// clicks at 1x), ⌘+/⌘−/⌘0 (center-anchored steps; ⌘0 resets). Scroll-wheel zoom is
 // deliberately absent for v1.1.0 - SwiftUI exposes no scroll event; ZoomModel is the seam an
 // NSEvent monitor would feed if it's ever wanted.
 import SwiftUI
@@ -60,20 +60,17 @@ struct ZoomContainer<Content: View>: View {
                 // Gestures live on a transparent layer ABOVE the content: the video stage hosts
                 // a raw NSView (AVPlayerLayer), and AppKit views swallow mouse events before
                 // SwiftUI ancestor gestures fire. Nothing interactive sits under this layer
-                // inside the container, so it can safely own click-drag/pinch/double-click.
+                // inside the container, so it can safely own click-drag/pinch.
                 if enabled {
                     Color.clear
                         .contentShape(Rectangle())
                         .gesture(pan(size), isEnabled: zoom.isZoomed)   // click-and-drag to pan
                         .gesture(magnify(size))
-                        .onTapGesture(count: 2) {
-                            withAnimation(.snappy(duration: 0.2)) { zoom.reset() }
-                        }
                 }
             }
                 .overlay(alignment: .topTrailing) {
                     if zoom.isZoomed {
-                        Text("\(Int((zoom.scale * 100).rounded()))% - double-click to reset")
+                        Text("\(Int((zoom.scale * 100).rounded()))% - ⌘0 to reset")
                             .font(.caption2).padding(.horizontal, 8).padding(.vertical, 3)
                             .background(.ultraThinMaterial, in: Capsule())
                             .padding(8)

@@ -44,7 +44,7 @@ Applies to **images and folder batches**; video and webcam stay single-pass.
 
 ## New: Zoom (images + paused video)
 
-Pinch to zoom (cursor-anchored, up to 8x), drag to pan, double-click or ⌘0 to reset,
+Pinch to zoom (cursor-anchored, up to 8x), drag to pan, ⌘0 to reset,
 ⌘+ / ⌘− for stepped zoom. Works on the annotated image preview and on video **while paused**
 (the overlay boxes scale with the pixels); zoom resets automatically on play, when browsing
 to another image, and on re-run. Scrubbing while paused keeps the zoom, for frame-to-frame
