@@ -6,12 +6,13 @@
 # (builds a clean FP16 engine on first setup). Runs on any Orin (Nano/NX/AGX, sm87) on JetPack 7.
 set -e
 cd "$(dirname "$0")"; ROOT="$(cd .. && pwd)"
+VERSION="${1:-1.1.0}"
 BIN="$ROOT/cpp/build_trt/yolomaster_edge"
 ONNX="${ONNX:-$ROOT/jetson/models/esmoe_n_visdrone_sim.onnx}"
 [ -x "$BIN" ] || { echo "build first:  bash jetson/21_build_trt_runner.sh"; exit 1; }
 command -v patchelf >/dev/null 2>&1 || sudo apt install -y patchelf
 
-OUT="$ROOT/dist/yolomaster_edge-jetson-orin-jp7"
+OUT="$ROOT/dist/yolomaster-edge-jetson-orin-$VERSION"
 rm -rf "$OUT"; mkdir -p "$OUT/lib" "$OUT/models"
 cp "$BIN" "$OUT/yolomaster_edge"
 
