@@ -56,6 +56,16 @@ cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info) {
     return preprocess(img, imgsz, /*stretch=*/false, info);
 }
 
+static double box_iou(const cv::Rect2d& a, const cv::Rect2d& b) {
+    const double xx1 = std::max(a.x, b.x);
+    const double yy1 = std::max(a.y, b.y);
+    const double xx2 = std::min(a.x + a.width,  b.x + b.width);
+    const double yy2 = std::min(a.y + a.height, b.y + b.height);
+    const double inter = std::max(0.0, xx2 - xx1) * std::max(0.0, yy2 - yy1);
+    const double uni = a.area() + b.area() - inter;
+    return uni > 0 ? inter / uni : 0.0;
+}
+
 // greedy per-box NMS (score-descending, IoU suppression) - replaces
 // cv::dnn::NMSBoxes; identical semantics (keep is returned score-descending).
 static void nms_greedy(const std::vector<cv::Rect2d>& boxes, const std::vector<float>& scores,
@@ -73,13 +83,7 @@ static void nms_greedy(const std::vector<cv::Rect2d>& boxes, const std::vector<f
         for (size_t n = m + 1; n < order.size(); ++n) {
             const int j = order[n];
             if (dead[j]) continue;
-            const double xx1 = std::max(boxes[i].x, boxes[j].x);
-            const double yy1 = std::max(boxes[i].y, boxes[j].y);
-            const double xx2 = std::min(boxes[i].x + boxes[i].width,  boxes[j].x + boxes[j].width);
-            const double yy2 = std::min(boxes[i].y + boxes[i].height, boxes[j].y + boxes[j].height);
-            const double inter = std::max(0.0, xx2 - xx1) * std::max(0.0, yy2 - yy1);
-            const double uni = boxes[i].area() + boxes[j].area() - inter;
-            if (uni > 0 && inter / uni > iou_thr) dead[j] = 1;
+            if (box_iou(boxes[i], boxes[j]) > iou_thr) dead[j] = 1;
         }
     }
 }
@@ -131,21 +135,62 @@ std::vector<Detection> nms_and_cap(const std::vector<RawDet>& cands, const Confi
         scores.push_back(cands[i].score); idx.push_back(static_cast<int>(i));
     }
     std::vector<int> keep;
-    {
-        const double OFF = 8192.0;                   // > any expected image dimension
-        std::vector<cv::Rect2d> off = boxes;
-        for (size_t k = 0; k < off.size(); ++k) {
-            const int cls = cands[idx[k]].cls;
-            off[k].x += cls * OFF; off[k].y += cls * OFF;
-        }
-        nms_greedy(off, scores, cfg.conf_thresh, cfg.iou_thresh, keep);
+    // Per-class stratification: translate each class into its own disjoint stratum so one
+    // greedy pass does agnostic=False NMS. Dynamic offset: candidates are UNCLIPPED (the
+    // letterbox inverse can overshoot the frame), so leave generous margin beyond the
+    // largest dimension; IoU is translation-invariant, results match any big-enough offset.
+    const double OFF = 2.0 * std::max(orig_w, orig_h) + 8192.0;
+    std::vector<cv::Rect2d> off = boxes;
+    for (size_t k = 0; k < off.size(); ++k) {
+        const int cls = cands[idx[k]].cls;
+        off[k].x += cls * OFF; off[k].y += cls * OFF;
     }
+    nms_greedy(off, scores, cfg.conf_thresh, cfg.iou_thresh, keep);
+
+    // Cluster-Weighted refinement (ultralytics cluster branch): each greedy survivor's box
+    // becomes the score-and-proximity weighted average of its cluster - every same-class
+    // candidate overlapping it above iou_thresh, weighted w = s * exp(-(1-IoU)^2 / sigma).
+    // One-shot over the ORIGINAL coords; survivor set/order/scores/classes are untouched.
+    std::vector<cv::Rect2d> refined;
+    if (cfg.nms_mode == NmsMode::ClusterWeighted && !keep.empty()) {
+        // pool = top-3000 of the conf-filtered candidates by score (upstream 3000-cap)
+        std::vector<int> pool(boxes.size());
+        for (size_t i = 0; i < pool.size(); ++i) pool[i] = static_cast<int>(i);
+        auto by_score = [&](int a, int b) { return scores[a] > scores[b]; };
+        if (pool.size() > 3000) {
+            std::partial_sort(pool.begin(), pool.begin() + 3000, pool.end(), by_score);
+            pool.resize(3000);
+        } else std::sort(pool.begin(), pool.end(), by_score);
+        refined.resize(keep.size());
+        for (size_t s = 0; s < keep.size(); ++s) {
+            const int k = keep[s];
+            double sw = 0, ax = 0, ay = 0, ax2 = 0, ay2 = 0;
+            for (int m : pool) {
+                const double ov = box_iou(off[k], off[m]);   // offset boxes: cross-class IoU is 0
+                if (ov <= cfg.iou_thresh) continue;
+                const double w = scores[m] * std::exp(-std::pow(1.0 - ov, 2.0) / cfg.cw_sigma);
+                sw += w;
+                ax  += w * boxes[m].x;                ay  += w * boxes[m].y;
+                ax2 += w * (boxes[m].x + boxes[m].width);
+                ay2 += w * (boxes[m].y + boxes[m].height);
+            }
+            if (sw > 1e-6) {                          // guard: near-zero weight keeps the original box
+                const double x0 = ax / sw, y0 = ay / sw;
+                refined[s] = cv::Rect2d(x0, y0, std::max(0.0, ax2 / sw - x0),
+                                                std::max(0.0, ay2 / sw - y0));
+            } else refined[s] = boxes[k];
+        }
+    }
+
     std::vector<Detection> dets;
     const cv::Rect2d frame(0, 0, orig_w, orig_h);
-    for (int k : keep) {                             // keep is score-descending
+    for (size_t s = 0; s < keep.size(); ++s) {       // keep is score-descending
+        const int k = keep[s];
         if (static_cast<int>(dets.size()) >= cfg.max_det) break;
         const RawDet& c = cands[idx[k]];
-        cv::Rect2d b = cv::Rect2d(c.box.x, c.box.y, c.box.width, c.box.height) & frame;  // clip in float
+        const cv::Rect2d raw = refined.empty()
+            ? cv::Rect2d(c.box.x, c.box.y, c.box.width, c.box.height) : refined[s];
+        cv::Rect2d b = raw & frame;                  // clip in float
         if (b.width > 0 && b.height > 0) {
             Detection d; d.class_id = c.cls; d.conf = c.score;
             d.box = cv::Rect2f(static_cast<float>(b.x), static_cast<float>(b.y),
@@ -163,7 +208,7 @@ std::vector<Detection> decode(const float* out, int feat_dim, int num_anchors,
     return nms_and_cap(cands, cfg, lb.orig_w, lb.orig_h);
 }
 
-// 10-color class palette (RGB 0..1), indexed cls%10 — identical to the GUI and the Mac runner.
+// 10-color class palette (RGB 0..1), indexed cls%10 - identical to the GUI and the Mac runner.
 static const float kPalette[10][3] = {
     {0.98f,0.26f,0.30f},{0.20f,0.71f,0.98f},{0.16f,0.85f,0.52f},{0.99f,0.79f,0.12f},
     {0.72f,0.40f,0.98f},{0.99f,0.55f,0.18f},{0.10f,0.83f,0.80f},{0.98f,0.36f,0.66f},
