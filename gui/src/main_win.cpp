@@ -106,6 +106,22 @@ static std::string OpenFileDialog(const char* title, const char* filter) {
     return GetOpenFileNameA(&ofn) ? std::string(fn) : std::string();
 }
 
+static std::string SaveFileDialog(const char* title, const char* filter,
+                                  const char* def_name, const char* def_ext) {
+    char fn[1024] = "";
+    if (def_name) lstrcpynA(fn, def_name, sizeof(fn));
+    OPENFILENAMEA ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = g_hwnd;
+    ofn.lpstrFile = fn;
+    ofn.nMaxFile = sizeof(fn);
+    ofn.lpstrFilter = filter;
+    ofn.lpstrTitle = title;
+    ofn.lpstrDefExt = def_ext;                     // appended when the user types no extension
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+    return GetSaveFileNameA(&ofn) ? std::string(fn) : std::string();
+}
+
 static void ReleaseTexture(gui::Texture& tex) {
     if (tex.id)  { ((IUnknown*)tex.id)->Release();  tex.id = nullptr; }
     if (tex.tex) { ((IUnknown*)tex.tex)->Release(); tex.tex = nullptr; }
@@ -252,6 +268,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     gui::Platform plat;
     plat.upload      = UploadTexture;
     plat.open_file   = OpenFileDialog;
+    plat.save_file   = SaveFileDialog;
     plat.open_folder = OpenFolderDialog;
     plat.release     = ReleaseTexture;
     plat.heading_font = headingFont;

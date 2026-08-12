@@ -29,6 +29,11 @@ struct LetterboxInfo {
     int pad_x = 0, pad_y = 0, orig_w = 0, orig_h = 0;   // pad is 0 in stretch mode
 };
 
+// NMS variant: Standard = plain per-class greedy; ClusterWeighted = greedy survivors get a
+// post-hoc coordinate refinement (weighted average over their cluster; ultralytics cluster
+// branch semantics). Survivor set/order/scores/classes are identical - only rects move.
+enum class NmsMode { Standard, ClusterWeighted };
+
 struct Config {
     int imgsz = 640;
     float conf_thresh = 0.25f;    // low default: VisDrone small/dense objects
@@ -36,6 +41,8 @@ struct Config {
     int   max_det = 300;          // cap detections after NMS (ultralytics val default)
     bool  multi_label = false;    // true = one detection per class>conf per anchor (ultralytics val); false = argmax
     bool  stretch = false;        // preprocess: false = letterbox (aspect-preserving); true = stretch to square
+    NmsMode nms_mode = NmsMode::Standard;
+    float cw_sigma = 0.1f;        // CW-NMS weight falloff: w = score * exp(-(1-IoU)^2 / sigma)
     std::vector<std::string> class_names;
     int num_classes() const { return static_cast<int>(class_names.size()); }
 };

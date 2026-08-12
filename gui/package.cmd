@@ -13,7 +13,7 @@ rem  the *CPU* ONNX Runtime -- the gpu package would add ~600MB of CUDA provider
 rem ============================================================================
 
 set "VERSION=%~1"
-if "%VERSION%"=="" set "VERSION=1.0.0"
+if "%VERSION%"=="" set "VERSION=1.1.0"
 
 rem SDK paths come from your own sdk-paths.cmd (see sdk-paths.example.cmd),
 rem or from environment variables of the same names.

@@ -15,7 +15,7 @@ endif()
 set(CPP_ROOT "${CMAKE_SOURCE_DIR}/../cpp")                # shared runtime (backends, decode, letterbox)
 set(IMGUI    "${CMAKE_SOURCE_DIR}/third_party/imgui")     # vendored Dear ImGui + dx11/win32 backends
 
-# SDK roots — override on the command line (see build.ps1):
+# SDK roots - override on the command line (see build.ps1):
 #   -DONNXRUNTIME_ROOT=C:/dev/onnxruntime -DNCNN_ROOT=C:/dev/ncnn -DMNN_ROOT=C:/dev/mnn -DOpenCV_DIR=C:/dev/opencv/build
 set(ONNXRUNTIME_ROOT "" CACHE PATH "ONNXRuntime root (include/ + lib/)")
 set(NCNN_ROOT        "" CACHE PATH "ncnn root (include/ + lib/ + bin/)")
@@ -32,6 +32,9 @@ set(SRC
   src/main_win.cpp
   src/app.cpp
   ${CPP_ROOT}/src/common.cpp
+  ${CPP_ROOT}/src/slicing.cpp
+  ${CPP_ROOT}/src/annotate_writers.cpp
+  ${CPP_ROOT}/src/annotate_export.cpp
   ${CPP_ROOT}/src/stb_impl.cpp
   ${IMGUI}/imgui.cpp
   ${IMGUI}/imgui_draw.cpp
@@ -45,7 +48,7 @@ set(INCS
   ${IMGUI} ${IMGUI}/backends ${OpenCV_INCLUDE_DIRS}
 )
 set(LIBS ${OpenCV_LIBS} d3d11 dxgi comdlg32 ole32 shell32)   # ole32/shell32: IFileOpenDialog folder picker
-set(DEFS "")
+set(DEFS HAVE_VIDEOIO)   # gui always links videoio; shared video-export helpers guard on it
 set(RUNTIME_DLLS "")
 
 if(USE_ORT AND EXISTS "${ONNXRUNTIME_ROOT}/include/onnxruntime_cxx_api.h")
