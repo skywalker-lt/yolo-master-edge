@@ -15,8 +15,6 @@ This project provides a universal inference runtime for [YOLO-Master](https://gi
 v1.1.0 brings the same feature set to all runners (macOS / Windows GUIs, Linux and Jetson TensorRT CLIs):
 
 <img height="360" alt="Screenshot 2026-08-12 at 5 35 43 PM" src="https://github.com/user-attachments/assets/6cb59d23-76e1-43b4-93f6-4302290a0e8a" /> <img height="365" alt="Screenshot 2026-08-12 at 5 36 12 PM" src="https://github.com/user-attachments/assets/13c1019d-eb58-4b15-915b-45c4593ca5b8" />
-<img width="750" alt="Screenshot 2026-08-12 at 5 36 54 PM" src="https://github.com/user-attachments/assets/d0e87617-8266-4fea-bea5-25fdfcec0db5" />
-
 
 - **🔪 Slicing (Sparse SAHI):** sliced inference for small objects on large images, a faithful port of upstream [YOLO-Master](https://github.com/Tencent/YOLO-Master)'s Sparse SAHI Mode plus a traditional dense-tiling variant, with adjustable tile size and per-run statistics.
 - **🍇 Cluster-Weighted NMS:** a new NMS mode that refines each box as the weighted average of its detection cluster; tunable sigma, live everywhere including the webcam.
