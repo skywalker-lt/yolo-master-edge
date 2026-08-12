@@ -54,7 +54,7 @@ Verified against upstream torch `non_max_suppression(cluster=True)` to 3.2e-5.
 
 ### 1.3 Zoom (20c0ec4, 3868e84; new Zoom.swift)
 Images always, video when paused: cursor-anchored pinch 1x-8x, click-drag pan when zoomed,
-double-click / cmd-0 reset, cmd-+/- steps, zoom% badge. Video wraps the whole
+cmd-0 reset, cmd-+/- steps, zoom% badge. Video wraps the whole
 player+overlay stack so boxes zoom with pixels; auto-reset on play/browse/re-run/new source.
 Gestures live on a transparent layer ABOVE the content because the AVPlayerLayer NSView
 swallows mouse events before SwiftUI ancestor gestures fire (3868e84).
