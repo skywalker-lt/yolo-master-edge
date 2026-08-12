@@ -20,7 +20,9 @@ sudo nvpmodel -q 2>/dev/null | grep -i "power mode" || true
 
 echo "==================== build deps ===================="
 sudo apt-get update -qq
-sudo apt-get install -y cmake build-essential libopencv-dev git wget
+# ffmpeg dev libs: video I/O for the lean OpenCV build (21_build_trt_runner.sh)
+sudo apt-get install -y cmake build-essential libopencv-dev git wget patchelf \
+                        libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
 
 echo "==================== model check ===================="
 if [ -f models/esmoe_n_visdrone_sim.onnx ]; then
