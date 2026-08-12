@@ -1452,14 +1452,18 @@ struct ContentView: View {
         }
     }
     private func intSliderRow(_ title: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, step: Double = 10) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        // no Slider step: parameter - stepped sliders draw tick marks on macOS (an ugly
+        // dashed line under the track at 500 ticks); round in the binding instead.
+        let rounded = Binding<Double>(get: { value.wrappedValue },
+                                      set: { value.wrappedValue = ($0 / step).rounded() * step })
+        return VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(title).font(.callout)
                 Spacer()
                 Text("\(Int(value.wrappedValue))").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                     .padding(.horizontal, 7).padding(.vertical, 1).background(.quaternary, in: Capsule())
             }
-            Slider(value: value, in: range, step: step)
+            Slider(value: rounded, in: range)
         }
     }
     /// Tile-size slider. Bound: [model imgsz, shortSide/4 of the source] (Kit re-clamps per
