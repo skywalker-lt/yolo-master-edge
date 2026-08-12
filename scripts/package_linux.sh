@@ -140,8 +140,10 @@ GPU_NOTE=""
 [ "$VARIANT" = gpu ] && GPU_NOTE="
 This is the CUDA bundle: ONNX Runtime's CUDA 12 execution provider plus the cuDNN and
 CUDA runtime libraries are included, so ONNX runs on NVIDIA GPUs with nothing installed
-on the target except an NVIDIA driver (R525+). Add --device cuda to use it. The lean
-(non-CUDA) bundle is the right choice when you do not need ONNX-on-GPU."
+on the target except an NVIDIA driver (R525+). Add --device cuda to use it. The very
+first CUDA run on a machine can take up to a minute (one-time kernel autotuning, cached
+on disk; later runs start in a couple of seconds). The lean (non-CUDA) bundle is the
+right choice when you do not need ONNX-on-GPU."
 cat > "$DIST/README.txt" <<EOF
 YOLO-Master edge runner $VERSION -- portable Linux x86_64 bundle.
 Self-contained: runs on any glibc>=2.35 (Ubuntu 22.04+) x86_64, no install needed.
