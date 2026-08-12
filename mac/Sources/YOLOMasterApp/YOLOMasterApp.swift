@@ -677,6 +677,12 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
 // ---------- Finder (Icons / List / Gallery) ----------
 enum FinderMode: String, CaseIterable { case icons, list }
 
+/// Icon-grid column count for the fixed 380-pt Finder pane. Used by BOTH the grid layout and
+/// the arrow-key navigation: the old adaptive grid let SwiftUI pick a column count while the
+/// key handler guessed with a different formula, so up/down could jump a wrong stride and the
+/// selection drifted diagonally.
+func finderCols(_ iconSize: Double) -> Int { max(1, Int((380.0 - 20 + 8) / (iconSize + 8))) }
+
 struct FinderView: View {
     let images: [URL]
     @Binding var selected: Int
@@ -701,33 +707,41 @@ struct FinderView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
     private var icons: some View {
-        ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: iconSize), spacing: 8)], spacing: 8) {
-                ForEach(images.indices, id: \.self) { i in
-                    VStack(spacing: 3) {
-                        AsyncThumb(url: images[i], max: 220)
-                            .frame(width: iconSize, height: iconSize * 0.72).clipped().cornerRadius(5)
-                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(i == selected ? brandColor : .clear, lineWidth: 3))
-                        Text(images[i].lastPathComponent).font(.caption2).lineLimit(1).truncationMode(.middle).frame(width: iconSize)
-                    }.contentShape(Rectangle()).onTapGesture { onSelect(i) }
-                }
-            }.padding(10)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(iconSize), spacing: 8), count: finderCols(iconSize)), spacing: 8) {
+                    ForEach(images.indices, id: \.self) { i in
+                        VStack(spacing: 3) {
+                            AsyncThumb(url: images[i], max: 220)
+                                .frame(width: iconSize, height: iconSize * 0.72).clipped().cornerRadius(5)
+                                .overlay(RoundedRectangle(cornerRadius: 5).stroke(i == selected ? brandColor : .clear, lineWidth: 3))
+                            Text(images[i].lastPathComponent).font(.caption2).lineLimit(1).truncationMode(.middle).frame(width: iconSize)
+                        }.contentShape(Rectangle()).onTapGesture { onSelect(i) }.id(i)
+                    }
+                }.padding(10)
+            }
+            .onChange(of: selected) { proxy.scrollTo(selected) }   // the view follows the highlight (Finder behavior)
+            .onAppear { proxy.scrollTo(selected) }
         }
     }
     private var list: some View {
-        ScrollView {
-            LazyVStack(spacing: 1) {
-                ForEach(images.indices, id: \.self) { i in
-                    HStack(spacing: 8) {
-                        AsyncThumb(url: images[i], max: 90).frame(width: 54, height: 38).clipped().cornerRadius(3)
-                        Text(images[i].lastPathComponent).font(.callout).lineLimit(1).truncationMode(.middle)
-                        Spacer(minLength: 0)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 1) {
+                    ForEach(images.indices, id: \.self) { i in
+                        HStack(spacing: 8) {
+                            AsyncThumb(url: images[i], max: 90).frame(width: 54, height: 38).clipped().cornerRadius(3)
+                            Text(images[i].lastPathComponent).font(.callout).lineLimit(1).truncationMode(.middle)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(i == selected ? brandColor.opacity(0.25) : .clear)
+                        .contentShape(Rectangle()).onTapGesture { onSelect(i) }.id(i)
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(i == selected ? brandColor.opacity(0.25) : .clear)
-                    .contentShape(Rectangle()).onTapGesture { onSelect(i) }
                 }
             }
+            .onChange(of: selected) { proxy.scrollTo(selected) }   // the view follows the highlight
+            .onAppear { proxy.scrollTo(selected) }
         }
     }
 }
@@ -1050,12 +1064,29 @@ struct ContentView: View {
             engine.restyle(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma)
         }
     }
-    private var gridColumns: Int { max(1, Int((380.0 - 24) / (iconSize + 8))) }
     private func step(_ dir: Int, vertical: Bool) {
         switch sourceKind {
         case .folder where engine.hasResults && !folderImages.isEmpty:
-            let stride = (vertical && finderMode == .icons) ? gridColumns : 1
-            selectAndShow(min(max(0, selectedIndex + dir * stride), folderImages.count - 1))
+            // Finder icon-view semantics: left/right move within the CURRENT ROW only (no
+            // wrapping onto the next row); up/down move within the CURRENT COLUMN only.
+            // List view: any arrow steps the list.
+            let n = folderImages.count
+            var target = selectedIndex
+            if finderMode == .icons {
+                let cols = finderCols(iconSize)
+                if vertical {
+                    let t = selectedIndex + dir * cols
+                    if t >= 0 && t < n { target = t }
+                } else {
+                    let col = selectedIndex % cols
+                    let t = selectedIndex + dir
+                    if t >= 0 && t < n && ((dir > 0 && col < cols - 1) || (dir < 0 && col > 0)) { target = t }
+                }
+            } else {
+                let t = selectedIndex + dir
+                if t >= 0 && t < n { target = t }
+            }
+            if target != selectedIndex { selectAndShow(target) }
         case .video where engine.hasResults:
             scrubTime = min(max(0, scrubTime + Double(dir) * (vertical ? 1.0 : 0.2)), max(videoDur, 0.0))
             pc.seek(scrubTime)
@@ -1103,7 +1134,7 @@ struct ContentView: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
-                    sectionBox("Tiling", "square.grid.3x3") {
+                    sectionBox("Slicing", "square.grid.3x3") {
                         segRow("Mode") {
                             Picker("", selection: $tiling) {
                                 ForEach(TilingMode.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -1120,13 +1151,10 @@ struct ContentView: View {
                             }
                         }
                         if cameraOn || sourceKind == .video {
-                            Text("Tiling applies to images and folders only.")
+                            Text("Slicing applies to images and folders only.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         } else if tiling == .sparse {
                             Text("Global pass + \(modelInfoImgsz) tiles where the global pass found objects; runs every tile if it found none.")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        } else if tiling == .dense {
-                            Text("Global pass + every \(modelInfoImgsz) tile - slowest, best small-object recall.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
@@ -1136,7 +1164,7 @@ struct ContentView: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         sliderRow("Confidence", $conf, 0.05...0.95).disabled(videoTuningLocked)
-                        sliderRow("IoU (NMS)", $iou, 0.10...0.90).disabled(videoTuningLocked)
+                        sliderRow("IoU", $iou, 0.10...0.90).disabled(videoTuningLocked)
                         segRow("NMS") {
                             Picker("", selection: $nmsMode) {
                                 ForEach(NMSMode.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -1150,7 +1178,7 @@ struct ContentView: View {
                     }
                     sectionBox("Appearance", "paintbrush.fill") {
                         if isSegModel && tiledActive && !tilingMasks {
-                            Text("Masks are off in tiled modes - enable \"Masks (global pass)\" in Tiling.")
+                            Text("Masks are off in sliced modes - enable \"Masks (global pass)\" in Slicing.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         if isSegModel && (!tiledActive || tilingMasks) {
@@ -1439,7 +1467,7 @@ struct ContentView: View {
             }
             .disabled(degenerate)
             Text(degenerate
-                 ? "Source too small for larger tiles - tiling runs at the model input (\(tileFloor) px)."
+                 ? "The input dimensions are too small for larger tiles. Slicing runs at the model input (\(tileFloor) px)."
                  : "Min = model input (\(tileFloor) px) · max = 1/4 of the source's short side (\(tileCeil) px). Larger tiles run faster but see less detail.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
@@ -1467,7 +1495,7 @@ struct ContentView: View {
             }
             if let t = engine.tileStats {
                 Divider()
-                statRow("Tiling", tiling.label)
+                statRow("Slicing", tiling.label)
                 statRow("Tile size", t.tileSizeLabel + " px")
                 statRow("Tiles", "\(t.tilesRun) run / \(t.tilesTotal) grid" + (t.capped > 0 ? " (capped)" : ""))
                 if t.fallbacks > 0 { statRow("Fallback", "\(t.fallbacks) image(s) ran all tiles") }
