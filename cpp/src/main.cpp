@@ -216,6 +216,15 @@ int main(int argc, char** argv) {
     long frames = 0, total_dets = 0;
     double sum_pre = 0, sum_inf = 0, sum_post = 0;
 
+    // Video sources: annotated output becomes ONE mp4 (per-frame jpgs would overwrite each
+    // other - "11.mp4#930" stems to "11"), and --save-txt gets frame-indexed names.
+    const bool video_mode = (kind == SourceKind::Video);
+    double src_fps = 30.0;
+#ifdef HAVE_VIDEOIO
+    cv::VideoWriter vwriter;                       // lazily opened on the first saved frame
+    std::string vwriter_path;
+#endif
+
     // coco_file/coco_id: the COCO doc's file_name (may carry "frames/") and explicit image
     // id (0 = sequence). export=false skips label emission (non-sampled video frames).
     auto run_one = [&](const cv::Mat& img, const std::string& tag,
@@ -272,10 +281,30 @@ int main(int argc, char** argv) {
                 }
             }
             draw(vis, dets, cfg);
+#ifdef HAVE_VIDEOIO
+            if (video_mode) {                         // one annotated mp4, not overwriting jpgs
+                if (!vwriter.isOpened()) {
+                    vwriter_path = (fs::path(outdir) /
+                        (fs::path(source).stem().string() + "_annotated.mp4")).string();
+                    vwriter.open(vwriter_path, cv::VideoWriter::fourcc('m', 'p', '4', 'v'),
+                                 src_fps, vis.size());
+                    if (!vwriter.isOpened())
+                        std::cerr << "  [warn] cannot open " << vwriter_path << " for writing\n";
+                }
+                if (vwriter.isOpened()) vwriter.write(vis);
+            } else
+#endif
             imwrite_jpg((fs::path(outdir) / (fs::path(tag).stem().string() + ".jpg")).string(), vis);
         }
         if (!savetxt.empty()) {                       // 'class conf x1 y1 x2 y2' (pixel xyxy)
-            std::ofstream f((fs::path(savetxt) / (fs::path(tag).stem().string() + ".txt")).string());
+            std::string tstem = fs::path(tag).stem().string();
+            if (video_mode && coco_id > 0) {          // frame-unique name (stem collides at "11")
+                char b[64];
+                std::snprintf(b, sizeof(b), "%s_%06d", fs::path(source).stem().string().c_str(),
+                              coco_id - 1);
+                tstem = b;
+            }
+            std::ofstream f((fs::path(savetxt) / (tstem + ".txt")).string());
             for (const auto& d : dets)
                 f << d.class_id << ' ' << d.conf << ' ' << d.box.x << ' ' << d.box.y << ' '
                   << (d.box.x + d.box.width) << ' ' << (d.box.y + d.box.height) << '\n';
@@ -286,6 +315,8 @@ int main(int argc, char** argv) {
 #ifdef HAVE_VIDEOIO
         cv::VideoCapture cap(source);
         if (!cap.isOpened()) { std::cerr << "cannot open video: " << source << "\n"; return 4; }
+        const double fps_probe = cap.get(cv::CAP_PROP_FPS);
+        src_fps = (fps_probe > 1.0 && fps_probe < 1000.0) ? fps_probe : 30.0;
         // label-export sampling stride: all=1, 1s=round(fps), N=every Nth
         int stride = 1;
         if (!export_labels.empty()) {
@@ -343,6 +374,14 @@ int main(int argc, char** argv) {
         else std::cout << "[labels] " << annot::label(lfmt) << "  images=" << r.images
                        << "  instances=" << r.instances << " -> " << export_labels << "/\n";
     }
-    if (!no_save) std::cout << "[saved] annotated -> " << outdir << "/\n";
+    if (!no_save) {
+#ifdef HAVE_VIDEOIO
+        if (video_mode && vwriter.isOpened()) {
+            vwriter.release();
+            std::cout << "[saved] annotated video -> " << vwriter_path << "\n";
+        } else
+#endif
+        std::cout << "[saved] annotated -> " << outdir << "/\n";
+    }
     return 0;
 }
