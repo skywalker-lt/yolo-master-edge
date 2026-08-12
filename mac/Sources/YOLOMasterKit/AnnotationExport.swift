@@ -255,6 +255,7 @@ public func exportAnnotationsFolder(_ items: [FolderItem], output: URL, names: [
     try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
     var cocoImages: [AnnotatedImage] = [], cocoNames: [String] = []
     var nInstances = 0
+    var usedStems = Set<String>()
     for (i, item) in items.enumerated() {
         let dets = Detector.nms(item.candidates, conf: conf, iou: iou, mode: nmsMode, sigma: sigma)
         var raw: Detector.RawOutput? = nil
@@ -263,7 +264,7 @@ public func exportAnnotationsFolder(_ items: [FolderItem], output: URL, names: [
             raw = try? det.forward(cg)
             if w == 0 { w = cg.width; h = cg.height }   // legacy cache without dims
         }
-        let stem = item.url.deletingPathExtension().lastPathComponent
+        let stem = uniqueStem(&usedStems, item.url.deletingPathExtension().lastPathComponent)
         let insts = annotationInstances(dets, detector: detector, raw: raw, includePolygons: includePolygons)
         let img = AnnotatedImage(name: stem, width: w, height: h, instances: insts)
         nInstances += insts.count

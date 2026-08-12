@@ -1612,6 +1612,7 @@ void App::start_folder_render_export(const std::string& dir) {
     c.conf_thresh = conf_; c.iou_thresh = iou_;
     export_ = std::thread([this, dir, c] {
         int n = 0;
+        std::set<std::string> stems;                 // 1.jpg + 1.png must not overwrite
         for (int i = 0; i < (int)fcache_.size() && !export_cancel_; ++i) {
             eprogress_ = i + 1;
             if (!fcache_[i].done) continue;
@@ -1620,7 +1621,7 @@ void App::start_folder_render_export(const std::string& dir) {
             const FolderItem& it = fcache_[i];
             const auto dets = nms_and_cap(it.cands, c, it.ow, it.oh);
             cv::Mat vis = compose_render(bgr, dets, it.proto, it.pc, it.ph, it.pw, it.lb);
-            if (write_jpg(dir + "/" + path_stem(folder_imgs_[i]) + ".jpg", vis)) ++n;
+            if (write_jpg(dir + "/" + unique_stem(stems, path_stem(folder_imgs_[i])) + ".jpg", vis)) ++n;
         }
         export_msg_ = export_cancel_ ? "Cancelled"
                                      : std::to_string(n) + " rendered images -> "

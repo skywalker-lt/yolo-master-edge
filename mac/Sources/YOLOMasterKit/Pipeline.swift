@@ -61,6 +61,17 @@ public func resizeLong(_ image: CGImage, _ longSide: Int) -> CGImage {
     return resizeExact(image, nw, nh)
 }
 
+
+/// "stem", or "stem-2", "stem-3", ... if already used; inserts the result. Guards every
+/// per-source-file writer: two sources with the same stem (1.jpg + 1.png in one folder)
+/// must never overwrite each other's output.
+public func uniqueStem(_ used: inout Set<String>, _ stem: String) -> String {
+    if used.insert(stem).inserted { return stem }
+    var i = 2
+    while !used.insert("\(stem)-\(i)").inserted { i += 1 }
+    return "\(stem)-\(i)"
+}
+
 public struct BatchStats: Sendable { public let processed: Int; public let total: Int; public let meanMs: Double }
 public struct VideoStats: Sendable {
     public let frames: Int; public let meanMs: Double
@@ -77,6 +88,7 @@ public func runFolder(_ det: Detector, input: URL, output: URL?,
     let files = listImages(input)
     if let output { try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true) }
     var times: [Double] = []
+    var usedStems = Set<String>()
     for (i, src) in files.enumerated() {
         guard var cg = loadCGImage(src) else { continue }
         if resize > 0 { cg = resizeLong(cg, resize) }
@@ -92,7 +104,8 @@ public func runFolder(_ det: Detector, input: URL, output: URL?,
         times.append(res.inferMs)
         let annotated = annotate(cg, res.detections, names: det.classNames, style: style, label: label)
         if let output, let a = annotated {
-            saveCGImage(a, to: output.appendingPathComponent(src.deletingPathExtension().lastPathComponent + ".jpg"))
+            let stem = uniqueStem(&usedStems, src.deletingPathExtension().lastPathComponent)
+            saveCGImage(a, to: output.appendingPathComponent(stem + ".jpg"))
         }
         progress?(i + 1, files.count, annotated)
     }
@@ -280,6 +293,7 @@ public func exportFolderCached(_ items: [FolderItem], output: URL, names: [Strin
     try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
     let seg = detector?.isSegment == true
     var written = 0
+    var usedStems = Set<String>()
     for (i, item) in items.enumerated() {
         if let cg = loadCGImage(item.url) {
             let dets = Detector.nms(item.candidates, conf: conf, iou: iou, mode: nmsMode, sigma: sigma)
@@ -289,7 +303,8 @@ public func exportFolderCached(_ items: [FolderItem], output: URL, names: [Strin
                 drawBoxes = overlay != .masks
             }
             if let a = annotate(cg, dets, names: names, style: style, label: label, masks: masks, drawBoxes: drawBoxes) {
-                saveCGImage(a, to: output.appendingPathComponent(item.url.deletingPathExtension().lastPathComponent + ".jpg"))
+                let stem = uniqueStem(&usedStems, item.url.deletingPathExtension().lastPathComponent)
+                saveCGImage(a, to: output.appendingPathComponent(stem + ".jpg"))
                 written += 1
             }
         }
