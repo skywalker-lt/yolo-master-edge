@@ -1402,7 +1402,6 @@ void App::draw_preview(const Platform& plat) {
             pan_y_ += io.MouseDelta.y;
             clamp_pan();
         }
-        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) reset_zoom();
     }
     if (zoom_ > 1.001f) {   // apply about the frame center; boxes and masks follow for free
         const ImVec2 C(cur.x + avail.x * 0.5f, cur.y + imgH * 0.5f);
@@ -1428,7 +1427,7 @@ void App::draw_preview(const Platform& plat) {
 
     if (zoom_ > 1.001f) {   // zoom badge, top-right pill
         char zb[48];
-        std::snprintf(zb, sizeof(zb), "%d%% - double-click to reset", (int)std::lround(zoom_ * 100));
+        std::snprintf(zb, sizeof(zb), "%d%% - Ctrl+0 to reset", (int)std::lround(zoom_ * 100));
         const ImVec2 ts = ImGui::CalcTextSize(zb);
         const float padX = 8.f, padY = 3.f;
         const ImVec2 p1(cur.x + avail.x - 10.f, cur.y + 10.f);
