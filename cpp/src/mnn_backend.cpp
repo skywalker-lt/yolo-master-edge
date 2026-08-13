@@ -54,7 +54,7 @@ MnnBackend::MnnBackend(const std::string& model_path, int threads, const std::st
     const std::string per_model = (mp.parent_path() / (mp.stem().string() + ".metadata.yaml")).string();
     const std::string shared    = (mp.parent_path() / "metadata.yaml").string();
     std::vector<std::string> nm; int mi = 0;
-    if (meta::read_ncnn_yaml(per_model, nm, mi) || meta::read_ncnn_yaml(shared, nm, mi)) {
+    if (meta::read_ncnn_yaml(per_model, nm, mi, end2end_) || meta::read_ncnn_yaml(shared, nm, mi, end2end_)) {
         meta_names = nm;
         if (mi > 0) { meta_imgsz = mi; if (fixed_imgsz == 0) fixed_imgsz = mi; }
     }
@@ -113,21 +113,27 @@ std::vector<Detection> MnnBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     detT->copyToHostTensor(&detHost);
     const auto os = detHost.shape();
     const float* raw = detHost.host<float>();
-    int feat_dim = 0, num_anchors = 0;
-    const float* dec = raw;
-    std::vector<float> buf;
-    if (os.size() == 3) {
-        if (os[1] <= os[2]) { feat_dim = os[1]; num_anchors = os[2]; }   // channel-major (expected)
-        else {                                                          // [1,anchors,feat] -> transpose
-            feat_dim = os[2]; num_anchors = os[1];
-            buf.resize(static_cast<size_t>(feat_dim) * num_anchors);
-            for (int a = 0; a < num_anchors; ++a)
-                for (int f = 0; f < feat_dim; ++f)
-                    buf[static_cast<size_t>(f) * num_anchors + a] = raw[static_cast<size_t>(a) * feat_dim + f];
-            dec = buf.data();
+    // end2end [1,num_det,6] MUST be caught before the smaller-axis transpose heuristic,
+    // which would otherwise silently mangle it into feat=6/anchors=num_det garbage.
+    if (os.size() == 3 && (end2end_ || looks_end2end(os[1], os[2]))) {
+        candidates = decode_end2end(raw, os[1], cfg, lb);
+    } else {
+        int feat_dim = 0, num_anchors = 0;
+        const float* dec = raw;
+        std::vector<float> buf;
+        if (os.size() == 3) {
+            if (os[1] <= os[2]) { feat_dim = os[1]; num_anchors = os[2]; }   // channel-major (expected)
+            else {                                                          // [1,anchors,feat] -> transpose
+                feat_dim = os[2]; num_anchors = os[1];
+                buf.resize(static_cast<size_t>(feat_dim) * num_anchors);
+                for (int a = 0; a < num_anchors; ++a)
+                    for (int f = 0; f < feat_dim; ++f)
+                        buf[static_cast<size_t>(f) * num_anchors + a] = raw[static_cast<size_t>(a) * feat_dim + f];
+                dec = buf.data();
+            }
         }
+        candidates = decode_candidates(dec, feat_dim, num_anchors, cfg, lb);
     }
-    candidates = decode_candidates(dec, feat_dim, num_anchors, cfg, lb);
     cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
     proto.clear(); proto_c = proto_h = proto_w = 0;
     if (protoT) {                                       // segmentation proto

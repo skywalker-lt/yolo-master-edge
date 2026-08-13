@@ -12,6 +12,7 @@ public:
     std::vector<Detection> infer(const cv::Mat& bgr, const Config& cfg) override;
 
 private:
+    bool end2end_ = false;   // NMS-free [num_det,6] output (upstream auto-disables for ncnn, kept for robustness)
     ncnn::Net net_;
     int threads_;
     std::string in_blob_ = "in0";
