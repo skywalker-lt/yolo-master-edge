@@ -83,7 +83,7 @@ public struct VideoStats: Sendable {
 @discardableResult
 public func runFolder(_ det: Detector, input: URL, output: URL?,
                       conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode, resize: Int = 0,
-                      tiling: TilingConfig = TilingConfig(), nmsMode: NMSMode = .standard, sigma: Float = 0.1,
+                      tiling: TilingConfig = TilingConfig(), nmsMode: NMSMode = .standard, sigma: Float = 0.1, maxDet: Int = 300,
                       progress: ((_ done: Int, _ total: Int, _ lastAnnotated: CGImage?) -> Void)? = nil) -> BatchStats {
     let files = listImages(input)
     if let output { try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true) }
@@ -94,7 +94,7 @@ public func runFolder(_ det: Detector, input: URL, output: URL?,
         if resize > 0 { cg = resizeLong(cg, resize) }
         let res: Detector.Result
         if tiling.mode == .off {
-            guard let r = try? det.detect(cg, conf: conf, iou: iou, mode: nmsMode, sigma: sigma) else { continue }
+            guard let r = try? det.detect(cg, conf: conf, iou: iou, mode: nmsMode, sigma: sigma, maxDet: maxDet) else { continue }
             res = r
         } else {
             guard let (r, _) = try? det.detectTiled(cg, conf: conf, iou: iou, tiling: tiling,
@@ -118,7 +118,7 @@ public func runFolder(_ det: Detector, input: URL, output: URL?,
 @discardableResult
 public func runVideo(_ det: Detector, input: URL, output: URL,
                      conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode, resize: Int = 0,
-                     nmsMode: NMSMode = .standard, sigma: Float = 0.1,
+                     nmsMode: NMSMode = .standard, sigma: Float = 0.1, maxDet: Int = 300,
                      progress: ((_ frames: Int, _ lastAnnotated: CGImage?) -> Void)? = nil) async throws -> VideoStats {
     let asset = AVURLAsset(url: input)
     guard let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first else {
@@ -160,7 +160,7 @@ public func runVideo(_ det: Detector, input: URL, output: URL,
         let ci = CIImage(cvPixelBuffer: pb).oriented(orient)   // upright, matching AVPlayer
         guard var cg = cictx.createCGImage(ci, from: ci.extent) else { continue }
         if resize > 0 { cg = resizeExact(cg, outW, outH) }
-        guard let res = try? det.detect(cg, conf: conf, iou: iou, mode: nmsMode, sigma: sigma) else { continue }
+        guard let res = try? det.detect(cg, conf: conf, iou: iou, mode: nmsMode, sigma: sigma, maxDet: maxDet) else { continue }
         times.append(res.inferMs)
         guard let annotated = annotate(cg, res.detections, names: det.classNames, style: style, label: label)
         else { continue }
@@ -288,7 +288,7 @@ public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
 public func exportFolderCached(_ items: [FolderItem], output: URL, names: [String],
                                conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode,
                                detector: Detector? = nil, overlay: SegOverlay = .both,
-                               nmsMode: NMSMode = .standard, sigma: Float = 0.1,
+                               nmsMode: NMSMode = .standard, sigma: Float = 0.1, maxDet: Int = 300,
                                progress: ((_ done: Int, _ total: Int) -> Void)? = nil) -> Int {
     try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
     let seg = detector?.isSegment == true
@@ -296,7 +296,7 @@ public func exportFolderCached(_ items: [FolderItem], output: URL, names: [Strin
     var usedStems = Set<String>()
     for (i, item) in items.enumerated() {
         if let cg = loadCGImage(item.url) {
-            let dets = Detector.nms(item.candidates, conf: conf, iou: iou, mode: nmsMode, sigma: sigma)
+            let dets = Detector.nms(item.candidates, conf: conf, iou: iou, maxDet: maxDet, mode: nmsMode, sigma: sigma)
             var masks: [MaskBitmap] = [], drawBoxes = true
             if seg, overlay != .boxes, let det = detector, let raw = try? det.forward(cg) {
                 masks = dets.compactMap { det.maskImage($0, raw) }
@@ -395,7 +395,7 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
 public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]], names: [String],
                               conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode, resize: Int = 0,
                               raws: [Detector.RawOutput?] = [], detector: Detector? = nil, overlay: SegOverlay = .both,
-                              nmsMode: NMSMode = .standard, sigma: Float = 0.1,
+                              nmsMode: NMSMode = .standard, sigma: Float = 0.1, maxDet: Int = 300,
                               progress: ((_ done: Int, _ total: Int) -> Void)? = nil) async throws -> VideoStats {
     let seg = detector?.isSegment == true && overlay != .boxes
     let asset = AVURLAsset(url: input)
@@ -428,7 +428,7 @@ public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]
         guard var cg = cictx.createCGImage(ci, from: ci.extent) else { n += 1; continue }
         if resize > 0 { cg = resizeExact(cg, outW, outH) }
         let dets = Detector.nms(n < framesCands.count ? framesCands[n] : [], conf: conf, iou: iou,
-                                mode: nmsMode, sigma: sigma)
+                                maxDet: maxDet, mode: nmsMode, sigma: sigma)
         var masks: [MaskBitmap] = []
         if seg, let det = detector, n < raws.count, let raw = raws[n] { masks = dets.compactMap { det.maskImage($0, raw) } }
         let drawBoxes = !(detector?.isSegment == true && overlay == .masks)

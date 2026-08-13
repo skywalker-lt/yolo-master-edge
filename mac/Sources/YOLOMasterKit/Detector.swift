@@ -419,15 +419,15 @@ public final class Detector {
 
     /// Decode + per-class NMS from a cached forward pass. Cheap - no model call.
     public func decode(_ raw: RawOutput, conf: Float, iou iouT: CGFloat,
-                       mode: NMSMode = .standard, sigma: Float = 0.1) -> [Detection] {
-        Detector.nms(candidates(raw, confFloor: conf), conf: conf, iou: iouT, mode: mode, sigma: sigma)
+                       mode: NMSMode = .standard, sigma: Float = 0.1, maxDet: Int = 300) -> [Detection] {
+        Detector.nms(candidates(raw, confFloor: conf), conf: conf, iou: iouT, maxDet: maxDet, mode: mode, sigma: sigma)
     }
 
     /// Convenience: forward + decode in one call (used by the CLI). `inferMs` is model-only latency.
     public func detect(_ image: CGImage, conf: Float = 0.25, iou iouT: CGFloat = 0.5,
-                       mode: NMSMode = .standard, sigma: Float = 0.1) throws -> Result {
+                       mode: NMSMode = .standard, sigma: Float = 0.1, maxDet: Int = 300) throws -> Result {
         let raw = try forward(image)
-        return Result(detections: decode(raw, conf: conf, iou: iouT, mode: mode, sigma: sigma), inferMs: raw.inferMs)
+        return Result(detections: decode(raw, conf: conf, iou: iouT, mode: mode, sigma: sigma, maxDet: maxDet), inferMs: raw.inferMs)
     }
 
     // ---------- segmentation masks ----------
