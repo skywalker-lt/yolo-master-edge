@@ -30,7 +30,7 @@ NcnnBackend::NcnnBackend(const std::string& param_path, const std::string& bin_p
     // auto-read ultralytics metadata sidecar (class names + imgsz)
     const std::string dir = std::filesystem::path(param_path).parent_path().string();
     std::vector<std::string> nm; int mi = 0;
-    if (meta::read_ncnn_yaml(dir + "/metadata.yaml", nm, mi)) { meta_names = nm; meta_imgsz = mi; }
+    if (meta::read_ncnn_yaml(dir + "/metadata.yaml", nm, mi, end2end_)) { meta_names = nm; meta_imgsz = mi; }
     // YOLO-Master ncnn graphs bake the attention token counts at the training size,
     // so the input size is effectively fixed.
     fixed_imgsz = meta_imgsz;
@@ -60,6 +60,18 @@ std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg)
     // ---- reshape to channel-major [feat_dim x num_anchors] then decode ----
     // feat << anchors always (e.g. 14/116 vs 8400), so the smaller axis is the feature dim.
     auto t2 = clk::now();
+    // end2end [num_det,6] before the smaller-axis heuristic (which would mangle it)
+    if (end2end_ || (out.w == 6 && out.h >= 32)) {
+        std::vector<float> rows(static_cast<size_t>(out.h) * 6);
+        for (int i = 0; i < out.h; ++i)
+            std::memcpy(rows.data() + static_cast<size_t>(i) * 6, out.row(i), 6 * sizeof(float));
+        candidates = decode_end2end(rows.data(), out.h, cfg, lb);
+        cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
+        proto.clear(); proto_c = proto_h = proto_w = 0;
+        auto dets_e2e = nms_and_cap(candidates, cfg, lb.orig_w, lb.orig_h);
+        post_ms = ms_since(t2);
+        return dets_e2e;
+    }
     int feat_dim, num_anchors;
     std::vector<float> buf;
     if (out.h <= out.w) {                      // rows = features (expected, channel-major)
