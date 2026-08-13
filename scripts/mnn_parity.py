@@ -28,9 +28,16 @@ if not imgs:
 interp = MNN.Interpreter(a.mnn); sess = interp.createSession({"numThread": 4, "backend": "CPU"})
 inp = interp.getSessionInput(sess)
 def mnn_run(x):
+    # multi-output aware (seg protos, mixture heads): returns the rank-3 detection tensor,
+    # falling back to the sole output for single-output detection models.
     t = MNN.Tensor((1, 3, a.imgsz, a.imgsz), MNN.Halide_Type_Float, x, MNN.Tensor_DimensionType_Caffe)
     inp.copyFrom(t); interp.runSession(sess)
-    o = interp.getSessionOutput(sess); sh = o.getShape()
+    outs = interp.getSessionOutputAll(sess)
+    o = None
+    for name, cand in outs.items():
+        if len(cand.getShape()) == 3: o = cand; break
+    if o is None: o = interp.getSessionOutput(sess)
+    sh = o.getShape()
     ot = MNN.Tensor(sh, MNN.Halide_Type_Float, np.zeros(sh, np.float32), MNN.Tensor_DimensionType_Caffe)
     o.copyToHostTensor(ot)
     return np.array(ot.getData(), np.float32).reshape(sh)
@@ -45,7 +52,9 @@ for p in imgs:
     if x is None:
         print(f"  skip unreadable image: {p}")
         continue
-    ym = mnn_run(x); yo = s.run(None, {nm: x})[0]
+    ym = mnn_run(x)
+    det_out = next((o.name for o in s.get_outputs() if len(o.shape) == 3), s.get_outputs()[0].name)
+    yo = s.run([det_out], {nm: x})[0]
     d = np.abs(ym - yo); maxd = max(maxd, d.max()); meand += d.mean(); n_ok += 1
 if not n_ok:
     raise SystemExit("no readable images to compare")
