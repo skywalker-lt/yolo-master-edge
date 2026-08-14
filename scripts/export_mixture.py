@@ -76,6 +76,11 @@ def parse_args():
     ap.add_argument("--conf", type=float, default=0.01, help="reference predict conf (low: random weights)")
     ap.add_argument("--base", default="", help="optional .pt to use as the MoLoRA base model")
     ap.add_argument("--only", default="", help="comma-separated subset of target names")
+    ap.add_argument("--save-pt", action="store_true",
+                    help="also dump each target's state_dict to <out>/<name>.pt so other "
+                         "envs (e.g. the CoreML py3.11/torch2.5.1 venv) can rebuild the "
+                         "architecture from cfg and load bit-identical weights instead of "
+                         "trusting cross-torch-version RNG reproducibility")
     return ap.parse_args()
 
 
@@ -160,6 +165,12 @@ def main():
         print(f"\n=== {name} ===")
         try:
             y = factory()
+            if args.save_pt:
+                # post-factory state: spiced head, and for molora targets the wrapped
+                # (and for molora-merged, merged) module tree - the loader must recreate
+                # the same structure before load_state_dict(strict=True)
+                torch.save(y.model.state_dict(), out / f"{name}.pt")
+                print(f"  state_dict -> {name}.pt")
             onnx_path = y.export(format="onnx", imgsz=args.imgsz, device="cpu",
                                  simplify=False, dynamic=False, **kw)
             dst = out / f"{name}.onnx"
