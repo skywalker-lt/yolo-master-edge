@@ -111,6 +111,7 @@ public final class Detector {
 
     public let isSegment: Bool
     public let nm: Int   // mask-coeff count (segmentation); 0 for detection
+    public let end2end: Bool   // NMS-free head: output [1, max_det, 6] instead of [1, 4+nc, anchors]
 
     private let model: MLModel
     private let inputName: String
@@ -135,14 +136,25 @@ public final class Detector {
         let metaNames = meta["names"]?.split(separator: ",").map(String.init)
             ?? ["pedestrian", "people", "bicycle", "car", "van", "truck", "tricycle", "awning-tricycle", "bus", "motor"]
         let outName = meta["output"] ?? md.outputDescriptionsByName.keys.sorted().first ?? "output0"
+        // end2end (NMS-free) detect head: output is [1, max_det, 6] rows of
+        // [x1,y1,x2,y2,score,cls] in letterboxed-input pixels. The exporter stamps an
+        // `end2end` metadata key (authoritative); the shape heuristic mirrors the C++
+        // runtime's looks_end2end (dim2 == 6 && dim1 >= 32) for models without it.
+        let e2eFromShape: Bool = {
+            if let sh = md.outputDescriptionsByName[outName]?.multiArrayConstraint?.shape,
+               sh.count == 3, sh[2].intValue == 6, sh[1].intValue >= 32 { return true }
+            return false
+        }()
+        let e2eResolved = meta["end2end"].map { $0 == "true" } ?? e2eFromShape
         // class count from the output shape [1, 4+nc, anchors] (authoritative for ANY model);
-        // fall back to the metadata names count.
+        // fall back to the metadata names count. An end2end tensor's dim1 is max_det, not
+        // 4+nc, so it must use the names count.
         let ncFromShape: Int? = {
             if let sh = md.outputDescriptionsByName[outName]?.multiArrayConstraint?.shape,
                sh.count >= 2, sh[1].intValue > 4 { return sh[1].intValue - 4 }
             return nil
         }()
-        let ncResolved = ncFromShape ?? metaNames.count
+        let ncResolved = e2eResolved ? metaNames.count : (ncFromShape ?? metaNames.count)
         // Input resolution is FIXED at export time - read it from the model ([1,3,H,W]).
         let szResolved: Int = {
             if let shape = md.inputDescriptionsByName[inName]?.multiArrayConstraint?.shape,
@@ -163,11 +175,13 @@ public final class Detector {
         self.nc = ncFinal
         self.classNames = metaNames.count == ncFinal ? metaNames : (0..<ncFinal).map { "class\($0)" }
         self.imgsz = szResolved
+        self.end2end = e2eResolved && !segTask
     }
 
     /// Human-readable one-line model summary (parity with the CLI `[model]` banner).
     public var summary: String {
         "input=\(inputName) [\(imgsz)x\(imgsz)] output=\(outputName) classes=\(nc) compute=\(computeMode.rawValue)"
+            + (end2end ? " layout=end2end" : "")
     }
 
     // ---------- preprocess ----------
@@ -233,6 +247,40 @@ public final class Detector {
         let scaleX = raw.scaleX, scaleY = raw.scaleY, padX = raw.padX, padY = raw.padY
         let origW = raw.origW, origH = raw.origH
         var dets: [Detection] = []
+        // end2end layout [1, max_det, 6]: rows [x1,y1,x2,y2,score,cls] in letterboxed px,
+        // already one-to-one (no NMS needed downstream, though it stays harmless).
+        // Same accessor convention as decodeAnchors: at(dim1Index, dim2Index).
+        func decodeEndToEnd(_ at: (Int, Int) -> Float32) {
+            let n = y.shape[1].intValue
+            for r in 0..<n {
+                let s = at(r, 4)
+                if s <= confFloor { continue }
+                let c = Int(at(r, 5))
+                if c < 0 || c >= nc { continue }
+                var x1 = (CGFloat(at(r, 0)) - padX) / scaleX, y1 = (CGFloat(at(r, 1)) - padY) / scaleY
+                var x2 = (CGFloat(at(r, 2)) - padX) / scaleX, y2 = (CGFloat(at(r, 3)) - padY) / scaleY
+                x1 = max(0, min(CGFloat(origW), x1)); x2 = max(0, min(CGFloat(origW), x2))
+                y1 = max(0, min(CGFloat(origH), y1)); y2 = max(0, min(CGFloat(origH), y2))
+                if x2 > x1 && y2 > y1 {
+                    dets.append(Detection(cls: c, score: s,
+                                          rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1),
+                                          maskCoeffs: []))
+                }
+            }
+        }
+        if end2end {
+            if y.dataType == .float16 {
+                let rawPtr = y.dataPointer
+                decodeEndToEnd { r, f in halfToFloat(rawPtr.load(fromByteOffset: (r * s1 + f * s2) * 2, as: UInt16.self)) }
+            } else {
+                y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+                    guard let yp = buf.baseAddress else { return }
+                    decodeEndToEnd { r, f in yp[r * s1 + f * s2] }
+                }
+            }
+            dets.sort { $0.score > $1.score }
+            return dets
+        }
         func decodeAnchors(_ at: (Int, Int) -> Float32) {
             for a in 0..<na {
                 let cx = CGFloat(at(0, a)), cy = CGFloat(at(1, a)), bw = CGFloat(at(2, a)), bh = CGFloat(at(3, a))
