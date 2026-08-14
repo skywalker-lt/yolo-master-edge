@@ -112,6 +112,24 @@ def _roll_via_slice(x: torch.Tensor, shift: int, dims: tuple) -> torch.Tensor:
     return x
 
 
+def _validate_router_input_shape_only(x, expected_channels: int, context: str = "") -> None:
+    """Trace-safe replacement for moe.routers._validate_router_input.
+
+    The original's isnan().any()/isinf().any() guards are eager runtime checks, but
+    tracing records the tensor computations anyway: in ONNX they surface as the 9
+    IsInf/IsNaN nodes the MNN lowering rewrites, and in CoreML they become rank-0
+    non_zero ops that the macOS model compiler rejects ("invalid rank 0"). The python
+    shape checks are kept; the tensor-valued checks are dropped for conversion only.
+    """
+    from ultralytics.nn.modules.moe.routers import MoERouterError, ShapeMismatchError
+    if x.dim() != 4:
+        raise MoERouterError(f"Router input must be 4-D (NCHW), got {x.dim()}-D shape {tuple(x.shape)}"
+                             + (f" [{context}]" if context else ""))
+    if expected_channels > 0 and x.shape[1] != expected_channels:
+        raise ShapeMismatchError(expected=f"(N, {expected_channels}, H, W)", actual=tuple(x.shape),
+                                 context=context or "router input")
+
+
 def selftest_and_patch():
     """Prove the rank<=5 rewrites bit-exact against the originals, then install them."""
     from ultralytics.nn.modules.moa import heads as moa_heads
@@ -147,7 +165,11 @@ def selftest_and_patch():
     mot_experts._WindowTransformerExpert._window_partition = staticmethod(_mot_partition_r5)
     mot_experts._WindowTransformerExpert._window_reverse = staticmethod(_mot_reverse_r5)
     mot_experts._roll_via_cat = _roll_via_slice
-    print("[patch] rank<=5 window rewrites + slice-roll verified bit-exact and installed")
+
+    from ultralytics.nn.modules.moe import routers as moe_routers
+    moe_routers._validate_router_input = _validate_router_input_shape_only
+    print("[patch] rank<=5 window rewrites + slice-roll verified bit-exact and installed; "
+          "router NaN/Inf guards dropped (trace-dead, CoreML-incompatible)")
 
 
 # ---------------------------------------------------------------------------
