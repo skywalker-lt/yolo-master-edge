@@ -2,7 +2,7 @@
 # Robustness battery for yolomaster_edge. Re-runnable on any platform (x86_64 / Jetson).
 # Usage: BIN=./build/yolomaster_edge ONNX=... NCNN=... DIR=... YAML=... ./run_tests.sh
 set -u
-ROOT=/data/yolo-master-edge
+ROOT=${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 BIN=${BIN:-$ROOT/cpp/build/yolomaster_edge}
 ONNX=${ONNX:-$ROOT/models/esmoe_n_visdrone_sim.onnx}
 NCNN=${NCNN:-$ROOT/models/esmoe_n_visdrone_ncnn}

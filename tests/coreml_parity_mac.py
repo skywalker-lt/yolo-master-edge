@@ -11,7 +11,7 @@ no drift from resize interpolation differences:
   inputs.npz         per image stem: <stem>_blob [1,3,640,640] float32 (the exact
                      letterboxed input) and <stem>_lb [r, px, py, w, h]
 
-Checks per model, mirroring scripts/validate_mixture.py levels A and B:
+Checks per model, mirroring tests/validate_mixture.py levels A and B:
   A  raw det tensor: CoreML vs torch-eager max abs diff < --tol (default 5e-3 at fp32).
      For end2end models with a tie-degenerate untrained trunk (>50 percent of rows share
      one score), the in-graph top-k row set is implementation defined, so A is skipped
