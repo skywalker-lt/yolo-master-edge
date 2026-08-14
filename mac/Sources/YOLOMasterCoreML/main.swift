@@ -55,7 +55,8 @@ let sigma = Float(argValue("--sigma", "0.1")!) ?? 0.1
 
 // ---------- backend (shared) ----------
 let detector: Detector
-do { detector = try Detector(modelURL: URL(fileURLWithPath: modelPath), compute: compute) }
+do { detector = try Detector(modelURL: URL(fileURLWithPath: modelPath), compute: compute,
+                             forceCompute: CommandLine.arguments.contains("--compute")) }
 catch { die("model load failed: \(error)", 3) }
 print("[model] \(detector.summary)")
 
