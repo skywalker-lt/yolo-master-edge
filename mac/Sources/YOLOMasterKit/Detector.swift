@@ -118,17 +118,17 @@ public final class Detector {
     private let outputName: String
     private let protoName: String
 
-    public init(modelURL: URL, compute: ComputeMode = .cpuAndGPU) throws {
-        self.computeMode = compute
-        let cfg = MLModelConfiguration(); cfg.computeUnits = compute.mlUnits
-        let loaded: MLModel
-        if modelURL.pathExtension.lowercased() == "mlmodelc" {
-            loaded = try MLModel(contentsOf: modelURL, configuration: cfg)
-        } else {
-            let compiled = try MLModel.compileModel(at: modelURL)
-            loaded = try MLModel(contentsOf: compiled, configuration: cfg)
+    /// `forceCompute: true` keeps the requested compute units even for end2end models,
+    /// which otherwise auto-downgrade to CPU (see below).
+    public init(modelURL: URL, compute: ComputeMode = .cpuAndGPU, forceCompute: Bool = false) throws {
+        let compiledURL = modelURL.pathExtension.lowercased() == "mlmodelc"
+            ? modelURL : try MLModel.compileModel(at: modelURL)
+        func load(_ mode: ComputeMode) throws -> MLModel {
+            let cfg = MLModelConfiguration(); cfg.computeUnits = mode.mlUnits
+            return try MLModel(contentsOf: compiledURL, configuration: cfg)
         }
-        self.model = loaded
+        var loaded = try load(compute)
+        var effectiveCompute = compute
         let md = loaded.modelDescription
 
         let inName = md.inputDescriptionsByName.keys.sorted().first ?? "images"
@@ -166,6 +166,17 @@ public final class Detector {
         // segmentation: detection tensor is [1, 4+nc+nm, anchors] -> nc from names, plus a proto output
         let segTask = (meta["task"] ?? "detect") == "segment"
         let ncFinal = segTask ? metaNames.count : ncResolved
+
+        // MPSGraph aborts compiling end2end mixture graphs on GPU (a hard assertion at
+        // the first predict, not catchable in-process), and CPU is orders of magnitude
+        // faster on these fragmented graphs anyway (measured: 22ms CPU vs 7.5s GPU-path
+        // on the anchors sibling). Auto-downgrade unless the caller insists.
+        if e2eResolved && !segTask && effectiveCompute != .cpu && !forceCompute {
+            effectiveCompute = .cpu
+            loaded = try load(.cpu)
+        }
+        self.computeMode = effectiveCompute
+        self.model = loaded
 
         self.inputName = inName
         self.outputName = outName
