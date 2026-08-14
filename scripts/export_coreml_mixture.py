@@ -277,7 +277,14 @@ def main():
                 raw = wrapped(ex)                 # eager warmup bakes static spatial dims
             print(f"  det output {list(raw.shape)}")
 
-            with mock.patch("torch.onnx.is_in_onnx_export", return_value=True):
+            # nan_to_num on the rank-0 complexity scalar (gated.py _apply_complexity_gate)
+            # lowers to non_zero + scatter_nd chains that the macOS compiler rejects
+            # ("non_zero: invalid rank 0"). Identity is numerically exact on finite
+            # values, which is all inference ever produces here; the ONNX/MNN exports
+            # keep their guards.
+            with mock.patch("torch.onnx.is_in_onnx_export", return_value=True), \
+                 mock.patch("torch.nan_to_num",
+                            lambda x, nan=0.0, posinf=None, neginf=None, out=None: x):
                 traced = torch.jit.trace(wrapped, ex, strict=False, check_trace=False)
             traced = torch.jit.freeze(traced.eval())
             try:
@@ -291,6 +298,7 @@ def main():
                 minimum_deployment_target=deploy,
                 compute_units=ct.ComputeUnit.ALL,
                 convert_to="mlprogram",
+                compute_precision=ct.precision.FLOAT32,   # parity-grade; mlprogram defaults to fp16
             )
 
             outs = [(o.name, list(o.type.multiArrayType.shape))
