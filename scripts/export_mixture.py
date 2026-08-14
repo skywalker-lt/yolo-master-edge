@@ -13,7 +13,7 @@ Produces, under --out:
   molora-routed.onnx                             MoLoRA molora_export_mode=routing_preserved
 plus, per model: <stem>.metadata.yaml (names/imgsz/end2end sidecar for MNN/ncnn) and
 <stem>.ref.npz (eager predict reference on --ref-images: xyxy/conf/cls per image, the
-ground truth for scripts/validate_mixture.py).
+ground truth for tests/validate_mixture.py).
 
 Weights are random-init (upstream ships none for these families) - detections are
 arbitrary but deterministic (seeded), which is exactly what pipeline/parity validation
