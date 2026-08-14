@@ -134,10 +134,15 @@ def main():
         rates_a, rates_b = [], []
         layout = "?"
         tie_note = ""
+        predict_err = None
         for s in stems:
             blob = inputs[s + "_blob"]
             lb = inputs[s + "_lb"]
-            out = ml.predict({"images": blob})[out_name]
+            try:
+                out = ml.predict({"images": blob})[out_name]
+            except Exception as e:
+                predict_err = e
+                break
             out = np.asarray(out, dtype=np.float32)
             e2e = out.ndim == 3 and out.shape[2] == 6 and out.shape[1] >= 32
             layout = "end2end" if e2e else "anchors"
@@ -158,6 +163,10 @@ def main():
             else:
                 rates_b.append(match_rate(r_xyxy, r_cls, c_xyxy, c_cls, iou_thr=0.9))
 
+        if predict_err is not None:
+            failures.append(f"{stem}: predict failed: {predict_err}")
+            print(f"{stem:26s} PREDICT FAILED: {str(predict_err)[:150]}")
+            continue
         a = max(rates_a) if rates_a else float("nan")
         b = float(np.mean(rates_b)) if rates_b else float("nan")
         ok = (not rates_a or a < args.tol) and (rates_b and b >= 0.9)
