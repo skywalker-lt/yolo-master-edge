@@ -20,8 +20,11 @@ v1.1.0 brings the same feature set to all runners (macOS / Windows GUIs, Linux a
 - **🔎 Zoom & pan on GUI:** cursor-anchored zoom up to 8x on images and paused video in both GUIs.
 - **📦 New: prebuilt Linux x86_64 bundles** (self-contained, glibc 2.35+, all three backends + ffmpeg video) and a **Jetson Orin bundle** with the TensorRT backend now supporting the full feature set.
 
-<img height="380" alt="Screenshot 2026-08-12 at 5 35 43 PM" src="https://github.com/user-attachments/assets/6cb59d23-76e1-43b4-93f6-4302290a0e8a" /> <img height="385" alt="Screenshot 2026-08-12 at 5 36 12 PM" src="https://github.com/user-attachments/assets/13c1019d-eb58-4b15-915b-45c4593ca5b8" />
+<br>
 
+<img height="380" alt="Screenshot 2026-08-12 at 5 35 43 PM" src="https://github.com/user-attachments/assets/6cb59d23-76e1-43b4-93f6-4302290a0e8a" /> <img height="380" alt="Screenshot 2026-08-12 at 5 36 12 PM" src="https://github.com/user-attachments/assets/27a60aee-a587-47e1-be93-e404e70b932d" />
+
+<br>
 
 **Full notes: [Release Page](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.1.0).**
 
