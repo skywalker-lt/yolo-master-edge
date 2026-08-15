@@ -28,10 +28,16 @@ TrtBackend::TrtBackend(const std::string& engine_path) {
     std::vector<char> blob((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
     runtime_.reset(nvinfer1::createInferRuntime(g_logger));
+    if (!runtime_)
+        throw std::runtime_error("TensorRT runtime init failed (CUDA/GPU unavailable? "
+                                 "check the driver: on Jetson, nvgpu module + reboot; "
+                                 "in containers, --runtime nvidia)");
     engine_.reset(runtime_->deserializeCudaEngine(blob.data(), blob.size()));
     if (!engine_)
         throw std::runtime_error("failed to deserialize engine (built for a different GPU arch / TRT version?)");
     ctx_.reset(engine_->createExecutionContext());
+    if (!ctx_)
+        throw std::runtime_error("TensorRT execution context creation failed (out of GPU memory?)");
     CUDA_CHECK(cudaStreamCreate(&stream_));
 
     // discover I/O tensors (TensorRT 10 named-tensor API): input [1,3,H,W];
