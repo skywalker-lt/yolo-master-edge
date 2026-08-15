@@ -878,6 +878,11 @@ struct ContentView: View {
 
     private enum PickTarget { case model, source }
     private var sourceKind: SourceKind { sourceURL.map(classifySource) ?? .unknown }
+    /// The adjustable NMS cap is a tiled-inference feature (merged tile pools can
+    /// legitimately exceed 300 boxes); every single-pass run keeps the default.
+    private var effectiveMaxDet: Int {
+        (tiling != .off && (sourceKind == .image || sourceKind == .folder) && !cameraOn) ? Int(maxDet) : 300
+    }
     private var modelInfoImgsz: String { engine.modelInfo.map { "\($0.imgsz)×\($0.imgsz)" } ?? "the model's imgsz" }
     private var isSegModel: Bool { cameraOn ? cameraIsSegment : engine.modelIsSegment }   // drives the Overlay control in both modes
     private var kindLabel: String {
@@ -960,11 +965,11 @@ struct ContentView: View {
                 if pc.isPlaying {
                     zoom.reset()   // zoom is a paused-video feature
                     engine.startVideoOverlayLoop(player: pc.player, conf: conf, iou: iou, nmsMode: nmsMode,
-                                                 sigma: sigma, maxDet: Int(maxDet), style: style, label: label, overlay: overlay)
+                                                 sigma: sigma, maxDet: effectiveMaxDet, style: style, label: label, overlay: overlay)
                 } else {
                     engine.stopVideoOverlayLoop()
                     engine.requestOverlayFrame(time: pc.displayTime, conf: conf, iou: iou, nmsMode: nmsMode,
-                                               sigma: sigma, maxDet: Int(maxDet), style: style, label: label, overlay: overlay)
+                                               sigma: sigma, maxDet: effectiveMaxDet, style: style, label: label, overlay: overlay)
                 }
             }
     }
@@ -1022,11 +1027,11 @@ struct ContentView: View {
         zoom.reset()
         switch sourceKind {
         case .image:  engine.previewURL(model: m, image: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess,
-                                        tiling: tilingConfig, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet))
+                                        tiling: tilingConfig, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet)
         case .folder: engine.runFolder(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, overlay: overlay, preprocess: preprocess,
-                                       tiling: tilingConfig, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet))
+                                       tiling: tilingConfig, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet)
         case .video:  engine.runVideo(model: m, input: s, compute: compute, conf: conf, iou: iou, style: style, label: label, preprocess: preprocess, overlay: overlay,
-                                      nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet))
+                                      nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet)
         default: break
         }
     }
@@ -1043,7 +1048,7 @@ struct ContentView: View {
         guard folderImages.indices.contains(i) else { return }
         selectedIndex = i
         zoom.reset()
-        engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet))
+        engine.showFolder(index: i, url: folderImages[i], conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet)
     }
     /// Re-derive the shown video frame's stats + seg-mask overlay from the cache. Extracted from
     /// the body's onChange chain: inline, these two many-argument calls blow the SwiftUI
@@ -1053,9 +1058,9 @@ struct ContentView: View {
         let t: Double = pc.displayTime
         // Baked-playback contract: keep the whole-video post-NMS bake current for the settings
         // (cheap key compare when nothing changed; settings are locked during playback anyway).
-        engine.setVideoFrameStats(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet), throttled: pc.isPlaying)
+        engine.setVideoFrameStats(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet, throttled: pc.isPlaying)
         if !pc.isPlaying {   // paused/scrub: one full-detail compose; the loop owns playback
-            engine.requestOverlayFrame(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet),
+            engine.requestOverlayFrame(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet,
                                        style: style, label: label, overlay: overlay)
         }
     }
@@ -1064,7 +1069,7 @@ struct ContentView: View {
         if sourceKind == .video {
             refreshVideoOverlays()   // overlay redraws on conf/iou/label automatically
         } else {
-            engine.restyle(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet))
+            engine.restyle(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet)
         }
     }
     private func step(_ dir: Int, vertical: Bool) {
@@ -1168,7 +1173,11 @@ struct ContentView: View {
                         }
                         sliderRow("Confidence", $conf, 0.05...0.95).disabled(videoTuningLocked)
                         sliderRow("IoU", $iou, 0.10...0.90).disabled(videoTuningLocked)
-                        intSliderRow("Max detections", $maxDet, 10...5000).disabled(videoTuningLocked)
+                        if tiling != .off {
+                            intSliderRow("Max detections", $maxDet, 10...5000).disabled(videoTuningLocked)
+                            Text("Tiled runs only: caps the merged tile pool after NMS. Single-pass runs keep 300.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                         segRow("NMS") {
                             Picker("", selection: $nmsMode) {
                                 ForEach(NMSMode.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -1260,7 +1269,7 @@ struct ContentView: View {
                                 popoverRow("This frame") { showRenderExport = false; engine.save() }
                                 popoverRow("All") {
                                     showRenderExport = false
-                                    engine.exportFolder(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet))
+                                    engine.exportFolder(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet)
                                 }
                             }
                             .padding(8).frame(minWidth: 150)
@@ -1278,11 +1287,11 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 popoverRow("This frame") {
                                     showRenderExport = false
-                                    engine.saveVideoFrame(time: pc.displayTime, conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet))
+                                    engine.saveVideoFrame(time: pc.displayTime, conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet)
                                 }
                                 popoverRow("All (annotated video)") {
                                     showRenderExport = false
-                                    engine.exportVideo(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet))
+                                    engine.exportVideo(conf: conf, iou: iou, style: style, label: label, overlay: overlay, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet)
                                 }
                             }
                             .padding(8).frame(minWidth: 180)
@@ -1308,7 +1317,7 @@ struct ContentView: View {
                         popoverRow(f.label) {
                             showLabelExport = false
                             engine.exportAnnotations(format: f, sampling: sampling,
-                                                     conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet))
+                                                     conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet)
                         }
                     }
                     if sourceKind == .video {
@@ -1354,7 +1363,7 @@ struct ContentView: View {
             Color(nsColor: .underPageBackgroundColor)
             if cameraOn {
                 LiveCameraView(modelURL: modelURL, compute: compute, preprocess: preprocess,
-                               conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet),
+                               conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet,
                                overlay: overlay, style: style, label: label,
                                isSegment: $cameraIsSegment, mirror: $cameraMirror).padding(12)
             } else if let err = sourceError {
@@ -1364,7 +1373,7 @@ struct ContentView: View {
                 }.padding(24)
             } else if sourceKind == .video && engine.hasResults {
                 ZoomContainer(zoom: zoom, enabled: !pc.isPlaying) {
-                    VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: Int(maxDet), overlay: overlay, style: style, label: label).padding(12)
+                    VideoStage(engine: engine, pc: pc, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet, overlay: overlay, style: style, label: label).padding(12)
                 }
             } else if let img = engine.resultImage {
                 ZoomContainer(zoom: zoom) {

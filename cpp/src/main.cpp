@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
     app.add_option("--imgsz", imgsz, "inference size (0 = from model / 640)");
     app.add_option("--conf", conf, "confidence threshold")->capture_default_str();
     app.add_option("--iou", iou, "NMS IoU threshold")->capture_default_str();
-    app.add_option("--max-det", max_det, "max detections per image after NMS")->capture_default_str();
+    app.add_option("--max-det", max_det, "max detections per image after NMS (tiled runs only; requires --slicing)")->capture_default_str();
     app.add_option("--threads", threads, "CPU threads")->capture_default_str();
     app.add_option("--limit", limit, "cap #inputs (0 = all)");
     app.add_option("--out", outdir, "output dir for annotated results")->capture_default_str();
@@ -92,6 +92,12 @@ int main(int argc, char** argv) {
     if (slicing == "dense") slice_mode = SliceMode::Dense;
     else if (slicing == "sparse") slice_mode = SliceMode::Sparse;
     else if (slicing != "off") { std::cerr << "unknown --slicing mode: " << slicing << "\n"; return 2; }
+    // the adjustable cap is a tiled-inference feature (merged tile pools can legitimately
+    // exceed 300 dets); single-pass runs keep the ultralytics default
+    if (app.count("--max-det") && slice_mode == SliceMode::Off) {
+        std::cerr << "--max-det is only available with tiled inference (add --slicing dense|sparse)\n";
+        return 2;
+    }
     annot::Format lfmt = annot::Format::YoloTXT;
     if (label_format == "coco") lfmt = annot::Format::CocoJSON;
     else if (label_format == "voc") lfmt = annot::Format::PascalVOC;
