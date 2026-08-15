@@ -20,13 +20,20 @@ echo "  $ORT_DIR"
 echo "==================== build (aarch64, ORT backend, PORTABLE) ===================="
 cd "$ROOT/cpp"
 rm -rf build_jetson && mkdir build_jetson && cd build_jetson
-# prefer the lean ffmpeg OpenCV (built by 21_build_trt_runner.sh) over JetPack's
-# GStreamer OpenCV, whose VideoCapture cannot open plain mp4 files headlessly
+# PORTABLE=ON strips videoio (image-only) to avoid the ffmpeg/GStreamer closure.
+# When the lean ffmpeg OpenCV from 21_build_trt_runner.sh is cached, that concern
+# is gone: link it and build the FULL runner (video sources included). Without it,
+# fall back to the original image-only portable build against system OpenCV.
 OCV_LEAN="$ROOT/third_party/opencv-lean"
-OCV_ARG=""
-[ -f "$OCV_LEAN/lib/cmake/opencv4/OpenCVConfig.cmake" ] && OCV_ARG="-DOpenCV_DIR=$OCV_LEAN/lib/cmake/opencv4"
-cmake .. -DCMAKE_BUILD_TYPE=Release -DPORTABLE=ON -DUSE_NCNN=OFF \
-         -DONNXRUNTIME_ROOT="$ORT_DIR" $OCV_ARG 2>&1 | grep -iE "backend:|error" || true
+if [ -f "$OCV_LEAN/lib/cmake/opencv4/OpenCVConfig.cmake" ]; then
+  MODE_ARGS="-DPORTABLE=OFF -DOpenCV_DIR=$OCV_LEAN/lib/cmake/opencv4"
+  echo "  full build (video on): lean ffmpeg OpenCV at $OCV_LEAN"
+else
+  MODE_ARGS="-DPORTABLE=ON"
+  echo "  portable build (image-only): no cached lean OpenCV"
+fi
+cmake .. -DCMAKE_BUILD_TYPE=Release $MODE_ARGS -DUSE_NCNN=OFF \
+         -DONNXRUNTIME_ROOT="$ORT_DIR" 2>&1 | grep -iE "backend:|error" || true
 make -j"$(nproc)" 2>&1 | grep -iE "error|Built target" | tail -1
 BIN="$ROOT/cpp/build_jetson/yolomaster_edge"
 echo "  binary: $BIN"
