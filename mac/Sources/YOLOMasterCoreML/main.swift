@@ -31,7 +31,7 @@ guard let modelPath = argValue("--model"), let srcPath = argValue("--source") el
     die("usage: yolomaster-coreml --model M.mlpackage --source img|dir/|vid.mp4 [--out o] " +
         "[--conf 0.25] [--iou 0.5] [--compute cpuAndGPU|all|cpu] [--style hud|solid|neon] " +
         "[--label full|min|off] [--resize N] [--benchmark [--iters 200]] [--no-save] " +
-        "[--slicing off|dense|sparse [--tile-size N] [--slicing-masks]] [--cw-nms [--sigma 0.1]]", 2)
+        "[--slicing off|dense|sparse [--tile-size N] [--slicing-masks] [--max-det N]] [--cw-nms [--sigma 0.1]]", 2)
 }
 let conf = Float(argValue("--conf", "0.25")!) ?? 0.25
 let iouT = CGFloat(Float(argValue("--iou", "0.5")!) ?? 0.5)
@@ -42,6 +42,7 @@ let noSave = hasFlag("--no-save")
 let iters = Int(argValue("--iters", "200")!) ?? 200
 let resize = Int(argValue("--resize", "0")!) ?? 0
 let boxStyle = BoxStyle(rawValue: (argValue("--style", "hud")!).lowercased()) ?? .hud
+let maxDet = Int(argValue("--max-det", "300")!) ?? 300
 let labelMode = LabelMode(rawValue: (argValue("--label", "full")!).lowercased()) ?? .full
 // --slicing is the user-facing name; --tiling accepted as a compat alias
 let slicingArg = argValue("--slicing") ?? argValue("--tiling", "off")!
@@ -51,6 +52,10 @@ let tileSizeArg = Int(argValue("--tile-size", "0")!) ?? 0
 let tilingCfg = TilingConfig(mode: tilingMode, tileSize: tileSizeArg > 0 ? tileSizeArg : nil,
                              keepGlobalMasks: hasFlag("--slicing-masks") || hasFlag("--tiling-masks"))
 let nmsMode: NMSMode = hasFlag("--cw-nms") ? .clusterWeighted : .standard
+// the adjustable cap is a tiled-inference feature (merged tile pools can exceed 300)
+if hasFlag("--max-det") && tilingMode == .off {
+    die("--max-det is only available with tiled inference (add --slicing dense|sparse)", 2)
+}
 let sigma = Float(argValue("--sigma", "0.1")!) ?? 0.1
 
 // ---------- backend (shared) ----------
@@ -70,7 +75,7 @@ func processImage(_ path: String, _ outPath: String) {
         guard let r = try? detector.detect(cg, conf: conf, iou: iouT, mode: nmsMode, sigma: sigma) else { logErr("predict failed: \(path)"); return }
         res = r
     } else {
-        guard let (r, t) = try? detector.detectTiled(cg, conf: conf, iou: iouT, tiling: tilingCfg, nmsMode: nmsMode, sigma: sigma) else { logErr("predict failed: \(path)"); return }
+        guard let (r, t) = try? detector.detectTiled(cg, conf: conf, iou: iouT, tiling: tilingCfg, nmsMode: nmsMode, sigma: sigma, maxDet: maxDet) else { logErr("predict failed: \(path)"); return }
         res = r
         tileNote = "  tiles=\(t.tilesRun)/\(t.tilesTotal) @\(t.tileSizeUsed)px" + (t.usedFallback ? " (fallback)" : "") + (t.capped ? " (capped)" : "")
     }
@@ -127,7 +132,8 @@ if benchmark {
         print("[batch] \(src.lastPathComponent) -> \(out?.path ?? "(--no-save)")")
         let s = runFolder(detector, input: src, output: out, conf: conf, iou: iouT,
                           style: boxStyle, label: labelMode, resize: resize,
-                          tiling: tilingCfg, nmsMode: nmsMode, sigma: sigma)
+                          tiling: tilingCfg, nmsMode: nmsMode, sigma: sigma,
+                          maxDet: tilingMode == .off ? 300 : maxDet)
         print("[batch] \(s.processed)/\(s.total) ok  |  model-infer mean \(f1(s.meanMs))ms -> \(fps(s.meanMs)) img/s steady")
     case .image:
         processImage(srcPath, outArg ?? "out.jpg")
