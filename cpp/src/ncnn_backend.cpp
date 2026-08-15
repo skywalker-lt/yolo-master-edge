@@ -20,6 +20,16 @@ NcnnBackend::NcnnBackend(const std::string& param_path, const std::string& bin_p
         net_.opt.use_fp16_packed = true;
         net_.opt.use_fp16_storage = true;
         net_.opt.use_fp16_arithmetic = true;
+    } else {
+        // CPU stays fp32 everywhere. ncnn's defaults enable fp16 kernels when the CPU
+        // has them (armv8.2: Jetson/phones) - inert on x86, so all x64 validation ran
+        // fp32. The mixture routing arithmetic (1e-7 tiebreaks, 1e-9 mask nudges)
+        // underflows in fp16 and returns zero detections on ARM; pin the CPU path to
+        // the same fp32 behavior the parity harness certifies.
+        net_.opt.use_fp16_packed = false;
+        net_.opt.use_fp16_storage = false;
+        net_.opt.use_fp16_arithmetic = false;
+        net_.opt.use_bf16_storage = false;
     }
     active_ep = use_vulkan ? "ncnn-Vulkan" : "cpu";
     if (net_.load_param(param_path.c_str()) != 0)
