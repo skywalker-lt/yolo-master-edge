@@ -55,10 +55,11 @@ for %%P in (onnxruntime_providers_cuda*.dll onnxruntime_providers_tensorrt*.dll 
 )
 rem del silently skips read-only files without /f (SDK archives often extract
 rem read-only); a surviving CUDA provider adds ~120 MB compressed, so verify.
-if exist "%STAGE%\onnxruntime_providers_cuda*.dll" (
-  echo ERROR: CUDA provider survived the strip - lean bundle must not ship it
-  goto :fail
-)
+rem single-line ifs + exact name: parenthesized if+goto misparses in some shells.
+if exist "%STAGE%\onnxruntime_providers_cuda.dll" attrib -r -s -h "%STAGE%\onnxruntime_providers_cuda.dll"
+if exist "%STAGE%\onnxruntime_providers_cuda.dll" del /f /q "%STAGE%\onnxruntime_providers_cuda.dll"
+if exist "%STAGE%\onnxruntime_providers_cuda.dll" echo ERROR: CUDA provider survived the strip - lean bundle must not ship it
+if exist "%STAGE%\onnxruntime_providers_cuda.dll" goto :fail
 
 echo == 4/5  bundle default models ==
 mkdir "%STAGE%\models" 2>nul
