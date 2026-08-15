@@ -24,6 +24,14 @@ rm -rf build_jetson && mkdir build_jetson && cd build_jetson
 # When the lean ffmpeg OpenCV from 21_build_trt_runner.sh is cached, that concern
 # is gone: link it and build the FULL runner (video sources included). Without it,
 # fall back to the original image-only portable build against system OpenCV.
+# ncnn backend: on when the on-device aarch64 build exists (jetson/24_build_ncnn.sh)
+NCNN_AARCH64="$ROOT/third_party/ncnn-aarch64-20260526"
+if [ -f "$NCNN_AARCH64/include/ncnn/net.h" ]; then
+  NCNN_ARGS="-DUSE_NCNN=ON -DNCNN_ROOT=$NCNN_AARCH64"
+  echo "  ncnn backend: ON (aarch64 build at $NCNN_AARCH64)"
+else
+  NCNN_ARGS="-DUSE_NCNN=OFF"
+fi
 OCV_LEAN="$ROOT/third_party/opencv-lean"
 if [ -f "$OCV_LEAN/lib/cmake/opencv4/OpenCVConfig.cmake" ]; then
   MODE_ARGS="-DPORTABLE=OFF -DOpenCV_DIR=$OCV_LEAN/lib/cmake/opencv4"
@@ -32,7 +40,7 @@ else
   MODE_ARGS="-DPORTABLE=ON"
   echo "  portable build (image-only): no cached lean OpenCV"
 fi
-cmake .. -DCMAKE_BUILD_TYPE=Release $MODE_ARGS -DUSE_NCNN=OFF \
+cmake .. -DCMAKE_BUILD_TYPE=Release $MODE_ARGS $NCNN_ARGS \
          -DONNXRUNTIME_ROOT="$ORT_DIR" 2>&1 | grep -iE "backend:|error" || true
 make -j"$(nproc)" 2>&1 | grep -iE "error|Built target" | tail -1
 BIN="$ROOT/cpp/build_jetson/yolomaster_edge"
