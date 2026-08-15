@@ -51,7 +51,13 @@ echo == 3/5  strip stray CUDA / build artifacts ==
 for %%P in (onnxruntime_providers_cuda*.dll onnxruntime_providers_tensorrt*.dll ^
             cudnn*.dll cublas*.dll cufft*.dll cudart*.dll curand*.dll cusparse*.dll ^
             *.exp *.lib *.pdb) do (
-  del /q /s "%STAGE%\%%P" >nul 2>&1
+  del /f /q /s "%STAGE%\%%P" >nul 2>&1
+)
+rem del silently skips read-only files without /f (SDK archives often extract
+rem read-only); a surviving CUDA provider adds ~120 MB compressed, so verify.
+if exist "%STAGE%\onnxruntime_providers_cuda*.dll" (
+  echo ERROR: CUDA provider survived the strip - lean bundle must not ship it
+  goto :fail
 )
 
 echo == 4/5  bundle default models ==
