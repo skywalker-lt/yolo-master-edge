@@ -273,6 +273,49 @@ def main():
                 except ImportError:
                     print("  mnn parity: python MNN unavailable, skipped")
 
+            # ncnn sibling dir: RAW-tensor parity vs ORT via tests/ncnn_rawdump (linked
+            # against the vendored SDK; the python ncnn wheels segfault at inference on
+            # this machine), plus the same CLI smoke (backend auto-detects the dir).
+            nsib = mdir / f"{model.stem}_ncnn"
+            if (nsib / "model.ncnn.param").exists():
+                dump = Path(__file__).parent / "ncnn_rawdump"
+                if not dump.exists():
+                    root = Path(__file__).resolve().parent.parent
+                    subprocess.run(["g++", "-O2", "-std=c++17",
+                                    f"-I{root}/third_party/ncnn/include/ncnn",
+                                    str(Path(__file__).parent / "ncnn_rawdump.cpp"),
+                                    "-o", str(dump),
+                                    f"-L{root}/third_party/ncnn/lib", "-lncnn",
+                                    f"-Wl,-rpath,{root}/third_party/ncnn/lib", "-fopenmp"],
+                                   check=True)
+                maxd = 0.0
+                for stem in stems:
+                    img = next(Path(args.images).glob(stem + ".*"))
+                    blob_n, _ = preprocess(img, args.imgsz)
+                    fin, fout = Path(tmp) / "in.f32", Path(tmp) / "out.f32"
+                    blob_n[0].astype(np.float32).tofile(fin)
+                    r = subprocess.run([str(dump), str(nsib / "model.ncnn.param"),
+                                        str(nsib / "model.ncnn.bin"), str(fin),
+                                        "3", str(args.imgsz), str(args.imgsz), str(fout)],
+                                       capture_output=True, text=True)
+                    if r.returncode != 0:
+                        maxd = float("inf")
+                        break
+                    dims = dict(kv.split("=") for kv in r.stdout.split())
+                    yn = np.fromfile(fout, np.float32).reshape(1, int(dims["h"]), int(dims["w"]))
+                    yo = sess.run([det_out.name], {in_name: blob_n})[0]
+                    if yn.shape != yo.shape:
+                        maxd = float("inf")
+                        break
+                    maxd = max(maxd, float(np.abs(yn - yo).max()))
+                log_s = run_cli(bin_, nsib.resolve(), Path(args.images).resolve(),
+                                ["--limit", "1", "--quiet"], tmp)
+                cli_ok = "frames=1" in log_s
+                ok = maxd < 5e-3 and cli_ok
+                print(f"  ncnn parity: raw maxdiff {maxd:.2e}, CLI run {'OK' if cli_ok else 'FAILED'} -> {'OK' if ok else 'MISMATCH'}")
+                if not ok:
+                    failures.append(f"{model.stem}: ncnn raw maxdiff {maxd} cli={cli_ok}")
+
     print("\n===== validation summary =====")
     if failures:
         for f in failures:
