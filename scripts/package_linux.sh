@@ -193,7 +193,7 @@ if [ "$VARIANT" = gpu ]; then
   echo "  [ok] CUDA provider closure resolves"
   if command -v nvidia-smi >/dev/null 2>&1 && [ -n "$TEST_IMG" ]; then
     OUT="$(run_clean -m "$TESTDIR/b/models/v0.1-seg-n.onnx" -s "$TEST_IMG" -d cuda --no-save --quiet 2>&1 || true)"
-    echo "$OUT" | grep -q "ep=cuda" && echo "  [ok] --device cuda runs on the GPU" \
+    echo "$OUT" | grep -qi "ep=cuda" && echo "  [ok] --device cuda runs on the GPU" \
       || { echo "SELF-TEST FAILED: --device cuda fell back:"; echo "$OUT" | head -5; exit 1; }
   else
     echo "  [warn] no GPU on this host - --device cuda validation deferred"
