@@ -32,6 +32,14 @@ if [ -f "$NCNN_AARCH64/include/ncnn/net.h" ]; then
 else
   NCNN_ARGS="-DUSE_NCNN=OFF"
 fi
+# MNN backend: on when the on-device aarch64 build exists (jetson/25_build_mnn.sh)
+MNN_AARCH64="$ROOT/third_party/mnn-src-aarch64"
+if [ -f "$MNN_AARCH64/build/libMNN.so" ]; then
+  MNN_ARGS="-DUSE_MNN=ON -DMNN_ROOT=$MNN_AARCH64"
+  echo "  MNN backend: ON (aarch64 build at $MNN_AARCH64)"
+else
+  MNN_ARGS="-DUSE_MNN=OFF"
+fi
 OCV_LEAN="$ROOT/third_party/opencv-lean"
 if [ -f "$OCV_LEAN/lib/cmake/opencv4/OpenCVConfig.cmake" ]; then
   MODE_ARGS="-DPORTABLE=OFF -DOpenCV_DIR=$OCV_LEAN/lib/cmake/opencv4"
@@ -40,7 +48,7 @@ else
   MODE_ARGS="-DPORTABLE=ON"
   echo "  portable build (image-only): no cached lean OpenCV"
 fi
-cmake .. -DCMAKE_BUILD_TYPE=Release $MODE_ARGS $NCNN_ARGS \
+cmake .. -DCMAKE_BUILD_TYPE=Release $MODE_ARGS $NCNN_ARGS $MNN_ARGS \
          -DONNXRUNTIME_ROOT="$ORT_DIR" 2>&1 | grep -iE "backend:|error" || true
 make -j"$(nproc)" 2>&1 | grep -iE "error|Built target" | tail -1
 BIN="$ROOT/cpp/build_jetson/yolomaster_edge"
