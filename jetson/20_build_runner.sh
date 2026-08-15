@@ -20,8 +20,13 @@ echo "  $ORT_DIR"
 echo "==================== build (aarch64, ORT backend, PORTABLE) ===================="
 cd "$ROOT/cpp"
 rm -rf build_jetson && mkdir build_jetson && cd build_jetson
+# prefer the lean ffmpeg OpenCV (built by 21_build_trt_runner.sh) over JetPack's
+# GStreamer OpenCV, whose VideoCapture cannot open plain mp4 files headlessly
+OCV_LEAN="$ROOT/third_party/opencv-lean"
+OCV_ARG=""
+[ -f "$OCV_LEAN/lib/cmake/opencv4/OpenCVConfig.cmake" ] && OCV_ARG="-DOpenCV_DIR=$OCV_LEAN/lib/cmake/opencv4"
 cmake .. -DCMAKE_BUILD_TYPE=Release -DPORTABLE=ON -DUSE_NCNN=OFF \
-         -DONNXRUNTIME_ROOT="$ORT_DIR" 2>&1 | grep -iE "backend:|error" || true
+         -DONNXRUNTIME_ROOT="$ORT_DIR" $OCV_ARG 2>&1 | grep -iE "backend:|error" || true
 make -j"$(nproc)" 2>&1 | grep -iE "error|Built target" | tail -1
 BIN="$ROOT/cpp/build_jetson/yolomaster_edge"
 echo "  binary: $BIN"
