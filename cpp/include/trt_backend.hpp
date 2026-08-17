@@ -31,6 +31,7 @@ private:
     std::string in_name_, out_name_, proto_name_;
     int in_sz_ = 0;                        // input H (== W)
     int feat_dim_ = 0, num_anchors_ = 0;   // detection output [1, feat_dim, num_anchors]
+    bool end2end_ = false;                 // NMS-free [1, num_det, 6] head (sidecar or shape)
     int pc_ = 0, ph_ = 0, pw_ = 0;         // proto output [1, pc, ph, pw] (0 = detection engine)
     std::vector<float> h_out_, h_proto_;
 };

@@ -146,7 +146,7 @@ One executable (`yolomaster_edge`) with **four backends** (ONNXRuntime, NCNN, MN
 --device   cpu | cuda | trt | coreml     (ONNX backend; trt/coreml select the ORT EP)
 ```
 
-Source can be an image, a directory, a video, or a `dataset.yaml`. Sixteen robustness tests (corrupt images, missing files, imgsz mismatch, backend inference, etc.) pass on all platforms (`cpp/run_tests.sh`).
+Source can be an image, a directory, a video, or a `dataset.yaml`. Sixteen robustness tests (corrupt images, missing files, imgsz mismatch, backend inference, etc.) pass on all platforms (`tests/run_tests.sh`).
 
 ### 4.2 Preprocessing
 

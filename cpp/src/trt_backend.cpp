@@ -28,10 +28,16 @@ TrtBackend::TrtBackend(const std::string& engine_path) {
     std::vector<char> blob((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
     runtime_.reset(nvinfer1::createInferRuntime(g_logger));
+    if (!runtime_)
+        throw std::runtime_error("TensorRT runtime init failed (CUDA/GPU unavailable? "
+                                 "check the driver: on Jetson, nvgpu module + reboot; "
+                                 "in containers, --runtime nvidia)");
     engine_.reset(runtime_->deserializeCudaEngine(blob.data(), blob.size()));
     if (!engine_)
         throw std::runtime_error("failed to deserialize engine (built for a different GPU arch / TRT version?)");
     ctx_.reset(engine_->createExecutionContext());
+    if (!ctx_)
+        throw std::runtime_error("TensorRT execution context creation failed (out of GPU memory?)");
     CUDA_CHECK(cudaStreamCreate(&stream_));
 
     // discover I/O tensors (TensorRT 10 named-tensor API): input [1,3,H,W];
@@ -61,11 +67,12 @@ TrtBackend::TrtBackend(const std::string& engine_path) {
         const fs::path ep(engine_path);
         for (const fs::path& p : { fs::path(ep).replace_extension(".metadata.yaml"),
                                    ep.parent_path() / "metadata.yaml" }) {
-            std::vector<std::string> names; int misz = 0;
+            std::vector<std::string> names; int misz = 0; bool e2e = false;
             std::error_code ec;
-            if (fs::exists(p, ec) && meta::read_ncnn_yaml(p.string(), names, misz)) {
+            if (fs::exists(p, ec) && meta::read_ncnn_yaml(p.string(), names, misz, e2e)) {
                 meta_names = std::move(names);
                 meta_imgsz = misz;
+                end2end_ = e2e;
                 if (misz > 0 && misz != in_sz_)
                     std::cerr << "[trt] warn: sidecar imgsz=" << misz << " but engine input is "
                               << in_sz_ << "px (" << p.string() << ")\n";
@@ -73,6 +80,8 @@ TrtBackend::TrtBackend(const std::string& engine_path) {
             }
         }
     }
+    if (end2end_ || looks_end2end(feat_dim_, num_anchors_))
+        std::cerr << "[trt] end2end model: NMS-free [num_det,6] output\n";
 
     CUDA_CHECK(cudaMalloc(&d_in_,  size_t(3) * in_sz_ * in_sz_ * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_out_, size_t(feat_dim_) * num_anchors_ * sizeof(float)));
@@ -127,7 +136,10 @@ std::vector<Detection> TrtBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     // seg engines) so slicing, cached re-NMS and annotation export work like every other
     // backend (mirrors ort_backend.cpp).
     auto t2 = clk::now();
-    candidates = decode_candidates(h_out_.data(), feat_dim_, num_anchors_, cfg, lb);
+    if (end2end_ || looks_end2end(feat_dim_, num_anchors_))   // [1, num_det, 6] NMS-free
+        candidates = decode_end2end(h_out_.data(), feat_dim_, cfg, lb);
+    else
+        candidates = decode_candidates(h_out_.data(), feat_dim_, num_anchors_, cfg, lb);
     cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
     if (pc_ > 0) {
         proto = h_proto_;

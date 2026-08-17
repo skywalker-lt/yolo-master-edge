@@ -18,6 +18,7 @@ private:
     std::unique_ptr<Ort::Session> session_;
     Ort::AllocatorWithDefaultOptions alloc_;
     std::vector<std::string> in_names_s_, out_names_s_;
+    bool end2end_ = false;   // NMS-free [1,num_det,6] output (yolo26 lineage)
     std::vector<const char*> in_names_, out_names_;
 };
 

@@ -58,6 +58,15 @@ cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info);
 // Decode raw model output -> pre-NMS candidates (score >= cfg.conf_thresh; pass a low floor to cache).
 std::vector<RawDet> decode_candidates(const float* out, int feat_dim, int num_anchors,
                                       const Config& cfg, const LetterboxInfo& lb);
+// End-to-end (NMS-free) detection output decode: rows [x1,y1,x2,y2,score,cls] in
+// letterboxed-input px (yolo26 lineage exports with end2end: True -> [1, num_det, 6]).
+// Filters score >= cfg.conf_thresh, un-letterboxes, and yields the same RawDet pool the
+// rest of the pipeline consumes (nms_and_cap is harmless on one-to-one detections and
+// keeps conf/IoU/CW retuning, slicing pooling and the max_det cap working unchanged).
+std::vector<RawDet> decode_end2end(const float* out, int num_det,
+                                   const Config& cfg, const LetterboxInfo& lb);
+// Shape heuristic for rank-3 det outputs when no metadata says so: [1, N>=32, 6].
+inline bool looks_end2end(int d1, int d2) { return d2 == 6 && d1 >= 32; }
 // Per-class NMS + max_det cap + clip-to-frame on cached candidates (cheap; re-run on conf/IoU change).
 std::vector<Detection> nms_and_cap(const std::vector<RawDet>& cands, const Config& cfg,
                                    int orig_w, int orig_h);
@@ -81,6 +90,9 @@ namespace meta {
 std::vector<std::string> parse_names_dict(const std::string& s);
 // parse an ultralytics ncnn metadata.yaml sidecar -> names + imgsz (false if unusable)
 bool read_ncnn_yaml(const std::string& yaml_path, std::vector<std::string>& names, int& imgsz);
+// same, additionally reading the `end2end:` key (v26.08 sidecars; false when absent)
+bool read_ncnn_yaml(const std::string& yaml_path, std::vector<std::string>& names, int& imgsz,
+                    bool& end2end);
 }
 
 // ---- versatile input source ----

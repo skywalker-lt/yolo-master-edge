@@ -105,6 +105,11 @@ OrtBackend::OrtBackend(const std::string& model_path, int threads, const std::st
         const size_t p = s.find_first_of("0123456789");
         if (p != std::string::npos) meta_imgsz = std::atoi(s.c_str() + p);
     }
+    if (auto v = md.LookupCustomMetadataMapAllocated("end2end", alloc_)) {
+        const std::string s = v.get();
+        end2end_ = s.find("rue") != std::string::npos || s == "1";
+        if (end2end_) std::cerr << "[ort] end2end model: NMS-free [num_det,6] output\n";
+    }
 }
 
 std::vector<Detection> OrtBackend::infer(const cv::Mat& bgr, const Config& cfg) {
@@ -150,7 +155,10 @@ std::vector<Detection> OrtBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     const int feat_dim = static_cast<int>(shape[1]);
     const int num_anchors = static_cast<int>(shape[2]);
     const float* out = outs[det_i].GetTensorMutableData<float>();
-    candidates = decode_candidates(out, feat_dim, num_anchors, cfg, lb);
+    if (end2end_ || looks_end2end(feat_dim, num_anchors))   // [1, num_det, 6] NMS-free
+        candidates = decode_end2end(out, feat_dim, cfg, lb);
+    else
+        candidates = decode_candidates(out, feat_dim, num_anchors, cfg, lb);
     cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
     proto.clear(); proto_c = proto_h = proto_w = 0;
     if (proto_i >= 0) {                                                // segmentation model

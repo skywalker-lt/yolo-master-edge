@@ -266,7 +266,7 @@ The backend is inferred from the model (`.onnx` → ONNX Runtime, an NCNN direct
 --out          dir for annotated outputs  --no-save / --quiet
 ```
 
-See `cpp/run_tests.sh` for the 16-test robustness battery.
+See `tests/run_tests.sh` for the 16-test robustness battery.
 
 ## 🤖 Jetson Orin (Native TensorRT)
 

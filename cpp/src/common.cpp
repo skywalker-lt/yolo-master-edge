@@ -124,6 +124,27 @@ std::vector<RawDet> decode_candidates(const float* out, int feat_dim, int num_an
     return cands;
 }
 
+std::vector<RawDet> decode_end2end(const float* out, int num_det,
+                                   const Config& cfg, const LetterboxInfo& lb) {
+    std::vector<RawDet> cands;
+    for (int i = 0; i < num_det; ++i) {
+        const float* r = out + static_cast<size_t>(i) * 6;
+        const float score = r[4];
+        if (score < cfg.conf_thresh) continue;       // also drops max_det zero-padding rows
+        const float x0 = (r[0] - lb.pad_x) / lb.scale_x;
+        const float y0 = (r[1] - lb.pad_y) / lb.scale_y;
+        const float x1 = (r[2] - lb.pad_x) / lb.scale_x;
+        const float y1 = (r[3] - lb.pad_y) / lb.scale_y;
+        if (x1 <= x0 || y1 <= y0) continue;
+        RawDet d;
+        d.box = cv::Rect2f(x0, y0, x1 - x0, y1 - y0);
+        d.score = score;
+        d.cls = static_cast<int>(r[5]);
+        cands.push_back(std::move(d));
+    }
+    return cands;
+}
+
 // Per-class NMS (ultralytics agnostic=False via class offset) + max_det cap + clip-to-frame.
 std::vector<Detection> nms_and_cap(const std::vector<RawDet>& cands, const Config& cfg,
                                    int orig_w, int orig_h) {
@@ -318,6 +339,13 @@ static std::string trim(const std::string& s) {
 }
 
 bool read_ncnn_yaml(const std::string& path, std::vector<std::string>& names, int& imgsz) {
+    bool e2e_unused = false;
+    return read_ncnn_yaml(path, names, imgsz, e2e_unused);
+}
+
+bool read_ncnn_yaml(const std::string& path, std::vector<std::string>& names, int& imgsz,
+                    bool& end2end) {
+    end2end = false;
     std::ifstream f(path);
     if (!f) return false;
     std::map<int, std::string> nm;
@@ -328,6 +356,10 @@ bool read_ncnn_yaml(const std::string& path, std::vector<std::string>& names, in
         const bool indented = !line.empty() && (line[0] == ' ' || line[0] == '\t' || line[0] == '-');
         if (!indented) {                                   // top-level key -> switch/close section
             if (line.rfind("names:", 0) == 0) { sec = NAMES; continue; }
+            if (line.rfind("end2end:", 0) == 0) {
+                end2end = line.find("rue") != std::string::npos;   // true/True
+                sec = NONE; continue;
+            }
             if (line.rfind("imgsz:", 0) == 0) {
                 sec = IMGSZ;
                 auto p = line.find('[');                   // inline "imgsz: [640, 640]"
