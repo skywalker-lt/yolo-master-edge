@@ -19,6 +19,7 @@ public:
 private:
     std::shared_ptr<MNN::Interpreter> interp_;
     MNN::Session* session_ = nullptr;
+    bool end2end_ = false;   // NMS-free [1,num_det,6] output (yolo26 lineage)
     MNN::Tensor*  input_    = nullptr;   // owned by the session
     MNN::Tensor*  output_   = nullptr;   // owned by the session
     int threads_;

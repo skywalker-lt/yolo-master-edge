@@ -212,6 +212,7 @@ void App::overlay_folder_item(int idx, const Platform& plat) {
     if (seg_model_) model_is_seg_ = true;
     inf_ms_ = it.ms; pre_ms_ = 0; post_ms_ = 0;   // this image's model-only time
     Config c = cfg_; c.conf_thresh = conf_; c.iou_thresh = iou_;
+    c.max_det = (slice_mode_ != SliceMode::Off) ? max_det_req_ : cfg_.max_det;
     dets_ = nms_and_cap(it.cands, c, it.ow, it.oh);
     class_counts_.assign(cfg_.num_classes(), 0);
     for (const auto& d : dets_)
@@ -498,7 +499,9 @@ void App::recompute_nms() {
     seg_model_ = be_->is_seg();
     cfg_.conf_thresh = conf_;
     cfg_.iou_thresh  = iou_;
-    dets_ = nms_and_cap(be_->candidates, cfg_, be_->cand_orig_w, be_->cand_orig_h);
+    Config c = cfg_;
+    c.max_det = sliced_run_ ? max_det_req_ : cfg_.max_det;   // adjustable cap is tiled-only
+    dets_ = nms_and_cap(be_->candidates, c, be_->cand_orig_w, be_->cand_orig_h);
     class_counts_.assign(cfg_.num_classes(), 0);
     for (const auto& d : dets_)
         if (d.class_id >= 0 && d.class_id < (int)class_counts_.size()) class_counts_[d.class_id]++;
@@ -818,6 +821,9 @@ void App::draw_sidebar(const Platform& plat) {
             } else if (!img_bgr_.empty()) {
                 ceiling = clamped_tile_size(1 << 20, cfg_.imgsz, img_bgr_.cols, img_bgr_.rows);
             }
+            field_label("Max detections");
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::SliderInt("##maxdet", &max_det_req_, 10, 5000, "%d")) need_renms_ = true;
             field_label("Tile size");
             if (ceiling > cfg_.imgsz) {
                 int ts = tile_size_req_ > 0 ? std::clamp(tile_size_req_, cfg_.imgsz, ceiling)
