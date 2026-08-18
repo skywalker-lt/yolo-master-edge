@@ -27,7 +27,7 @@ dist/
 
 # local-only build log (not published)
 PROGRESS.md
-
+PROJECT.md
 # internal dev helpers / release ops (local-only)
 scripts/_*
 scripts/make_release.sh
