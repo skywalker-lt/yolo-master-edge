@@ -42,3 +42,5 @@ mac/*.mlmodelc
 # local SDK paths (per-machine, not shared)
 gui/sdk-paths.cmd
 tests/ncnn_rawdump
+PROJECT03_FEASIBILITY.md
+runs/project03/
