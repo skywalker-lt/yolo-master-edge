@@ -60,6 +60,28 @@ def _load_stats_json(path: str):
     return out, d
 
 
+def _fix_add_residual(model) -> int:
+    """Repair add_residual on OptimizedMOEImproved blocks restored from old checkpoints.
+
+    The upstream compat shim defaults a MISSING add_residual to True, but checkpoints
+    predating the attribute (the Jan-2026 released COCO v0.1-N) were trained WITHOUT the
+    residual: the wrong default silently collapses classification to ~0.04 confidence
+    while boxes stay sane. Absence of the attribute is the signal it must be False.
+    Returns the number of blocks forced to False.
+    """
+    n_false = 0
+    for mod in model.model.modules():
+        if type(mod).__name__ != "OptimizedMOEImproved":
+            continue
+        had = "add_residual" in vars(mod)
+        if hasattr(mod, "_ensure_compat_attrs"):
+            mod._ensure_compat_attrs()
+        if not had:
+            mod.add_residual = False
+            n_false += 1
+    return n_false
+
+
 class Project03Pruner:
     """Diagnosis-once, surgery-per-threshold pruner wrapping upstream MoEPruner logic."""
 
@@ -76,6 +98,9 @@ class Project03Pruner:
         self.min_keep = min_keep
         self.keep_top_m = keep_top_m
         self.model = YOLO(model_path)
+        n_res = _fix_add_residual(self.model)
+        if n_res:
+            print(f"[compat] add_residual repair applied to {n_res} legacy MoE block(s)")
         self._force_dense_esmoe()
         self.usage_stats = {}
 
