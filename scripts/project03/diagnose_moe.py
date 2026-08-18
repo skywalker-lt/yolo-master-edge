@@ -92,6 +92,25 @@ def _subset_yaml(src_yaml: Path, root: Path, cfg: dict, split: str, n: int, work
     return str(y)
 
 
+def _strip_property_shadows(model) -> int:
+    """Remove stale instance attributes that shadow class-level properties.
+
+    Old checkpoints (Jan-2026 released COCO EsMoE-N) pickled plain instance values
+    (e.g. aux_loss) for names the CURRENT class defines as read-only properties;
+    upstream's _robust_deepcopy re-setattrs instance attrs and explodes on the
+    missing setter. The property recomputes the value, so dropping the stale copy
+    is lossless. Returns the number of attributes stripped.
+    """
+    n = 0
+    for m in model.model.modules():
+        cls = type(m)
+        for k in list(m.__dict__.keys()):
+            if isinstance(getattr(cls, k, None), property):
+                m.__dict__.pop(k)
+                n += 1
+    return n
+
+
 def _fix_add_residual(model) -> int:
     """Repair add_residual on OptimizedMOEImproved blocks restored from old checkpoints.
 
@@ -219,6 +238,9 @@ def diagnose_one(model_path: str, args, out_root: Path) -> dict:
     yaml_path, root, cfg = _resolve_dataset(args.data)
     model = YOLO(model_path)
     n_res = _fix_add_residual(model)
+    n_shadow = _strip_property_shadows(model)
+    if n_shadow:
+        print(f"[{stem}] stripped {n_shadow} property-shadowing instance attr(s)")
     if n_res:
         print(f"[{stem}] add_residual compat repair applied to {n_res} legacy MoE block(s)")
     dense_forced = _force_dense_esmoe(model)
