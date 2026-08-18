@@ -330,6 +330,8 @@ def _gflops(model, imgsz: int) -> float:
 def _fast_val(pt_path: str, data: str, args, dense_esmoe: bool) -> tuple[float, float]:
     from ultralytics import YOLO
     m = YOLO(pt_path)
+    _fix_add_residual(m)             # fresh loads need the same legacy-checkpoint
+    _strip_property_shadows(m)       # repairs as the pruner's own model
     if dense_esmoe:
         from ultralytics.nn.modules.moe.modules import ES_MOE
         for mod in m.model.modules():
