@@ -255,7 +255,7 @@ def diagnose_one(model_path: str, args, out_root: Path) -> dict:
 
         with ExpertUsageTracker(model.model) as tracker:
             res = model.val(data=data, split="val", batch=args.batch, imgsz=args.imgsz,
-                            device=args.device, workers=0, verbose=False, plots=False)
+                            device=args.device, workers=args.workers, verbose=False, plots=False)
             # capture upstream text report + plots (plots save to CWD -> redirect)
             buf = io.StringIO()
             from ultralytics.utils import LOGGER
@@ -355,6 +355,8 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="val dataloader workers (0 = safe for py3.14 local; use 8 on pods)")
     ap.add_argument("--max-images", type=int, default=0, help="0 = full split")
     ap.add_argument("--out", default="runs/project03/diagnosis")
     ap.add_argument("--scene-split", choices=["objects", "off"], default="objects")

@@ -106,7 +106,7 @@ class Project03Pruner:
 
     def __init__(self, model_path: str, dataset: str, device: str = "cpu",
                  imgsz: int = 640, batch: int = 8, importance: str = "usage",
-                 min_keep: int = 0, keep_top_m: int = 0):
+                 min_keep: int = 0, keep_top_m: int = 0, workers: int = 0):
         from ultralytics import YOLO
         self.model_path = model_path
         self.dataset = dataset
@@ -116,6 +116,7 @@ class Project03Pruner:
         self.importance = importance
         self.min_keep = min_keep
         self.keep_top_m = keep_top_m
+        self.workers = workers
         self.model = YOLO(model_path)
         n_res = _fix_add_residual(self.model)
         n_shadow = _strip_property_shadows(self.model)
@@ -145,7 +146,7 @@ class Project03Pruner:
         print("[stats] running diagnosis val pass...")
         with ExpertUsageTracker(self.model.model) as tracker:
             self.model.val(data=data_for_val, split="val", batch=self.batch,
-                           imgsz=self.imgsz, device=self.device, workers=0,
+                           imgsz=self.imgsz, device=self.device, workers=self.workers,
                            verbose=False, plots=False)
             self.usage_stats = {k: dict(v) for k, v in tracker.usage_stats.items()}
 
@@ -338,7 +339,7 @@ def _fast_val(pt_path: str, data: str, args, dense_esmoe: bool) -> tuple[float, 
             if isinstance(mod, ES_MOE):
                 mod.use_sparse_inference = False
     r = m.val(data=data, split="val", batch=args.batch, imgsz=args.imgsz,
-              device=args.device, workers=0, verbose=False, plots=False)
+              device=args.device, workers=args.workers, verbose=False, plots=False)
     return float(r.box.map50), float(r.box.map)
 
 
@@ -356,6 +357,8 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--max-images", type=int, default=0, help="subset for fast sweep deltas")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="val dataloader workers (0 = safe for py3.14 local; use 8 on pods)")
     ap.add_argument("--out", default="")
     ap.add_argument("--map-budget", type=float, default=0.005,
                     help="allowed mAP50-95 drop when picking the best variant")
@@ -376,7 +379,7 @@ def main():
         print(f"[data] fast deltas on first {args.max_images} val images")
 
     pruner = Project03Pruner(args.model, data_val, args.device, args.imgsz, args.batch,
-                             args.importance, args.min_keep, args.keep_top_m)
+                             args.importance, args.min_keep, args.keep_top_m, args.workers)
     pruner.diagnose(args.stats or None, data_val)
 
     base_params = _params(pruner.model.model)
@@ -386,10 +389,18 @@ def main():
     print(f"[base] mAP50 {base_map50:.4f}  mAP50-95 {base_map:.4f}")
 
     rows = []
+    plan_cache: dict[str, dict] = {}
     for thr in [float(t) for t in args.thresholds.split(",") if t]:
         print(f"\n=== threshold {thr:.2f} ===")
         plan = pruner.plan(thr)
         (out / f"plan_t{thr:.2f}.json").write_text(json.dumps(plan, indent=2))
+        plan_key = json.dumps(plan, sort_keys=True)
+        if plan_key in plan_cache:
+            cached = dict(plan_cache[plan_key])
+            cached["threshold"] = thr
+            rows.append(cached)
+            print(f"  identical plan to t={plan_cache[plan_key]['threshold']} -> metrics reused (dedup)")
+            continue
         pruned = pruner.surgery(plan)
         pt = out / f"{stem}_pruned_t{thr:.2f}.pt"
         pruner.save(pruned, pt, thr, plan)
@@ -410,6 +421,7 @@ def main():
                "mAP50": round(m50, 5), "mAP50_95": round(m, 5),
                "dmAP50_95": round(m - base_map, 5)}
         rows.append(row)
+        plan_cache[plan_key] = row
         print(f"  params {row['params_M']}M ({row['dParams_pct']}% cut)  "
               f"GFLOPs {fl}  mAP50-95 {m:.4f} (d {row['dmAP50_95']:+.4f})")
 
