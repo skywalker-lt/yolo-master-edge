@@ -92,6 +92,28 @@ def _subset_yaml(src_yaml: Path, root: Path, cfg: dict, split: str, n: int, work
     return str(y)
 
 
+def _fix_add_residual(model) -> int:
+    """Repair add_residual on OptimizedMOEImproved blocks restored from old checkpoints.
+
+    The upstream compat shim defaults a MISSING add_residual to True, but checkpoints
+    predating the attribute (the Jan-2026 released COCO v0.1-N) were trained WITHOUT the
+    residual: the wrong default silently collapses classification to ~0.04 confidence
+    while boxes stay sane. Absence of the attribute is the signal it must be False.
+    Returns the number of blocks forced to False.
+    """
+    n_false = 0
+    for mod in model.model.modules():
+        if type(mod).__name__ != "OptimizedMOEImproved":
+            continue
+        had = "add_residual" in vars(mod)
+        if hasattr(mod, "_ensure_compat_attrs"):
+            mod._ensure_compat_attrs()
+        if not had:
+            mod.add_residual = False
+            n_false += 1
+    return n_false
+
+
 def _force_dense_esmoe(model) -> bool:
     """Set use_sparse_inference=False on ES_MOE modules; True if any were found."""
     from ultralytics.nn.modules.moe.modules import ES_MOE
@@ -196,6 +218,9 @@ def diagnose_one(model_path: str, args, out_root: Path) -> dict:
 
     yaml_path, root, cfg = _resolve_dataset(args.data)
     model = YOLO(model_path)
+    n_res = _fix_add_residual(model)
+    if n_res:
+        print(f"[{stem}] add_residual compat repair applied to {n_res} legacy MoE block(s)")
     dense_forced = _force_dense_esmoe(model)
     if dense_forced:
         print(f"[{stem}] ES_MOE detected: use_sparse_inference=False forced for honest eval")
