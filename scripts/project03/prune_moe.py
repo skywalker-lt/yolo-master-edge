@@ -269,6 +269,13 @@ class Project03Pruner:
                 except Exception:
                     pass
             self._prune_router(moe.routing, keep, E_old, parent)
+            # per-expert state tensors (e.g. ES_MOE's expert_usage_counts buffer,
+            # updated even at eval): shrink anything expert-indexed along dim 0
+            idx = torch.tensor(keep, dtype=torch.long)
+            for owner in (moe, moe.routing):
+                for bname, buf in list(owner._buffers.items()):
+                    if buf is not None and buf.dim() >= 1 and buf.shape[0] == E_old:
+                        owner._buffers[bname] = buf[idx].clone()
             # post-surgery invariant
             pi, _ = self._find_projection(
                 getattr(moe.routing, "router", None) or getattr(moe.routing, "routing_network"),
