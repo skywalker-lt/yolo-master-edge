@@ -60,6 +60,25 @@ def _load_stats_json(path: str):
     return out, d
 
 
+def _strip_property_shadows(model) -> int:
+    """Remove stale instance attributes that shadow class-level properties.
+
+    Old checkpoints (Jan-2026 released COCO EsMoE-N) pickled plain instance values
+    (e.g. aux_loss) for names the CURRENT class defines as read-only properties;
+    upstream's _robust_deepcopy re-setattrs instance attrs and explodes on the
+    missing setter. The property recomputes the value, so dropping the stale copy
+    is lossless. Returns the number of attributes stripped.
+    """
+    n = 0
+    for m in model.model.modules():
+        cls = type(m)
+        for k in list(m.__dict__.keys()):
+            if isinstance(getattr(cls, k, None), property):
+                m.__dict__.pop(k)
+                n += 1
+    return n
+
+
 def _fix_add_residual(model) -> int:
     """Repair add_residual on OptimizedMOEImproved blocks restored from old checkpoints.
 
@@ -99,6 +118,9 @@ class Project03Pruner:
         self.keep_top_m = keep_top_m
         self.model = YOLO(model_path)
         n_res = _fix_add_residual(self.model)
+        n_shadow = _strip_property_shadows(self.model)
+        if n_shadow:
+            print(f"[compat] stripped {n_shadow} property-shadowing instance attr(s)")
         if n_res:
             print(f"[compat] add_residual repair applied to {n_res} legacy MoE block(s)")
         self._force_dense_esmoe()
