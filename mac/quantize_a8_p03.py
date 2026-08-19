@@ -44,9 +44,14 @@ def main():
 
     import cv2  # noqa: F401  (letterbox)
     import coremltools as ct
-    from coremltools.optimize.coreml import (
-        OpActivationLinearQuantizerConfig, OptimizationConfig,
-        linear_quantize_activations)
+    from coremltools.optimize.coreml import OptimizationConfig
+    # the A8 API moved between ct releases: stable in some, experimental in others
+    try:
+        from coremltools.optimize.coreml import (
+            OpActivationLinearQuantizerConfig, linear_quantize_activations)
+    except ImportError:
+        from coremltools.optimize.coreml.experimental import (
+            OpActivationLinearQuantizerConfig, linear_quantize_activations)
 
     fp16 = ct.models.MLModel(str(d / "p03_v01n_coco_fp16.mlpackage"))
 
