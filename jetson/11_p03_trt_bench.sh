@@ -40,6 +40,21 @@ echo "using trtexec: $TRTEXEC"
 
 WORKSPACE="${WORKSPACE:-512}"
 OPT="${OPT:-3}"
+
+# the 4GB Nano's builder OOMs on the M/L QDQ graphs - back it with a swapfile.
+# SWAP_GB=0 skips; the file persists across runs (delete /swapfile-p03 to reclaim).
+SWAP_GB="${SWAP_GB:-8}"
+if [ "$SWAP_GB" -gt 0 ] && [ "$(free -m | awk '/Swap:/{print $2}')" -lt $((SWAP_GB * 900)) ]; then
+  echo "==================== enabling ${SWAP_GB}G build swap ===================="
+  if [ ! -f /swapfile-p03 ]; then
+    sudo fallocate -l "${SWAP_GB}G" /swapfile-p03 ||       sudo dd if=/dev/zero of=/swapfile-p03 bs=1M count=$((SWAP_GB * 1024))
+    sudo chmod 600 /swapfile-p03
+    sudo mkswap /swapfile-p03
+  fi
+  sudo swapon /swapfile-p03 2>/dev/null || true
+  free -h | sed 's/^/  /'
+fi
+
 mkdir -p models engines
 [ -f models/p03-metadata.yaml ] || scp "$MDB/p03-metadata.yaml" models/p03-metadata.yaml
 
