@@ -87,6 +87,21 @@ for SC in "${SCALES[@]}"; do
   bench "p03_${SC}_fp16"       "models/$PLAIN" --fp16
   bench "p03_${SC}_int8naive"  "models/$PLAIN" --int8 --fp16
   bench "p03_${SC}_int8qdq"    "models/$QDQ"   --int8 --fp16
+  # SPARSE=1: 2:4 structured-sparsity rungs. With a real _sp24 model in the
+  # drop, --sparsity=enable exploits its baked-in pattern (accuracy-valid).
+  # Without one, --sparsity=force prunes dense weights at build time - a SPEED
+  # CEILING ONLY, outputs are garbage by construction.
+  if [ "${SPARSE:-0}" = "1" ]; then
+    SP="${PLAIN%.onnx}-sp24.onnx"
+    if scp -q "$MDB/$SP" "models/$SP" 2>/dev/null || [ -f "models/$SP" ]; then
+      bench "p03_${SC}_fp16sp"    "models/$SP" --fp16 --sparsity=enable
+      bench "p03_${SC}_int8sp"    "models/$SP" --int8 --fp16 --sparsity=enable
+    else
+      echo "  (no $SP in drop - building force-sparsity speed ceilings)"
+      bench "p03_${SC}_fp16spF"   "models/$PLAIN" --fp16 --sparsity=force
+      bench "p03_${SC}_int8spF"   "models/$PLAIN" --int8 --fp16 --sparsity=force
+    fi
+  fi
 done
 
 echo "==================== summary (GPU compute median, ms) ===================="
