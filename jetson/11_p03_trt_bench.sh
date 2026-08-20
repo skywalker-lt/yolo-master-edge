@@ -54,7 +54,8 @@ bench() {  # tag  onnx  extra-flags...
              --builderOptimizationLevel="${OPT}" "$@" 2>&1 | tee "$log" | \
              grep -E "Engine built|error|Error" || true
   cp models/p03-metadata.yaml "engines/${tag}.metadata.yaml"
-  grep -iE "GPU Compute Time:" "$log" | tail -1 | sed 's/^/  /'
+  # the stats line, not "Total GPU Compute Time" (and never the D2H section)
+  grep -E "GPU Compute Time: min" "$log" | tail -1 | sed 's/^/  /'
   echo
 }
 
@@ -76,7 +77,7 @@ done
 echo "==================== summary (GPU compute median, ms) ===================="
 for f in engines/trtexec_p03_*.log; do
   name=$(basename "$f" .log | sed 's/trtexec_//')
-  med=$(grep -oE "median = [0-9.]+" "$f" | tail -1 | awk '{print $3}')
+  med=$(grep -E "GPU Compute Time: min" "$f" | tail -1 | grep -oE "median = [0-9.]+" | awk '{print $3}')
   printf "  %-22s %s\n" "$name" "${med:-build failed}"
 done
 echo
