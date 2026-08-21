@@ -44,7 +44,7 @@ struct PhotoTestView: View {
                     .tabViewStyle(.page(indexDisplayMode: .automatic))
                 }
                 if showTuning {
-                    TuningPanel(conf: $conf, iou: $iou).padding(.horizontal, 8)
+                    TuningPanel(conf: $conf, iou: $iou, style: $style).padding(.horizontal, 8)
                 }
                 StatsHUD(fps: throughput, pre: statPre, inf: statInf, dec: statDec,
                          dets: results.indices.contains(page) ? results[page].count : 0,
@@ -79,12 +79,6 @@ struct PhotoTestView: View {
             Picker("Compute", selection: $compute) {
                 ForEach(ComputeChoice.allCases) { c in
                     Text(c.rawValue).lineLimit(1).fixedSize().tag(c)
-                }
-            }
-            .fixedSize()
-            Picker("Style", selection: $style) {
-                ForEach(BoxStyle.allCases) { s in
-                    Text(s.label).lineLimit(1).fixedSize().tag(s)
                 }
             }
             .fixedSize()
