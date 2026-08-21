@@ -125,7 +125,7 @@ struct LiveView: View {
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding()
+        .padding(.horizontal)   // no top padding: aligns with the photo tab's bar
     }
 
     private var overlay: some View {
