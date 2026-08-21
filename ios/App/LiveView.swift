@@ -58,7 +58,7 @@ struct LiveView: View {
             VStack {
                 controls
                 if showTuning {
-                    TuningPanel(conf: $tuning.conf, iou: $tuning.iou)
+                    TuningPanel(conf: $tuning.conf, iou: $tuning.iou, style: $style)
                         .padding(.horizontal)
                 }
                 Spacer()
@@ -82,10 +82,6 @@ struct LiveView: View {
             .fixedSize()
             Picker("Compute", selection: $compute) {
                 ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).lineLimit(1).fixedSize().tag(c) }
-            }
-            .fixedSize()
-            Picker("Style", selection: $style) {
-                ForEach(BoxStyle.allCases) { s in Text(s.label).lineLimit(1).fixedSize().tag(s) }
             }
             .fixedSize()
             Button {

@@ -139,12 +139,21 @@ struct StageBar: View {
     }
 }
 
-/// conf / IoU tuning sliders - the Mac GUI's knobs, phone-sized.
+/// conf / IoU tuning sliders + box style - the detection knobs, one panel.
 struct TuningPanel: View {
     @Binding var conf: Double
     @Binding var iou: Double
+    var style: Binding<BoxStyle>? = nil
     var body: some View {
         VStack(spacing: 6) {
+            if let style {
+                Picker("Style", selection: style) {
+                    ForEach(BoxStyle.allCases) { s in
+                        Text(s.label).lineLimit(1).fixedSize().tag(s)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
             HStack {
                 Text("conf").font(.caption.monospaced()).frame(width: 34, alignment: .leading)
                 Slider(value: $conf, in: 0.05...0.9)
