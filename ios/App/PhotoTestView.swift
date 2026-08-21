@@ -18,6 +18,8 @@ struct PhotoTestView: View {
     @State private var conf = 0.25
     @State private var iou = 0.5
     @State private var showTuning = false
+    @State private var showHUD = true
+    @State private var isRunning = false
     @State private var statPre: Double = 0
     @State private var statInf: Double = 0
     @State private var statDec: Double = 0
@@ -44,11 +46,14 @@ struct PhotoTestView: View {
                     .tabViewStyle(.page(indexDisplayMode: .automatic))
                 }
                 if showTuning {
-                    TuningPanel(conf: $conf, iou: $iou, style: $style).padding(.horizontal, 8)
+                    TuningPanel(conf: $conf, iou: $iou, style: $style,
+                                hudVisible: $showHUD).padding(.horizontal, 8)
                 }
-                StatsHUD(fps: throughput, pre: statPre, inf: statInf, dec: statDec,
-                         dets: results.indices.contains(page) ? results[page].count : 0,
-                         fpsLabel: "img/s", active: statInf > 0)
+                if showHUD {
+                    StatsHUD(fps: throughput, pre: statPre, inf: statInf, dec: statDec,
+                             dets: results.indices.contains(page) ? results[page].count : 0,
+                             fpsLabel: "img/s", active: statInf > 0)
+                }
                 if !status.isEmpty {
                     Text(status)
                         .font(.caption2.monospaced())
@@ -76,12 +81,14 @@ struct PhotoTestView: View {
                 }
             }
             .fixedSize()
+            .disabled(isRunning)
             Picker("Compute", selection: $compute) {
                 ForEach(ComputeChoice.allCases) { c in
                     Text(c.rawValue).lineLimit(1).fixedSize().tag(c)
                 }
             }
             .fixedSize()
+            .disabled(isRunning)
             Spacer(minLength: 0)
             Button {
                 withAnimation { showTuning.toggle() }
@@ -151,6 +158,7 @@ struct PhotoTestView: View {
         let confNow = Float(conf), iouNow = CGFloat(iou)
         let imgs = images
         status = "running \(imgs.count) images..."
+        isRunning = true
         Task.detached {
             do {
                 let det = try Detector(modelURL: m.url, compute: mode)
@@ -182,9 +190,10 @@ struct PhotoTestView: View {
                     statDec = sumDec / n
                     throughput = n / max(wall, 0.001)
                     status = ""
+                    isRunning = false
                 }
             } catch {
-                await MainActor.run { status = "ERROR: \(error)" }
+                await MainActor.run { status = "ERROR: \(error)"; isRunning = false }
             }
         }
     }
