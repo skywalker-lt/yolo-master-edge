@@ -62,7 +62,7 @@ struct LiveView: View {
                 }
                 Spacer()
                 StatsHUD(fps: statHz, pre: statPre, inf: statInf,
-                         dec: statDec, dets: statDets)
+                         dec: statDec, dets: statDets, active: running)
                     .padding(.bottom, 8)
             }
         }

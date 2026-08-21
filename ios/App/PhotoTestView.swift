@@ -55,7 +55,8 @@ struct PhotoTestView: View {
                 HStack {
                     StatsHUD(fps: statInf > 0 ? 1000.0 / (statPre + statInf + statDec) : 0,
                              pre: statPre, inf: statInf, dec: statDec,
-                             dets: dets.count, fpsLabel: "eqFPS")
+                             dets: dets.count, fpsLabel: "eqFPS",
+                             active: statInf > 0)
                 }
                 if status.hasPrefix("ERROR") || status.hasPrefix("PROBE") || status.contains("'") {
                     Text(status)
