@@ -93,7 +93,8 @@ struct LiveView: View {
                                    width: d.rect.width * sx, height: d.rect.height * sy)
                     ctx.stroke(Path(roundedRect: r, cornerRadius: 3),
                                with: .color(.green), lineWidth: 2)
-                    let label = Text("\(d.cls) \(Int(d.score * 100))%")
+                    let name = d.cls < cocoNames.count ? cocoNames[d.cls] : "\(d.cls)"
+                    let label = Text("\(name) \(Int(d.score * 100))%")
                         .font(.caption2.bold()).foregroundStyle(.white)
                     ctx.draw(label, at: CGPoint(x: r.minX + 4, y: max(r.minY - 8, 8)),
                              anchor: .leading)
@@ -120,13 +121,8 @@ struct LiveView: View {
                 guard let raw = try? det.forward(pb) else { continue }
                 let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
                 let dets = det.decode(raw, conf: 0.25, iou: 0.5)
-                // diagnostics: how alive is the raw output, regardless of conf?
-                let cands = det.candidates(raw, confFloor: 0.01)
-                let top = cands.first?.score ?? 0
-                let dbg = String(format: "cands>0.01: %d  top %.3f  frame %dx%d  pure-infer %.1fms",
-                                 cands.count, top,
-                                 CVPixelBufferGetWidth(pb), CVPixelBufferGetHeight(pb),
-                                 raw.inferMs)
+                let dbg = String(format: "dets %d  top %.2f  pure-infer %.1fms",
+                                 dets.count, dets.first?.score ?? 0, raw.inferMs)
                 let w = CGFloat(CVPixelBufferGetWidth(pb))
                 let h = CGFloat(CVPixelBufferGetHeight(pb))
                 await MainActor.run {
@@ -134,6 +130,11 @@ struct LiveView: View {
                     inferMS = ms
                     debugLine = dbg
                     frameSize = CGSize(width: w, height: h)
+                }
+                // pace to ~30FPS: cools the phone, nothing visible is faster anyway
+                let spent = (CFAbsoluteTimeGetCurrent() - t0)
+                if spent < 0.033 {
+                    try? await Task.sleep(nanoseconds: UInt64((0.033 - spent) * 1e9))
                 }
             }
         }
@@ -146,3 +147,6 @@ struct LiveView: View {
         detections = []
     }
 }
+
+
+let cocoNames = ["person","bicycle","car","motorcycle","airplane","bus","train","truck","boat","traffic light","fire hydrant","stop sign","parking meter","bench","bird","cat","dog","horse","sheep","cow","elephant","bear","zebra","giraffe","backpack","umbrella","handbag","tie","suitcase","frisbee","skis","snowboard","sports ball","kite","baseball bat","baseball glove","skateboard","surfboard","tennis racket","bottle","wine glass","cup","fork","knife","spoon","bowl","banana","apple","sandwich","orange","broccoli","carrot","hot dog","pizza","donut","cake","chair","couch","potted plant","bed","dining table","toilet","tv","laptop","mouse","remote","keyboard","cell phone","microwave","oven","toaster","sink","refrigerator","book","clock","vase","scissors","teddy bear","hair drier","toothbrush"]

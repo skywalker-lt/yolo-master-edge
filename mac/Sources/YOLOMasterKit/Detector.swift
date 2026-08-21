@@ -235,16 +235,16 @@ public final class Detector {
         else { return nil }
         let p = arr.dataPointer.bindMemory(to: Float32.self, capacity: arr.count)
         let plane = imgsz * imgsz
+        // vDSP: interleaved RGBX u8 -> planar float RGB, then one /255 over all
+        // three planes. Replaces a ~400k-iteration scalar loop (mobile hot path).
         raster.withUnsafeBufferPointer { rb in
-            for yy in 0..<imgsz {
-                for xx in 0..<imgsz {
-                    let o = (yy * imgsz + xx) * 4, idx = yy * imgsz + xx
-                    p[idx] = Float32(rb[o]) / 255
-                    p[plane + idx] = Float32(rb[o + 1]) / 255
-                    p[2 * plane + idx] = Float32(rb[o + 2]) / 255
-                }
+            guard let src = rb.baseAddress else { return }
+            for ch in 0..<3 {
+                vDSP_vfltu8(src + ch, 4, p + ch * plane, 1, vDSP_Length(plane))
             }
         }
+        var inv255 = Float32(1.0 / 255.0)
+        vDSP_vsmul(p, 1, &inv255, p, 1, vDSP_Length(3 * plane))
         return try? MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: arr)])
     }
 
@@ -287,6 +287,35 @@ public final class Detector {
                 y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
                     guard let yp = buf.baseAddress else { return }
                     decodeEndToEnd { r, f in yp[r * s1 + f * s2] }
+                }
+            }
+            dets.sort { $0.score > $1.score }
+            return dets
+        }
+        // fast path: float32, contiguous anchors, no masks
+        if !end2end, nm == 0, y.dataType == .float32, s2 == 1 {
+            y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+                guard let yp = buf.baseAddress else { return }
+                for c in 0..<nc {
+                    let row = yp + (4 + c) * s1
+                    var mx: Float = 0
+                    vDSP_maxv(row, 1, &mx, vDSP_Length(na))
+                    if mx <= confFloor { continue }
+                    for a in 0..<na {
+                        let s = row[a]
+                        if s <= confFloor { continue }
+                        let cx = CGFloat(yp[a]), cy = CGFloat(yp[s1 + a])
+                        let bw = CGFloat(yp[2 * s1 + a]), bh = CGFloat(yp[3 * s1 + a])
+                        var x1 = (cx - bw / 2 - padX) / scaleX, y1 = (cy - bh / 2 - padY) / scaleY
+                        var x2 = (cx + bw / 2 - padX) / scaleX, y2 = (cy + bh / 2 - padY) / scaleY
+                        x1 = max(0, min(CGFloat(origW), x1)); x2 = max(0, min(CGFloat(origW), x2))
+                        y1 = max(0, min(CGFloat(origH), y1)); y2 = max(0, min(CGFloat(origH), y2))
+                        if x2 > x1 && y2 > y1 {
+                            dets.append(Detection(cls: c, score: s,
+                                                  rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1),
+                                                  maskCoeffs: []))
+                        }
+                    }
                 }
             }
             dets.sort { $0.score > $1.score }
