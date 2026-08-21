@@ -327,26 +327,32 @@ struct PhotoTestView: View {
                 var allDets: [[Detection]] = []
                 var sumPre = 0.0, sumInf = 0.0, sumDec = 0.0
                 let t0 = CFAbsoluteTimeGetCurrent()
+                // cache raw passes for slider retune only on modest batches:
+                // 100 tensors x ~3MB is a jetsam invitation
+                let cacheRaws = imgs.count <= 40
                 for (idx, img) in imgs.enumerated() {
-                    let a = CFAbsoluteTimeGetCurrent()
-                    let raw = try det.forward(img)
-                    let b = CFAbsoluteTimeGetCurrent()
-                    let d = det.decode(raw, conf: confNow, iou: iouNow)
-                    let c = CFAbsoluteTimeGetCurrent()
-                    sumPre += (b - a) * 1000 - raw.inferMs
-                    sumInf += raw.inferMs
-                    sumDec += (c - b) * 1000
-                    raws.append(raw)
+                    let step: (Detector.RawOutput, [Detection], Double, Double, Double) =
+                        try autoreleasepool {
+                            let a = CFAbsoluteTimeGetCurrent()
+                            let raw = try det.forward(img)
+                            let b = CFAbsoluteTimeGetCurrent()
+                            let d = det.decode(raw, conf: confNow, iou: iouNow)
+                            let c = CFAbsoluteTimeGetCurrent()
+                            return (raw, d, (b - a) * 1000 - raw.inferMs,
+                                    raw.inferMs, (c - b) * 1000)
+                        }
+                    let (raw, d, pPreV, pInfV, pDecV) = step
+                    sumPre += pPreV
+                    sumInf += pInfV
+                    sumDec += pDecV
+                    if cacheRaws { raws.append(raw) }
                     allDets.append(d)
                     let done = idx + 1
                     let dSnapshot = d
-                    let pPre = (b - a) * 1000 - raw.inferMs
-                    let pInf = raw.inferMs
-                    let pDec = (c - b) * 1000
                     await MainActor.run {
                         progress = done
                         if results.indices.contains(idx) { results[idx] = dSnapshot }
-                        perPre.append(pPre); perInf.append(pInf); perDec.append(pDec)
+                        perPre.append(pPreV); perInf.append(pInfV); perDec.append(pDecV)
                     }
                 }
                 let wall = CFAbsoluteTimeGetCurrent() - t0
