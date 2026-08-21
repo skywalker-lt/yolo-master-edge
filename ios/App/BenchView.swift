@@ -72,9 +72,11 @@ struct BenchView: View {
                     await MainActor.run { status = "\(m.id) @\(c.rawValue)..." }
                     guard let det = try? Detector(modelURL: m.url, compute: c.mode) else { continue }
                     var ms: [Double] = []
-                    for _ in 0..<10 { _ = try? det.inferOnly(img) }          // warmup
+                    for _ in 0..<10 { autoreleasepool { _ = try? det.inferOnly(img) } }
                     for _ in 0..<50 {
-                        if let t = try? det.inferOnly(img) { ms.append(t) }
+                        autoreleasepool {
+                            if let t = try? det.inferOnly(img) { ms.append(t) }
+                        }
                     }
                     guard !ms.isEmpty else { continue }
                     ms.sort()
@@ -101,7 +103,9 @@ struct BenchView: View {
             let t0 = CFAbsoluteTimeGetCurrent()
             var ms: [Double] = []
             while CFAbsoluteTimeGetCurrent() - t0 < seconds {
-                if let t = try? det.inferOnly(img) { ms.append(t) }
+                autoreleasepool {
+                    if let t = try? det.inferOnly(img) { ms.append(t) }
+                }
                 let pct = Int(100 * (CFAbsoluteTimeGetCurrent() - t0) / seconds)
                 if ms.count % 50 == 0 {
                     await MainActor.run { status = "sustained \(pct)%..." }
