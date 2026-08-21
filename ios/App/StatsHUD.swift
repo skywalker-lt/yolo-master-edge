@@ -92,7 +92,11 @@ struct StatsHUD: View {
 
     private var mainRow: some View {
         HStack(spacing: 14) {
-            Gauge(value: active ? min(max(fps, 0), 30) : 0, in: 0...30) {
+            // ms mode inverts the needle: larger ms (slower) sweeps LEFT,
+            // so "more filled" always means faster on both dial modes
+            Gauge(value: active ? (mode == .ms ? max(0, 30 - min(fps, 30))
+                                               : min(max(fps, 0), 30)) : 0,
+                  in: 0...30) {
                 Text(fpsLabel)
             } currentValueLabel: {
                 Text(active ? "\(Int(fps.rounded()))" : "N/A")
