@@ -326,7 +326,11 @@ public final class Detector {
                     if let yp = buf.baseAddress { scan(yp) }
                 }
             } else {
-                let n = y.count
+                // Convert the full STRIDED extent, not the logical count: ANE
+                // tensors may pad rows (s1 > na), and converting only y.count
+                // elements leaves the tail rows (the highest class indices)
+                // reading garbage - the "wall of last-class detections" bug.
+                let n = y.shape[1].intValue * s1
                 var tmp = [Float32](repeating: 0, count: n)
                 tmp.withUnsafeMutableBufferPointer { dstBuf in
                     var src = vImage_Buffer(data: y.dataPointer, height: 1,
