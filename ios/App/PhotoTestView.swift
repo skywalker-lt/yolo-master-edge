@@ -55,7 +55,7 @@ struct PhotoTestView: View {
                     TuningPanel(conf: $conf, iou: $iou, style: $style,
                                 hudVisible: $showHUD).padding(.horizontal, 8)
                 }
-                if showHUD { hud }
+                if showHUD { hud.padding(.bottom, 20) }
                 if !errorText.isEmpty {
                     Text(errorText).font(.caption2).foregroundStyle(.red)
                         .lineLimit(3).padding(.horizontal, 12)
