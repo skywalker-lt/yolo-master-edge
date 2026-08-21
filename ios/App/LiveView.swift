@@ -60,17 +60,22 @@ struct LiveView: View {
                                        systemImage: "camera.fill")
             }
             VStack {
-                controls
-                if showTuning {
-                    TuningPanel(conf: $tuning.conf, iou: $tuning.iou, style: $style,
-                                hudVisible: $showHUD)
-                        .padding(.horizontal)
-                }
                 Spacer()
                 if showHUD {
                     StatsHUD(fps: statHz, pre: statPre, inf: statInf,
                              dec: statDec, dets: statDets, active: running)
                         .padding(.bottom, 8)
+                }
+            }
+        }
+        .safeAreaInset(edge: .top) {
+            // same vertical anchor as the photo tab's top bar
+            VStack(spacing: 8) {
+                controls
+                if showTuning {
+                    TuningPanel(conf: $tuning.conf, iou: $tuning.iou, style: $style,
+                                hudVisible: $showHUD)
+                        .padding(.horizontal)
                 }
             }
         }
