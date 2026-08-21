@@ -32,7 +32,11 @@ struct LiveView: View {
 
     var body: some View {
         ZStack {
-            if camera.authorized {
+            if models.isEmpty {
+                ContentUnavailableView("No models bundled",
+                                       systemImage: "shippingbox",
+                                       description: Text("Copy .mlpackage files into ios/Models/, re-run xcodegen, rebuild."))
+            } else if camera.authorized {
                 CameraPreview(session: camera.session).ignoresSafeArea()
                 overlay
             } else {
@@ -68,6 +72,7 @@ struct LiveView: View {
             }
             Button(running ? "Stop" : "Run") { running ? stopLoop() : startLoop() }
                 .buttonStyle(.borderedProminent)
+                .disabled(selectedModel == nil)
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
