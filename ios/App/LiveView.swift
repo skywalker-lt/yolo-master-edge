@@ -76,7 +76,7 @@ struct LiveView: View {
     private var controls: some View {
         HStack {
             Picker("Model", selection: $selectedModel) {
-                ForEach(models) { m in Text(m.shortID).tag(Optional(m)) }
+                ForEach(models) { m in Text(m.shortID).lineLimit(1).fixedSize().tag(Optional(m)) }
             }
             Picker("Compute", selection: $compute) {
                 ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).tag(c) }

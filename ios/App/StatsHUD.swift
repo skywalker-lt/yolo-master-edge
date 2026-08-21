@@ -1,6 +1,41 @@
-// Shared stats HUD: FPS tachometer + per-stage latency bars + detection count.
-// One component for Live and Photo so the style stays coherent.
+// Shared stats HUD: FPS tachometer (smooth color ramp), per-stage latency bars
+// (green -> orange as a stage misbehaves), detection count, thermal state.
 import SwiftUI
+
+// MARK: - color ramps
+
+private typealias RGB = (r: Double, g: Double, b: Double)
+private let cRed: RGB = (0.96, 0.26, 0.21)
+private let cOrange: RGB = (1.00, 0.58, 0.00)
+private let cGreen: RGB = (0.20, 0.84, 0.29)
+private let cPurple: RGB = (0.69, 0.32, 0.87)
+
+private func lerp(_ a: RGB, _ b: RGB, _ t: Double) -> RGB {
+    let k = min(max(t, 0), 1)
+    return (a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k)
+}
+
+private func color(_ c: RGB) -> Color { Color(red: c.r, green: c.g, blue: c.b) }
+
+/// 0-10 red, 10-20 orange, 20-30 green, >30 purple - continuously blended
+/// through the band centers so the transition is a gradient, not a step.
+func fpsColor(_ fps: Double) -> Color {
+    let pts: [(Double, RGB)] = [(5, cRed), (15, cOrange), (25, cGreen), (32, cPurple)]
+    if fps <= pts[0].0 { return color(pts[0].1) }
+    for i in 1..<pts.count where fps <= pts[i].0 {
+        let (x0, c0) = pts[i - 1], (x1, c1) = pts[i]
+        return color(lerp(c0, c1, (fps - x0) / (x1 - x0)))
+    }
+    return color(pts.last!.1)
+}
+
+/// Stage bars: green while legit, blending to orange past ~20ms, fully orange
+/// at 35ms+ ("extraordinarily slow" for any single stage of a 30FPS budget).
+func stageColor(_ ms: Double) -> Color {
+    color(lerp(cGreen, cOrange, (ms - 20) / 15))
+}
+
+// MARK: - HUD
 
 struct StatsHUD: View {
     let fps: Double            // tachometer, 0-40 scale
@@ -9,6 +44,8 @@ struct StatsHUD: View {
     let dec: Double            // ms
     let dets: Int
     var fpsLabel: String = "FPS"
+
+    @State private var thermal = ProcessInfo.processInfo.thermalState
 
     var body: some View {
         HStack(spacing: 14) {
@@ -19,32 +56,64 @@ struct StatsHUD: View {
                     .font(.system(.title3, design: .rounded).bold())
             }
             .gaugeStyle(.accessoryCircular)
-            .tint(fps >= 25 ? .green : (fps >= 12 ? .yellow : .red))
+            .tint(fpsColor(fps))
+            .animation(.easeOut(duration: 0.15), value: fps)
             .frame(width: 56, height: 56)
 
             VStack(alignment: .leading, spacing: 5) {
-                StageBar(label: "pre", ms: pre, color: .blue)
-                StageBar(label: "inf", ms: inf, color: .green)
-                StageBar(label: "dec", ms: dec, color: .orange)
+                StageBar(label: "pre", ms: pre)
+                StageBar(label: "inf", ms: inf)
+                StageBar(label: "dec", ms: dec)
             }
 
-            VStack(spacing: 0) {
-                Text("\(dets)")
-                    .font(.system(.title2, design: .rounded).bold())
-                    .foregroundStyle(.green)
-                Text("dets").font(.caption2).foregroundStyle(.secondary)
+            VStack(spacing: 2) {
+                VStack(spacing: 0) {
+                    Text("\(dets)")
+                        .font(.system(.title3, design: .rounded).bold())
+                        .foregroundStyle(.green)
+                    Text("dets").font(.caption2).foregroundStyle(.secondary)
+                }
+                VStack(spacing: 0) {
+                    Image(systemName: "thermometer.medium")
+                        .foregroundStyle(thermalColor)
+                        .animation(.easeOut(duration: 0.3), value: thermal)
+                    Text(thermalLabel).font(.caption2).foregroundStyle(.secondary)
+                }
             }
-            .frame(width: 44)
+            .frame(width: 48)
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .onReceive(NotificationCenter.default.publisher(
+            for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
+            thermal = ProcessInfo.processInfo.thermalState
+        }
+    }
+
+    private var thermalColor: Color {
+        switch thermal {
+        case .nominal: return .blue
+        case .fair: return .green
+        case .serious: return .orange
+        case .critical: return .red
+        @unknown default: return .gray
+        }
+    }
+
+    private var thermalLabel: String {
+        switch thermal {
+        case .nominal: return "cool"
+        case .fair: return "fair"
+        case .serious: return "hot"
+        case .critical: return "crit"
+        @unknown default: return "?"
+        }
     }
 }
 
 struct StageBar: View {
     let label: String
     let ms: Double
-    let color: Color
     private let fullScale = 50.0   // bar saturates at 50ms
 
     var body: some View {
@@ -55,11 +124,12 @@ struct StageBar: View {
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.quaternary)
-                    Capsule().fill(color)
+                    Capsule().fill(stageColor(ms))
                         .frame(width: max(3, min(ms / fullScale, 1) * g.size.width))
                 }
             }
             .frame(width: 90, height: 6)
+            .animation(.easeOut(duration: 0.15), value: ms)
             Text(String(format: "%4.1f", ms))
                 .font(.caption2.monospaced())
                 .frame(width: 36, alignment: .trailing)
