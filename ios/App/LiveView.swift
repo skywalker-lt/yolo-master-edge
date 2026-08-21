@@ -157,13 +157,15 @@ struct LiveView: View {
                 // fire-and-forget: NEVER block the inference loop on the main
                 // thread - a busy render loop otherwise throttles detection to
                 // its leftover scheduling gaps
-                let hzNow = uiHz
+                // model end-to-end capability, NOT the paced loop rate: this
+                // can exceed the camera's 30 and peg the dial purple
+                let e2eFPS = 1000.0 / max(preMS + infMS + decMS, 0.1)
                 Task { @MainActor in
                     detections = dets
                     statPre = preMS
                     statInf = infMS
                     statDec = decMS
-                    statHz = hzNow
+                    statHz = e2eFPS
                     statDets = dets.count
                     frameSize = CGSize(width: w, height: h)
                 }
