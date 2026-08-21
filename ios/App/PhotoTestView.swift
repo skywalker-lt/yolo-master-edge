@@ -16,6 +16,8 @@ struct PhotoTestView: View {
     @State private var style: BoxStyle = .chip
     @State private var picks: [PhotosPickerItem] = []
     @State private var images: [CGImage] = []
+    @State private var fileNames: [String] = []
+    @State private var fileTypes: [String] = []
     @State private var results: [[Detection]] = []
     @State private var page = 0
     @State private var viewMode: ViewMode = .gallery
@@ -50,7 +52,7 @@ struct PhotoTestView: View {
                 if phase != .idle { progressBar }
                 if showTuning {
                     TuningPanel(conf: $conf, iou: $iou, style: $style,
-                                hudVisible: $showHUD).padding(.horizontal, 8)
+                                hudVisible: $showHUD).padding(.horizontal)
                 }
                 if showHUD { hud }
                 if !errorText.isEmpty {
@@ -76,14 +78,16 @@ struct PhotoTestView: View {
         let p = perImage ? perPre[page] : statPre
         let i = perImage ? perInf[page] : statInf
         let d = perImage ? perDec[page] : statDec
-        let fps = perImage ? 1000.0 / max(p + i + d, 0.1) : throughput
+        let e2e = p + i + d
         var extras: [(String, String)] = []
         if statInf > 0 {
             if perImage {
                 let img = images[page]
                 extras = [("image", "\(page + 1)/\(images.count)"),
                           ("size", "\(img.width)x\(img.height)"),
-                          ("e2e", String(format: "%.1f ms", p + i + d)),
+                          ("file", fileNames.indices.contains(page) ? fileNames[page] : "-"),
+                          ("type", fileTypes.indices.contains(page) ? fileTypes[page] : "-"),
+                          ("e2e", String(format: "%.1f ms", e2e)),
                           ("dets", "\(results.indices.contains(page) ? results[page].count : 0)")]
             } else {
                 let totalDets = results.reduce(0) { $0 + $1.count }
@@ -93,9 +97,14 @@ struct PhotoTestView: View {
                           ("avg e2e", String(format: "%.1f ms", statPre + statInf + statDec))]
             }
         }
-        return StatsHUD(fps: fps, pre: p, inf: i, dec: d,
+        // pager dial = this image's END-TO-END ms (0-30 scale, band colors);
+        // gallery dial = batch FPS
+        return StatsHUD(fps: perImage ? e2e : throughput, pre: p, inf: i, dec: d,
                         dets: results.indices.contains(page) ? results[page].count : 0,
-                        fpsLabel: "FPS", active: statInf > 0, extras: extras)
+                        fpsLabel: perImage ? "ms" : "FPS", active: statInf > 0,
+                        extras: extras, mode: perImage ? .ms : .fps, fullWidth: true)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal)
     }
 
     // MARK: pieces
@@ -171,7 +180,7 @@ struct PhotoTestView: View {
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 8)
+        .padding(.horizontal)
     }
 
     private var controls: some View {
@@ -247,8 +256,23 @@ struct PhotoTestView: View {
         errorText = ""
         Task {
             var loaded: [CGImage] = []
+            var names: [String] = []
+            var types: [String] = []
             for (idx, item) in items.enumerated() {
-                if let data = try? await item.loadTransferable(type: Data.self),
+                var name = "IMG_\(idx + 1)"
+                var type = item.supportedContentTypes.first?
+                    .preferredFilenameExtension?.uppercased() ?? "-"
+                var data: Data?
+                if let picked = try? await item.loadTransferable(type: PickedFile.self) {
+                    name = picked.url.lastPathComponent
+                    if !picked.url.pathExtension.isEmpty {
+                        type = picked.url.pathExtension.uppercased()
+                    }
+                    data = try? Data(contentsOf: picked.url)
+                    try? FileManager.default.removeItem(at: picked.url)
+                }
+                if data == nil { data = try? await item.loadTransferable(type: Data.self) }
+                if let data,
                    let src = CGImageSourceCreateWithData(data as CFData, nil),
                    let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [
                        kCGImageSourceCreateThumbnailWithTransform: true,   // EXIF
@@ -256,13 +280,17 @@ struct PhotoTestView: View {
                        kCGImageSourceThumbnailMaxPixelSize: 2048,
                    ] as CFDictionary) {
                     loaded.append(img)
+                    names.append(name)
+                    types.append(type)
                 }
                 let done = idx + 1
                 await MainActor.run { progress = done }
             }
-            let imgs = loaded
+            let imgs = loaded, ns = names, ts = types
             await MainActor.run {
                 images = imgs
+                fileNames = ns
+                fileTypes = ts
                 results = Array(repeating: [], count: imgs.count)
                 page = 0
                 viewMode = imgs.count > 1 ? .gallery : .pager
@@ -343,5 +371,19 @@ struct PhotoTestView: View {
         guard let det = lastDet, !lastRaws.isEmpty else { return }
         let confNow = Float(conf), iouNow = CGFloat(iou)
         results = lastRaws.map { det.decode($0, conf: confNow, iou: iouNow) }
+    }
+}
+
+
+/// File-representation transfer that preserves the original photo filename.
+struct PickedFile: Transferable {
+    let url: URL
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            let dst = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + "_" + received.file.lastPathComponent)
+            try FileManager.default.copyItem(at: received.file, to: dst)
+            return Self(url: dst)
+        }
     }
 }

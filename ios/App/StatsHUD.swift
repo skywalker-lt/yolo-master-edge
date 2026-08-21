@@ -37,8 +37,21 @@ func stageColor(_ ms: Double) -> Color {
 
 // MARK: - HUD
 
+enum DialMode { case fps, ms }
+
+/// <30ms purple (outrunning the camera budget), 30-50 green, 50-100 orange,
+/// >100ms red. Same fast temporal band transition as the FPS dial.
+func msColor(_ ms: Double) -> Color {
+    switch ms {
+    case ..<30: return Color(red: 0.69, green: 0.32, blue: 0.87)
+    case ..<50: return Color(red: 0.20, green: 0.84, blue: 0.29)
+    case ..<100: return Color(red: 1.00, green: 0.58, blue: 0.00)
+    default: return Color(red: 0.96, green: 0.26, blue: 0.21)
+    }
+}
+
 struct StatsHUD: View {
-    let fps: Double            // model end-to-end FPS; dial max = 30 (camera rate)
+    let fps: Double            // dial value: FPS (fps mode) or e2e ms (ms mode)
     let pre: Double            // ms
     let inf: Double            // ms
     let dec: Double            // ms
@@ -46,12 +59,15 @@ struct StatsHUD: View {
     var fpsLabel: String = "FPS"
     var active: Bool = true    // false while no model is loaded/running: N/A + grey
     var extras: [(String, String)] = []   // optional detail rows (stats-card mode)
+    var mode: DialMode = .fps
+    var fullWidth: Bool = false
 
     @State private var thermal = ProcessInfo.processInfo.thermalState
 
     var body: some View {
         VStack(spacing: 8) {
             mainRow
+                .frame(maxWidth: fullWidth ? .infinity : nil)
             if !extras.isEmpty {
                 Divider()
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
@@ -84,8 +100,8 @@ struct StatsHUD: View {
                     .foregroundStyle(active ? .primary : .secondary)
             }
             .gaugeStyle(.accessoryCircular)
-            .tint(active ? fpsColor(fps) : Color.gray.opacity(0.5))
-            .animation(.easeInOut(duration: 0.25), value: active ? fpsColor(fps) : .gray)
+            .tint(active ? dialColor : Color.gray.opacity(0.5))
+            .animation(.easeInOut(duration: 0.25), value: active ? dialColor : .gray)
             .frame(width: 56, height: 56)
 
             VStack(alignment: .leading, spacing: 5) {
@@ -110,6 +126,10 @@ struct StatsHUD: View {
             }
             .frame(width: 48)
         }
+    }
+
+    private var dialColor: Color {
+        mode == .fps ? fpsColor(fps) : msColor(fps)
     }
 
     private var thermalColor: Color {
