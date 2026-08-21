@@ -17,14 +17,14 @@ private func lerp(_ a: RGB, _ b: RGB, _ t: Double) -> RGB {
 
 private func color(_ c: RGB) -> Color { Color(red: c.r, green: c.g, blue: c.b) }
 
-/// Pure band colors - 0-10 red, 10-20 orange, 20-30 green, >30 purple (past
-/// the camera's max). Transitions animate in TIME (fast gradient), the value
-/// itself never mixes bands.
+/// Pure band colors - 0-10 red, 10-20 orange, 20-<30 green, and full purple
+/// once the dial pegs at 30 (model outrunning the camera). Band changes
+/// animate in TIME (fast gradient); values never mix bands.
 func fpsColor(_ fps: Double) -> Color {
     switch fps {
     case ..<10: return color(cRed)
     case ..<20: return color(cOrange)
-    case ..<30: return color(cGreen)
+    case ..<29.5: return color(cGreen)
     default: return color(cPurple)
     }
 }
@@ -38,7 +38,7 @@ func stageColor(_ ms: Double) -> Color {
 // MARK: - HUD
 
 struct StatsHUD: View {
-    let fps: Double            // tachometer, 0-40 scale
+    let fps: Double            // model end-to-end FPS; dial max = 30 (camera rate)
     let pre: Double            // ms
     let inf: Double            // ms
     let dec: Double            // ms
@@ -49,7 +49,7 @@ struct StatsHUD: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Gauge(value: min(max(fps, 0), 40), in: 0...40) {
+            Gauge(value: min(max(fps, 0), 30), in: 0...30) {
                 Text(fpsLabel)
             } currentValueLabel: {
                 Text("\(Int(fps.rounded()))")
