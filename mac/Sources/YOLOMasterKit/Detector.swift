@@ -292,10 +292,13 @@ public final class Detector {
             dets.sort { $0.score > $1.score }
             return dets
         }
-        // fast path: float32, contiguous anchors, no masks
-        if !end2end, nm == 0, y.dataType == .float32, s2 == 1 {
-            y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
-                guard let yp = buf.baseAddress else { return }
+        // fast path: contiguous anchors, no masks, float32 OR float16. The fp16
+        // case is the ANE's native output - the generic path costs ~100ms/frame
+        // there (per-element closure + scalar half->float); here it is one
+        // vectorized vImage conversion followed by the same vDSP-gated scan.
+        if !end2end, nm == 0, s2 == 1,
+           y.dataType == .float32 || y.dataType == .float16 {
+            func scan(_ yp: UnsafePointer<Float32>) {
                 for c in 0..<nc {
                     let row = yp + (4 + c) * s1
                     var mx: Float = 0
@@ -316,6 +319,22 @@ public final class Detector {
                                                   maskCoeffs: []))
                         }
                     }
+                }
+            }
+            if y.dataType == .float32 {
+                y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+                    if let yp = buf.baseAddress { scan(yp) }
+                }
+            } else {
+                let n = y.count
+                var tmp = [Float32](repeating: 0, count: n)
+                tmp.withUnsafeMutableBufferPointer { dstBuf in
+                    var src = vImage_Buffer(data: y.dataPointer, height: 1,
+                                            width: vImagePixelCount(n), rowBytes: n * 2)
+                    var dst = vImage_Buffer(data: dstBuf.baseAddress, height: 1,
+                                            width: vImagePixelCount(n), rowBytes: n * 4)
+                    vImageConvert_Planar16FtoPlanarF(&src, &dst, vImage_Flags(kvImageNoFlags))
+                    if let yp = dstBuf.baseAddress { scan(yp) }
                 }
             }
             dets.sort { $0.score > $1.score }
