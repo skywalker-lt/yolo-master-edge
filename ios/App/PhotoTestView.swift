@@ -53,7 +53,7 @@ struct PhotoTestView: View {
                 if phase != .idle { progressBar }
                 if showTuning {
                     TuningPanel(conf: $conf, iou: $iou, style: $style,
-                                hudVisible: $showHUD).padding(.horizontal)
+                                hudVisible: $showHUD).padding(.horizontal, 8)
                 }
                 if showHUD { hud }
                 if !errorText.isEmpty {
@@ -105,7 +105,7 @@ struct PhotoTestView: View {
                         fpsLabel: perImage ? "ms" : "FPS", active: statInf > 0,
                         extras: extras, mode: perImage ? .ms : .fps, fullWidth: true)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal)
+            .padding(.horizontal, 8)
     }
 
     // MARK: pieces
@@ -181,7 +181,7 @@ struct PhotoTestView: View {
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal)
+        .padding(.horizontal, 8)
     }
 
     private var controls: some View {
@@ -225,7 +225,7 @@ struct PhotoTestView: View {
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal)
+        .padding(.horizontal, 8)
     }
 
     private func annotated(_ img: CGImage, _ dets: [Detection]) -> some View {
