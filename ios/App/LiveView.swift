@@ -32,6 +32,7 @@ struct LiveView: View {
     @State private var statHz: Double = 0
     @State private var statDets = 0
     @State private var showTuning = false
+    @State private var showHUD = true
     @State private var style: BoxStyle = .chip
     @StateObject private var tuning = Tuning()
     @State private var running = false
@@ -58,13 +59,16 @@ struct LiveView: View {
             VStack {
                 controls
                 if showTuning {
-                    TuningPanel(conf: $tuning.conf, iou: $tuning.iou, style: $style)
+                    TuningPanel(conf: $tuning.conf, iou: $tuning.iou, style: $style,
+                                hudVisible: $showHUD)
                         .padding(.horizontal)
                 }
                 Spacer()
-                StatsHUD(fps: statHz, pre: statPre, inf: statInf,
-                         dec: statDec, dets: statDets, active: running)
-                    .padding(.bottom, 8)
+                if showHUD {
+                    StatsHUD(fps: statHz, pre: statPre, inf: statInf,
+                             dec: statDec, dets: statDets, active: running)
+                        .padding(.bottom, 8)
+                }
             }
         }
         .onAppear {
@@ -80,19 +84,26 @@ struct LiveView: View {
                 ForEach(models) { m in Text(m.shortID).lineLimit(1).fixedSize().tag(Optional(m)) }
             }
             .fixedSize()
+            .disabled(running)          // pause inference before switching (mac GUI rule)
             Picker("Compute", selection: $compute) {
                 ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).lineLimit(1).fixedSize().tag(c) }
             }
             .fixedSize()
+            .disabled(running)
             Button {
                 withAnimation { showTuning.toggle() }
             } label: {
                 Image(systemName: "slider.horizontal.3")
             }
             .buttonStyle(.bordered)
-            Button(running ? "Stop" : "Run") { running ? stopLoop() : startLoop() }
-                .buttonStyle(.borderedProminent)
-                .disabled(selectedModel == nil)
+            Button {
+                running ? stopLoop() : startLoop()
+            } label: {
+                Image(systemName: running ? "pause.fill" : "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(running ? .red : .accentColor)
+            .disabled(selectedModel == nil)
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))

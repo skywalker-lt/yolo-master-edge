@@ -121,7 +121,7 @@ struct StageBar: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(label)
-                .font(.caption2.monospaced())
+                .font(.caption2)
                 .frame(width: 24, alignment: .leading)
             GeometryReader { g in
                 ZStack(alignment: .leading) {
@@ -133,7 +133,7 @@ struct StageBar: View {
             .frame(width: 90, height: 6)
             .animation(.easeOut(duration: 0.15), value: ms)
             Text(String(format: "%4.1f", ms))
-                .font(.caption2.monospaced())
+                .font(.caption2.monospacedDigit())
                 .frame(width: 36, alignment: .trailing)
         }
     }
@@ -144,8 +144,13 @@ struct TuningPanel: View {
     @Binding var conf: Double
     @Binding var iou: Double
     var style: Binding<BoxStyle>? = nil
+    var hudVisible: Binding<Bool>? = nil
     var body: some View {
         VStack(spacing: 6) {
+            if let hudVisible {
+                Toggle("Show stats HUD", isOn: hudVisible)
+                    .font(.caption)
+            }
             if let style {
                 Picker("Style", selection: style) {
                     ForEach(BoxStyle.allCases) { s in
@@ -155,14 +160,14 @@ struct TuningPanel: View {
                 .pickerStyle(.segmented)
             }
             HStack {
-                Text("conf").font(.caption.monospaced()).frame(width: 34, alignment: .leading)
+                Text("conf").font(.caption).frame(width: 34, alignment: .leading)
                 Slider(value: $conf, in: 0.05...0.9)
-                Text(String(format: "%.2f", conf)).font(.caption.monospaced()).frame(width: 34)
+                Text(String(format: "%.2f", conf)).font(.caption.monospacedDigit()).frame(width: 34)
             }
             HStack {
-                Text("IoU").font(.caption.monospaced()).frame(width: 34, alignment: .leading)
+                Text("IoU").font(.caption).frame(width: 34, alignment: .leading)
                 Slider(value: $iou, in: 0.1...0.9)
-                Text(String(format: "%.2f", iou)).font(.caption.monospaced()).frame(width: 34)
+                Text(String(format: "%.2f", iou)).font(.caption.monospacedDigit()).frame(width: 34)
             }
         }
         .padding(10)
