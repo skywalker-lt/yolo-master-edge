@@ -289,7 +289,7 @@ On an Orin Nano 4 GB the FP16 engine runs at **35.7 FPS** (27.8 ms) with **mAP50
 
 Inference performed on full 548 VisDrone validation images against the PyTorch original (`mAP50-95 = 0.2036`), using identical settings (conf 0.001, NMS IoU 0.7, multi-label).
 
-| Inference Backend | Device | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
+| Inference Backend | Device | mAP50-95 | Δ vs PyTorch | End-to-end Latency | FPS |
 | :------------------------ | :------- | :------- | :----------- | :------ | :---- |
 | ONNX | CPU | 0.2034 | −0.02%  | 40 ms | 25.0  |
 | ONNX (CUDA) | H200 SXM | 0.2033 | −0.03% | 7.8 ms  | 128   |
