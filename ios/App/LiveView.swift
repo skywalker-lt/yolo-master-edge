@@ -20,6 +20,7 @@ struct CameraPreview: UIViewRepresentable {
 }
 
 struct LiveView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var camera = CameraController()
     @State private var models = BundledModel.discover()
     @State private var selectedModel: BundledModel?
@@ -35,7 +36,9 @@ struct LiveView: View {
     @State private var showHUD = true
     @State private var style: BoxStyle = .chip
     @StateObject private var tuning = Tuning()
-    @State private var running = false
+    @State private var running = false        // loop actually alive
+    @State private var wantRun = false        // the user's intent - survives tab
+                                              // switches and app backgrounding
     @State private var loopTask: Task<Void, Never>?
 
     var body: some View {
@@ -74,8 +77,17 @@ struct LiveView: View {
         .onAppear {
             camera.start()
             if selectedModel == nil { selectedModel = models.first }
+            if wantRun { startLoop() }                 // auto-resume on tab return
         }
-        .onDisappear { stopLoop(); camera.stop() }
+        .onDisappear { suspendLoop(); camera.stop() }  // pause, intent preserved
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                camera.start()
+                if wantRun { startLoop() }             // auto-resume from background
+            } else {
+                suspendLoop()
+            }
+        }
     }
 
     private var controls: some View {
@@ -84,12 +96,12 @@ struct LiveView: View {
                 ForEach(models) { m in Text(m.shortID).lineLimit(1).fixedSize().tag(Optional(m)) }
             }
             .fixedSize()
-            .disabled(running)          // pause inference before switching (mac GUI rule)
+            .disabled(wantRun)          // pause inference before switching (mac GUI rule)
             Picker("Compute", selection: $compute) {
                 ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).lineLimit(1).fixedSize().tag(c) }
             }
             .fixedSize()
-            .disabled(running)
+            .disabled(wantRun)
             Button {
                 withAnimation { showTuning.toggle() }
             } label: {
@@ -97,12 +109,13 @@ struct LiveView: View {
             }
             .buttonStyle(.bordered)
             Button {
-                running ? stopLoop() : startLoop()
+                if wantRun { wantRun = false; stopLoop() }
+                else { wantRun = true; startLoop() }
             } label: {
-                Image(systemName: running ? "pause.fill" : "play.fill")
+                Image(systemName: wantRun ? "pause.fill" : "play.fill")
             }
             .buttonStyle(.borderedProminent)
-            .tint(running ? .red : .accentColor)
+            .tint(wantRun ? .red : .accentColor)
             .disabled(selectedModel == nil)
         }
         .padding(8)
@@ -127,7 +140,7 @@ struct LiveView: View {
     }
 
     private func startLoop() {
-        guard let model = selectedModel else { return }
+        guard let model = selectedModel, !running else { return }
         running = true
         let mode = compute.mode
         let tuningRef = tuning      // plain class ref: detached-safe, no wrapper
@@ -175,6 +188,7 @@ struct LiveView: View {
                 // can exceed the camera's 30 and peg the dial purple
                 let e2eFPS = 1000.0 / max(preMS + infMS + decMS, 0.1)
                 Task { @MainActor in
+                    guard running else { return }   // zombie frame after pause: drop
                     detections = dets
                     statPre = preMS
                     statInf = infMS
@@ -192,11 +206,19 @@ struct LiveView: View {
         }
     }
 
-    private func stopLoop() {
+    /// Stop the loop and WIPE the overlay; keeps `wantRun` untouched so
+    /// lifecycle pauses auto-resume.
+    private func suspendLoop() {
         running = false
         loopTask?.cancel()
         loopTask = nil
         detections = []
+        statDets = 0
+    }
+
+    /// User-initiated stop (play/pause button).
+    private func stopLoop() {
+        suspendLoop()
     }
 }
 
