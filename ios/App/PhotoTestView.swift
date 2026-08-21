@@ -2,6 +2,7 @@
 // macOS-style phase progress (Loading/iCloud -> Inference), per-image stage
 // averages + img/s dial. Slider retunes re-decode cached passes - no re-runs.
 import CoreML
+import Photos
 import PhotosUI
 import SwiftUI
 import YOLOMasterKit
@@ -215,7 +216,8 @@ struct PhotoTestView: View {
                 Image(systemName: "slider.horizontal.3")
             }
             .buttonStyle(.bordered)
-            PhotosPicker(selection: $picks, maxSelectionCount: 100, matching: .images) {
+            PhotosPicker(selection: $picks, maxSelectionCount: 100, matching: .images,
+                         photoLibrary: .shared()) {
                 Image(systemName: "photo.badge.plus")
             }
             .buttonStyle(.borderedProminent)
@@ -258,20 +260,26 @@ struct PhotoTestView: View {
             var loaded: [CGImage] = []
             var names: [String] = []
             var types: [String] = []
+            // album-style names (IMG_xxxx) come from PHAssetResource via the
+            // picker's itemIdentifier (photoLibrary: .shared() enables it)
+            if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .notDetermined {
+                _ = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+            }
             for (idx, item) in items.enumerated() {
                 var name = "IMG_\(idx + 1)"
                 var type = item.supportedContentTypes.first?
                     .preferredFilenameExtension?.uppercased() ?? "-"
-                var data: Data?
-                if let picked = try? await item.loadTransferable(type: PickedFile.self) {
-                    name = picked.url.lastPathComponent
-                    if !picked.url.pathExtension.isEmpty {
-                        type = picked.url.pathExtension.uppercased()
+                if let id = item.itemIdentifier {
+                    let assets = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil)
+                    if let asset = assets.firstObject,
+                       let res = PHAssetResource.assetResources(for: asset).first {
+                        let full = res.originalFilename          // e.g. IMG_4231.HEIC
+                        name = (full as NSString).deletingPathExtension
+                        let ext = (full as NSString).pathExtension
+                        if !ext.isEmpty { type = ext.uppercased() }
                     }
-                    data = try? Data(contentsOf: picked.url)
-                    try? FileManager.default.removeItem(at: picked.url)
                 }
-                if data == nil { data = try? await item.loadTransferable(type: Data.self) }
+                let data = try? await item.loadTransferable(type: Data.self)
                 if let data,
                    let src = CGImageSourceCreateWithData(data as CFData, nil),
                    let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [
@@ -374,16 +382,3 @@ struct PhotoTestView: View {
     }
 }
 
-
-/// File-representation transfer that preserves the original photo filename.
-struct PickedFile: Transferable {
-    let url: URL
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .image) { received in
-            let dst = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + "_" + received.file.lastPathComponent)
-            try FileManager.default.copyItem(at: received.file, to: dst)
-            return Self(url: dst)
-        }
-    }
-}

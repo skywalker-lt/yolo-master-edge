@@ -28,6 +28,7 @@ targets:
       properties:
         UILaunchScreen: {}
         NSCameraUsageDescription: "Live object detection uses the camera."
+        NSPhotoLibraryUsageDescription: "Reads photo names for the batch detection gallery."
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
     settings:
       base:
