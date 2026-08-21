@@ -86,11 +86,18 @@ struct LiveView: View {
     private var overlay: some View {
         GeometryReader { geo in
             Canvas { ctx, size in
-                let sx = size.width / frameSize.width
-                let sy = size.height / frameSize.height
+                // the preview layer is resizeAspectFill: one uniform scale (the
+                // larger axis ratio), surplus cropped equally. Mirror exactly
+                // that mapping or boxes shear toward the center.
+                let scale = max(size.width / frameSize.width,
+                                size.height / frameSize.height)
+                let ox = (size.width - frameSize.width * scale) / 2
+                let oy = (size.height - frameSize.height * scale) / 2
                 for d in detections {
-                    let r = CGRect(x: d.rect.minX * sx, y: d.rect.minY * sy,
-                                   width: d.rect.width * sx, height: d.rect.height * sy)
+                    let r = CGRect(x: d.rect.minX * scale + ox,
+                                   y: d.rect.minY * scale + oy,
+                                   width: d.rect.width * scale,
+                                   height: d.rect.height * scale)
                     ctx.stroke(Path(roundedRect: r, cornerRadius: 3),
                                with: .color(.green), lineWidth: 2)
                     let name = d.cls < cocoNames.count ? cocoNames[d.cls] : "\(d.cls)"
