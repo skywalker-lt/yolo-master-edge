@@ -38,8 +38,13 @@ struct LiveView: View {
                                        systemImage: "shippingbox",
                                        description: Text("Copy .mlpackage files into ios/Models/, re-run xcodegen, rebuild."))
             } else if camera.authorized {
-                CameraPreview(session: camera.session).ignoresSafeArea()
-                overlay
+                // preview and overlay MUST share one coordinate space: both
+                // full-screen, safe area ignored together, or boxes shear by
+                // the notch/home-bar insets
+                ZStack {
+                    CameraPreview(session: camera.session)
+                    overlay
+                }.ignoresSafeArea()
             } else {
                 ContentUnavailableView("Camera access required",
                                        systemImage: "camera.fill")
@@ -120,6 +125,9 @@ struct LiveView: View {
                 await MainActor.run { running = false }
                 return
             }
+            var uiTicks = 0
+            var uiWindowStart = CFAbsoluteTimeGetCurrent()
+            var uiHz = 0.0
             while !Task.isCancelled {
                 guard let pb = camera.grabLatest() else {
                     try? await Task.sleep(nanoseconds: 20_000_000); continue
@@ -128,8 +136,16 @@ struct LiveView: View {
                 guard let raw = try? det.forward(pb) else { continue }
                 let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
                 let dets = det.decode(raw, conf: 0.25, iou: 0.5)
-                let dbg = String(format: "dets %d  top %.2f  pure-infer %.1fms",
-                                 dets.count, dets.first?.score ?? 0, raw.inferMs)
+                uiTicks += 1
+                let nowT = CFAbsoluteTimeGetCurrent()
+                if nowT - uiWindowStart >= 1.0 {
+                    uiHz = Double(uiTicks) / (nowT - uiWindowStart)
+                    uiTicks = 0; uiWindowStart = nowT
+                }
+                let topS = dets.first.map { String(format: "%.2f", $0.score) } ?? "-"
+                let dbg = "dets \(dets.count)  top \(topS)  infer " +
+                          String(format: "%.1f", raw.inferMs) + "ms  ui " +
+                          String(format: "%.1f", uiHz) + "Hz"
                 let w = CGFloat(CVPixelBufferGetWidth(pb))
                 let h = CGFloat(CVPixelBufferGetHeight(pb))
                 await MainActor.run {
