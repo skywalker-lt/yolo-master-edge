@@ -1,5 +1,6 @@
-// Camera-free sanity check: run the detector on any photo from the library.
-// Isolates the model+decode pipeline from the capture path entirely.
+// Camera-free detection on library photos. EXIF orientation is applied at load
+// (CGImageSourceCreateThumbnailAtIndex + transform) - portrait photos were
+// previously processed sideways, which scrambled every box.
 import CoreML
 import PhotosUI
 import SwiftUI
@@ -16,43 +17,65 @@ struct PhotoTestView: View {
 
     var body: some View {
         NavigationStack {
-            VStack {
-                HStack {
+            VStack(spacing: 8) {
+                if let img = image {
+                    GeometryReader { geo in
+                        let scale = min(geo.size.width / CGFloat(img.width),
+                                        geo.size.height / CGFloat(img.height))
+                        let w = CGFloat(img.width) * scale
+                        let h = CGFloat(img.height) * scale
+                        ZStack(alignment: .topLeading) {
+                            Image(decorative: img, scale: 1).resizable()
+                                .frame(width: w, height: h)
+                            Canvas { ctx, _ in
+                                for d in dets {
+                                    let r = CGRect(x: d.rect.minX * scale,
+                                                   y: d.rect.minY * scale,
+                                                   width: d.rect.width * scale,
+                                                   height: d.rect.height * scale)
+                                    ctx.stroke(Path(roundedRect: r, cornerRadius: 2),
+                                               with: .color(.green), lineWidth: 2)
+                                    let name = d.cls < cocoNames.count ? cocoNames[d.cls] : "\(d.cls)"
+                                    ctx.draw(Text("\(name) \(Int(d.score * 100))%")
+                                        .font(.caption2.bold()).foregroundStyle(.green),
+                                             at: CGPoint(x: r.minX + 2, y: max(r.minY - 9, 4)),
+                                             anchor: .leading)
+                                }
+                            }
+                            .frame(width: w, height: h)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .padding(.horizontal, 8)
+                } else {
+                    ContentUnavailableView("No photo", systemImage: "photo")
+                        .frame(maxHeight: .infinity)
+                }
+                Text(status)
+                    .font(.caption.monospacedDigit())
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+            }
+            .navigationTitle("Photo test")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarLeading) {
                     Picker("Model", selection: $selectedModel) {
                         ForEach(models) { m in Text(m.id).tag(Optional(m)) }
                     }
                     Picker("Unit", selection: $compute) {
                         ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).tag(c) }
                     }
-                    PhotosPicker(selection: $pick, matching: .images) { Text("Photo") }
-                    Button("Probe") { probe() }.disabled(image == nil)
-                }.padding(.horizontal)
-                if let img = image {
-                    GeometryReader { geo in
-                        let scale = min(geo.size.width / CGFloat(img.width),
-                                        geo.size.height / CGFloat(img.height))
-                        ZStack(alignment: .topLeading) {
-                            Image(decorative: img, scale: 1).resizable()
-                                .frame(width: CGFloat(img.width) * scale,
-                                       height: CGFloat(img.height) * scale)
-                            Canvas { ctx, _ in
-                                for d in dets {
-                                    let r = CGRect(x: d.rect.minX * scale, y: d.rect.minY * scale,
-                                                   width: d.rect.width * scale, height: d.rect.height * scale)
-                                    ctx.stroke(Path(r), with: .color(.red), lineWidth: 2)
-                                    ctx.draw(Text("\(d.cls):\(Int(d.score * 100))")
-                                        .font(.caption2.bold()).foregroundStyle(.red),
-                                             at: CGPoint(x: r.minX, y: max(r.minY - 8, 4)), anchor: .leading)
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    ContentUnavailableView("No photo", systemImage: "photo")
                 }
-                Text(status).font(.caption.monospacedDigit())
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button("Probe") { probe() }.disabled(image == nil)
+                    PhotosPicker(selection: $pick, matching: .images) {
+                        Image(systemName: "photo.badge.plus")
+                    }
+                }
             }
-            .navigationTitle("Photo test")
             .onAppear { if selectedModel == nil { selectedModel = models.first } }
             .onChange(of: pick) { _, item in load(item) }
             .onChange(of: selectedModel) { _, _ in run() }
@@ -65,16 +88,39 @@ struct PhotoTestView: View {
         Task {
             guard let data = try? await item.loadTransferable(type: Data.self),
                   let src = CGImageSourceCreateWithData(data as CFData, nil),
-                  let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+                  let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                      kCGImageSourceCreateThumbnailWithTransform: true,     // EXIF orientation
+                      kCGImageSourceCreateThumbnailFromImageAlways: true,
+                      kCGImageSourceThumbnailMaxPixelSize: 2048,
+                  ] as CFDictionary) else {
                 await MainActor.run { status = "photo load failed" }; return
             }
-            await MainActor.run { image = img }
+            await MainActor.run { image = img; dets = [] }
             run()
         }
     }
 
-    /// Kit-free sanity: load the MLModel directly, feed a hand-built 640x640
-    /// RGB/255 CHW float32 tensor, dump every output's name/shape/dtype/stats.
+    private func run() {
+        guard let img = image, let m = selectedModel else { return }
+        let mode = compute.mode
+        status = "running..."
+        Task.detached {
+            do {
+                let det = try Detector(modelURL: m.url, compute: mode)
+                let t0 = CFAbsoluteTimeGetCurrent()
+                let raw = try det.forward(img)
+                let d = det.decode(raw, conf: 0.25, iou: 0.5)
+                let total = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                let msg = "dets \(d.count)  infer " + String(format: "%.1f", raw.inferMs) +
+                          "ms  e2e " + String(format: "%.1f", total) + "ms"
+                await MainActor.run { dets = d; status = msg }
+            } catch {
+                await MainActor.run { status = "ERROR: \(error)" }
+            }
+        }
+    }
+
+    /// Kit-free raw-output probe (diagnostic; kept from the debugging session).
     private func probe() {
         guard let img = image, let m = selectedModel else { return }
         let mode = compute.mode
@@ -84,7 +130,6 @@ struct PhotoTestView: View {
                 let cfg = MLModelConfiguration(); cfg.computeUnits = mode.mlUnits
                 let model = try MLModel(contentsOf: m.url, configuration: cfg)
                 let inName = model.modelDescription.inputDescriptionsByName.keys.first ?? "images"
-                // resize to 640x640 (stretch - probe only cares about liveness)
                 let sz = 640
                 var px = [UInt8](repeating: 0, count: sz * sz * 4)
                 px.withUnsafeMutableBytes { rawBuf in
@@ -105,44 +150,24 @@ struct PhotoTestView: View {
                 }
                 let out = try model.prediction(
                     from: MLDictionaryFeatureProvider(dictionary: [inName: MLFeatureValue(multiArray: arr)]))
-                var lines: [String] = ["in '\(inName)'"]
+                var lines: [String] = []
                 for name in out.featureNames {
                     guard let a = out.featureValue(for: name)?.multiArrayValue else { continue }
                     var mn = Float.greatestFiniteMagnitude, mx = -Float.greatestFiniteMagnitude
-                    var sum = 0.0, nan = 0
+                    var nan = 0
                     let n = min(a.count, 200_000)
                     for i in 0..<n {
                         let v = a[i].floatValue
                         if v.isNaN { nan += 1; continue }
-                        mn = min(mn, v); mx = max(mx, v); sum += Double(v)
+                        mn = min(mn, v); mx = max(mx, v)
                     }
-                    lines.append(String(format: "'%@' %@ %@ min %.3f max %.3f mean %.4f nan %d",
-                                        name, "\(a.shape)", "\(a.dataType.rawValue)",
-                                        mn, mx, sum / Double(max(n - nan, 1)), nan))
+                    lines.append("'\(name)' \(a.shape) min " + String(format: "%.3f", mn) +
+                                 " max " + String(format: "%.3f", mx) + " nan \(nan)")
                 }
                 let msg = lines.joined(separator: "\n")
                 await MainActor.run { status = msg }
             } catch {
                 await MainActor.run { status = "PROBE ERROR: \(error)" }
-            }
-        }
-    }
-
-    private func run() {
-        guard let img = image, let m = selectedModel else { return }
-        let mode = compute.mode
-        status = "running..."
-        Task.detached {
-            do {
-                let det = try Detector(modelURL: m.url, compute: mode)
-                let raw = try det.forward(img)
-                let cands = det.candidates(raw, confFloor: 0.01)
-                let d = det.decode(raw, conf: 0.25, iou: 0.5)
-                let msg = String(format: "dets %d | cands>0.01 %d | top %.3f | infer %.1fms",
-                                 d.count, cands.count, cands.first?.score ?? 0, raw.inferMs)
-                await MainActor.run { dets = d; status = msg }
-            } catch {
-                await MainActor.run { status = "ERROR: \(error)" }
             }
         }
     }
