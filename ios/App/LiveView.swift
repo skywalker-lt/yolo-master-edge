@@ -98,19 +98,7 @@ struct LiveView: View {
                                 size.height / frameSize.height)
                 let ox = (size.width - frameSize.width * scale) / 2
                 let oy = (size.height - frameSize.height * scale) / 2
-                for d in detections {
-                    let r = CGRect(x: d.rect.minX * scale + ox,
-                                   y: d.rect.minY * scale + oy,
-                                   width: d.rect.width * scale,
-                                   height: d.rect.height * scale)
-                    ctx.stroke(Path(roundedRect: r, cornerRadius: 3),
-                               with: .color(.green), lineWidth: 2)
-                    let name = d.cls < cocoNames.count ? cocoNames[d.cls] : "\(d.cls)"
-                    let label = Text("\(name) \(Int(d.score * 100))%")
-                        .font(.caption2.bold()).foregroundStyle(.white)
-                    ctx.draw(label, at: CGPoint(x: r.minX + 4, y: max(r.minY - 8, 8)),
-                             anchor: .leading)
-                }
+                DetOverlay.draw(ctx, detections, scale: scale, ox: ox, oy: oy)
             }
         }
         .allowsHitTesting(false)

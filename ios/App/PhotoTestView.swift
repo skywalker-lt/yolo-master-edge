@@ -28,19 +28,7 @@ struct PhotoTestView: View {
                             Image(decorative: img, scale: 1).resizable()
                                 .frame(width: w, height: h)
                             Canvas { ctx, _ in
-                                for d in dets {
-                                    let r = CGRect(x: d.rect.minX * scale,
-                                                   y: d.rect.minY * scale,
-                                                   width: d.rect.width * scale,
-                                                   height: d.rect.height * scale)
-                                    ctx.stroke(Path(roundedRect: r, cornerRadius: 2),
-                                               with: .color(.green), lineWidth: 2)
-                                    let name = d.cls < cocoNames.count ? cocoNames[d.cls] : "\(d.cls)"
-                                    ctx.draw(Text("\(name) \(Int(d.score * 100))%")
-                                        .font(.caption2.bold()).foregroundStyle(.green),
-                                             at: CGPoint(x: r.minX + 2, y: max(r.minY - 9, 4)),
-                                             anchor: .leading)
-                                }
+                                DetOverlay.draw(ctx, dets, scale: scale, ox: 0, oy: 0)
                             }
                             .frame(width: w, height: h)
                         }
@@ -58,23 +46,27 @@ struct PhotoTestView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
             }
-            .navigationTitle("Photo test")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarLeading) {
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top) {
+                HStack {
                     Picker("Model", selection: $selectedModel) {
                         ForEach(models) { m in Text(m.id).tag(Optional(m)) }
                     }
-                    Picker("Unit", selection: $compute) {
+                    Picker("Compute", selection: $compute) {
                         ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).tag(c) }
                     }
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button("Probe") { probe() }.disabled(image == nil)
                     PhotosPicker(selection: $pick, matching: .images) {
-                        Image(systemName: "photo.badge.plus")
+                        Label("Photo", systemImage: "photo.badge.plus")
+                            .labelStyle(.iconOnly)
                     }
+                    .buttonStyle(.borderedProminent)
+                    Button("Probe") { probe() }
+                        .buttonStyle(.bordered)
+                        .disabled(image == nil)
                 }
+                .padding(8)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal)
             }
             .onAppear { if selectedModel == nil { selectedModel = models.first } }
             .onChange(of: pick) { _, item in load(item) }
