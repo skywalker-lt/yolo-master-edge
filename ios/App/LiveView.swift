@@ -170,20 +170,25 @@ struct LiveView: View {
                 let confNow = Float(tuningRef.conf)
                 let iouNow = CGFloat(tuningRef.iou)
                 let t0 = CFAbsoluteTimeGetCurrent()
-                guard let raw = try? det.forward(pb) else { continue }
-                let t1 = CFAbsoluteTimeGetCurrent()
-                let dets = det.decode(raw, conf: confNow, iou: iouNow)
-                let t2 = CFAbsoluteTimeGetCurrent()
-                let fwdMS = (t1 - t0) * 1000          // wrap+letterbox+fill+predict
-                let preMS = fwdMS - raw.inferMs       // everything before predict
-                let decMS = (t2 - t1) * 1000
+                // autoreleasepool per frame: without it, autoreleased CoreML/CG
+                // transients accumulate on the cooperative thread until jetsam
+                // kills the app (~40s in CPU mode, whose transients are largest)
+                let frame: ([Detection], Double, Double, Double)? = autoreleasepool {
+                    guard let raw = try? det.forward(pb) else { return nil }
+                    let t1 = CFAbsoluteTimeGetCurrent()
+                    let d = det.decode(raw, conf: confNow, iou: iouNow)
+                    let t2 = CFAbsoluteTimeGetCurrent()
+                    let fwd = (t1 - t0) * 1000
+                    return (d, fwd - raw.inferMs, raw.inferMs, (t2 - t1) * 1000)
+                }
+                guard let (dets, preMS, infMS, decMS) = frame else { continue }
                 uiTicks += 1
                 let nowT = CFAbsoluteTimeGetCurrent()
                 if nowT - uiWindowStart >= 1.0 {
                     uiHz = Double(uiTicks) / (nowT - uiWindowStart)
                     uiTicks = 0; uiWindowStart = nowT
                 }
-                let infMS = raw.inferMs
+
                 let w = CGFloat(CVPixelBufferGetWidth(pb))
                 let h = CGFloat(CVPixelBufferGetHeight(pb))
                 // fire-and-forget: NEVER block the inference loop on the main
