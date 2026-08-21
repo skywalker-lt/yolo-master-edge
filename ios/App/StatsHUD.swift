@@ -44,20 +44,22 @@ struct StatsHUD: View {
     let dec: Double            // ms
     let dets: Int
     var fpsLabel: String = "FPS"
+    var active: Bool = true    // false while no model is loaded/running: N/A + grey
 
     @State private var thermal = ProcessInfo.processInfo.thermalState
 
     var body: some View {
         HStack(spacing: 14) {
-            Gauge(value: min(max(fps, 0), 30), in: 0...30) {
+            Gauge(value: active ? min(max(fps, 0), 30) : 0, in: 0...30) {
                 Text(fpsLabel)
             } currentValueLabel: {
-                Text("\(Int(fps.rounded()))")
-                    .font(.system(.title3, design: .rounded).bold())
+                Text(active ? "\(Int(fps.rounded()))" : "N/A")
+                    .font(.system(active ? .title3 : .footnote, design: .rounded).bold())
+                    .foregroundStyle(active ? .primary : .secondary)
             }
             .gaugeStyle(.accessoryCircular)
-            .tint(fpsColor(fps))
-            .animation(.easeInOut(duration: 0.25), value: fpsColor(fps))
+            .tint(active ? fpsColor(fps) : Color.gray.opacity(0.5))
+            .animation(.easeInOut(duration: 0.25), value: active ? fpsColor(fps) : .gray)
             .frame(width: 56, height: 56)
 
             VStack(alignment: .leading, spacing: 5) {
