@@ -1,6 +1,7 @@
 // Model discovery + compute-unit selection for the iOS app.
 // .mlpackage bundles are compiled by Xcode into .mlmodelc resources; drop the
 // p03 packages into ios/Models/ (see ios/README.md) and they appear here.
+import CoreML
 import Foundation
 import YOLOMasterKit
 
@@ -9,11 +10,33 @@ struct BundledModel: Identifiable, Hashable {
     let url: URL         // compiled .mlmodelc inside the app bundle
 
     static func discover() -> [BundledModel] {
-        let exts = ["mlmodelc"]
         var found: [BundledModel] = []
-        for ext in exts {
-            for url in Bundle.main.urls(forResourcesWithExtension: ext, subdirectory: nil) ?? [] {
-                found.append(BundledModel(id: url.deletingPathExtension().lastPathComponent, url: url))
+        // compiled models, bundle root or Models/ subdir
+        for sub in [nil, "Models"] as [String?] {
+            for url in Bundle.main.urls(forResourcesWithExtension: "mlmodelc",
+                                        subdirectory: sub) ?? [] {
+                found.append(BundledModel(id: url.deletingPathExtension().lastPathComponent,
+                                          url: url))
+            }
+        }
+        // uncompiled .mlpackage (folder-reference bundles): compile on first
+        // launch, cache in Application Support
+        for sub in [nil, "Models"] as [String?] {
+            for pkg in Bundle.main.urls(forResourcesWithExtension: "mlpackage",
+                                        subdirectory: sub) ?? [] {
+                let name = pkg.deletingPathExtension().lastPathComponent
+                if found.contains(where: { $0.id == name }) { continue }
+                let cacheDir = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                        in: .userDomainMask)[0]
+                let cached = cacheDir.appendingPathComponent(name + ".mlmodelc")
+                if FileManager.default.fileExists(atPath: cached.path) {
+                    found.append(BundledModel(id: name, url: cached))
+                } else if let tmp = try? MLModel.compileModel(at: pkg) {
+                    try? FileManager.default.createDirectory(at: cacheDir,
+                                                             withIntermediateDirectories: true)
+                    try? FileManager.default.moveItem(at: tmp, to: cached)
+                    found.append(BundledModel(id: name, url: cached))
+                }
             }
         }
         return found.sorted { $0.id < $1.id }

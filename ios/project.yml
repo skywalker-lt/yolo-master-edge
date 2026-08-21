@@ -16,9 +16,10 @@ targets:
     platform: iOS
     sources:
       - App
+      # group (NOT folder reference): members are individual files, so Xcode's
+      # coremlc compiles each .mlpackage into a bundle-root .mlmodelc
       - path: Models
         optional: true
-        type: folder      # drop .mlpackage files here; Xcode compiles to .mlmodelc
     dependencies:
       - package: YOLOMaster
         product: YOLOMasterKit
