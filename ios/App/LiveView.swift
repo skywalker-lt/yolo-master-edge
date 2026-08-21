@@ -27,6 +27,7 @@ struct LiveView: View {
     @State private var detections: [Detection] = []
     @State private var frameSize = CGSize(width: 720, height: 1280)
     @State private var inferMS: Double = 0
+    @State private var debugLine = ""
     @State private var running = false
     @State private var loopTask: Task<Void, Never>?
 
@@ -46,13 +47,16 @@ struct LiveView: View {
             VStack {
                 controls
                 Spacer()
-                Text(String(format: "%.1f ms  (%.0f FPS)  %@ @%@",
-                            inferMS, inferMS > 0 ? 1000.0 / inferMS : 0.0,
-                            selectedModel?.id ?? "-", compute.rawValue))
-                    .font(.caption.monospacedDigit())
-                    .padding(6)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.bottom, 8)
+                VStack(spacing: 2) {
+                    Text(String(format: "%.1f ms  (%.0f FPS)  %@ @%@",
+                                inferMS, inferMS > 0 ? 1000.0 / inferMS : 0.0,
+                                selectedModel?.id ?? "-", compute.rawValue))
+                    Text(debugLine)
+                }
+                .font(.caption.monospacedDigit())
+                .padding(6)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(.bottom, 8)
             }
         }
         .onAppear {
@@ -116,11 +120,19 @@ struct LiveView: View {
                 guard let raw = try? det.forward(pb) else { continue }
                 let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
                 let dets = det.decode(raw, conf: 0.25, iou: 0.5)
+                // diagnostics: how alive is the raw output, regardless of conf?
+                let cands = det.candidates(raw, confFloor: 0.01)
+                let top = cands.first?.score ?? 0
+                let dbg = String(format: "cands>0.01: %d  top %.3f  frame %dx%d  pure-infer %.1fms",
+                                 cands.count, top,
+                                 CVPixelBufferGetWidth(pb), CVPixelBufferGetHeight(pb),
+                                 raw.inferMs)
                 let w = CGFloat(CVPixelBufferGetWidth(pb))
                 let h = CGFloat(CVPixelBufferGetHeight(pb))
                 await MainActor.run {
                     detections = dets
                     inferMS = ms
+                    debugLine = dbg
                     frameSize = CGSize(width: w, height: h)
                 }
             }
