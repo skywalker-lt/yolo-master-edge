@@ -139,18 +139,21 @@ struct LiveView: View {
                 lastFrameID = fid
                 let t0 = CFAbsoluteTimeGetCurrent()
                 guard let raw = try? det.forward(pb) else { continue }
-                let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                let t1 = CFAbsoluteTimeGetCurrent()
                 let dets = det.decode(raw, conf: 0.25, iou: 0.5)
+                let t2 = CFAbsoluteTimeGetCurrent()
+                let fwdMS = (t1 - t0) * 1000          // wrap+letterbox+fill+predict
+                let preMS = fwdMS - raw.inferMs       // everything before predict
+                let decMS = (t2 - t1) * 1000
                 uiTicks += 1
                 let nowT = CFAbsoluteTimeGetCurrent()
                 if nowT - uiWindowStart >= 1.0 {
                     uiHz = Double(uiTicks) / (nowT - uiWindowStart)
                     uiTicks = 0; uiWindowStart = nowT
                 }
-                let topS = dets.first.map { String(format: "%.2f", $0.score) } ?? "-"
-                let dbg = "dets \(dets.count)  top \(topS)  infer " +
-                          String(format: "%.1f", raw.inferMs) + "ms  ui " +
-                          String(format: "%.1f", uiHz) + "Hz"
+                let f1 = { (v: Double) in String(format: "%.1f", v) }
+                let dbg = "pre \(f1(preMS)) | inf \(f1(raw.inferMs)) | dec \(f1(decMS)) " +
+                          "| loop \(f1(uiHz))Hz | dets \(dets.count)"
                 let w = CGFloat(CVPixelBufferGetWidth(pb))
                 let h = CGFloat(CVPixelBufferGetHeight(pb))
                 // fire-and-forget: NEVER block the inference loop on the main
@@ -158,12 +161,12 @@ struct LiveView: View {
                 // its leftover scheduling gaps
                 Task { @MainActor in
                     detections = dets
-                    inferMS = ms
+                    inferMS = fwdMS + decMS
                     debugLine = dbg
                     frameSize = CGSize(width: w, height: h)
                 }
                 // pace to ~30FPS: cools the phone, nothing visible is faster anyway
-                let spent = (CFAbsoluteTimeGetCurrent() - t0)
+                let spent = (CFAbsoluteTimeGetCurrent() - t0)   // full iteration cost
                 if spent < 0.033 {
                     try? await Task.sleep(nanoseconds: UInt64((0.033 - spent) * 1e9))
                 }
