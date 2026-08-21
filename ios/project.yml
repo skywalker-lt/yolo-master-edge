@@ -1,0 +1,36 @@
+# XcodeGen spec for the YOLO-Master iOS app.
+#   brew install xcodegen && cd ios && xcodegen   ->  YOLOMasterIOS.xcodeproj
+# The inference backend is the SAME YOLOMasterKit the macOS CLI/GUI use, pulled
+# as a local Swift package from ../mac.
+name: YOLOMasterIOS
+options:
+  bundleIdPrefix: dev.yolomaster
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  YOLOMaster:
+    path: ../mac
+targets:
+  YOLOMasterIOS:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - path: Models
+        optional: true
+        type: folder      # drop .mlpackage files here; Xcode compiles to .mlmodelc
+    dependencies:
+      - package: YOLOMaster
+        product: YOLOMasterKit
+    info:
+      path: App/Info.plist
+      properties:
+        UILaunchScreen: {}
+        NSCameraUsageDescription: "Live object detection uses the camera."
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_STYLE: Automatic
+        # set your team for device deploys:  DEVELOPMENT_TEAM: XXXXXXXXXX
