@@ -116,6 +116,8 @@ struct LiveView: View {
         guard let model = selectedModel else { return }
         running = true
         let mode = compute.mode
+        let tuningRef = tuning      // plain class ref: detached-safe, no wrapper
+        let cameraRef = camera
         loopTask = Task.detached(priority: .userInitiated) {
             guard let det = try? Detector(modelURL: model.url, compute: mode) else {
                 await MainActor.run { running = false }
@@ -126,15 +128,15 @@ struct LiveView: View {
             var uiHz = 0.0
             var lastFrameID: UInt64 = 0
             while !Task.isCancelled {
-                guard let (pb, fid) = camera.grabLatest() else {
+                guard let (pb, fid) = cameraRef.grabLatest() else {
                     try? await Task.sleep(nanoseconds: 20_000_000); continue
                 }
                 if fid == lastFrameID {                    // stale frame - don't reprocess
                     try? await Task.sleep(nanoseconds: 5_000_000); continue
                 }
                 lastFrameID = fid
-                let confNow = Float(tuning.conf)
-                let iouNow = CGFloat(tuning.iou)
+                let confNow = Float(tuningRef.conf)
+                let iouNow = CGFloat(tuningRef.iou)
                 let t0 = CFAbsoluteTimeGetCurrent()
                 guard let raw = try? det.forward(pb) else { continue }
                 let t1 = CFAbsoluteTimeGetCurrent()
