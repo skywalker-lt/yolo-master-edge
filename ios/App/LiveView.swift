@@ -26,8 +26,13 @@ struct LiveView: View {
     @State private var compute: ComputeChoice = .ane
     @State private var detections: [Detection] = []
     @State private var frameSize = CGSize(width: 720, height: 1280)
-    @State private var inferMS: Double = 0
-    @State private var debugLine = ""
+    @State private var statPre: Double = 0
+    @State private var statInf: Double = 0
+    @State private var statDec: Double = 0
+    @State private var statHz: Double = 0
+    @State private var statDets = 0
+    @State private var showTuning = false
+    @StateObject private var tuning = Tuning()
     @State private var running = false
     @State private var loopTask: Task<Void, Never>?
 
@@ -51,17 +56,14 @@ struct LiveView: View {
             }
             VStack {
                 controls
-                Spacer()
-                VStack(spacing: 2) {
-                    Text(String(format: "%.1f ms  (%.0f FPS)  %@ @%@",
-                                inferMS, inferMS > 0 ? 1000.0 / inferMS : 0.0,
-                                selectedModel?.id ?? "-", compute.rawValue))
-                    Text(debugLine)
+                if showTuning {
+                    TuningPanel(conf: $tuning.conf, iou: $tuning.iou)
+                        .padding(.horizontal)
                 }
-                .font(.caption.monospacedDigit())
-                .padding(6)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                .padding(.bottom, 8)
+                Spacer()
+                StatsHUD(fps: statHz, pre: statPre, inf: statInf,
+                         dec: statDec, dets: statDets)
+                    .padding(.bottom, 8)
             }
         }
         .onAppear {
@@ -74,11 +76,17 @@ struct LiveView: View {
     private var controls: some View {
         HStack {
             Picker("Model", selection: $selectedModel) {
-                ForEach(models) { m in Text(m.id).tag(Optional(m)) }
+                ForEach(models) { m in Text(m.shortID).tag(Optional(m)) }
             }
             Picker("Compute", selection: $compute) {
                 ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).tag(c) }
             }
+            Button {
+                withAnimation { showTuning.toggle() }
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+            }
+            .buttonStyle(.bordered)
             Button(running ? "Stop" : "Run") { running ? stopLoop() : startLoop() }
                 .buttonStyle(.borderedProminent)
                 .disabled(selectedModel == nil)
@@ -125,10 +133,12 @@ struct LiveView: View {
                     try? await Task.sleep(nanoseconds: 5_000_000); continue
                 }
                 lastFrameID = fid
+                let confNow = Float(tuning.conf)
+                let iouNow = CGFloat(tuning.iou)
                 let t0 = CFAbsoluteTimeGetCurrent()
                 guard let raw = try? det.forward(pb) else { continue }
                 let t1 = CFAbsoluteTimeGetCurrent()
-                let dets = det.decode(raw, conf: 0.25, iou: 0.5)
+                let dets = det.decode(raw, conf: confNow, iou: iouNow)
                 let t2 = CFAbsoluteTimeGetCurrent()
                 let fwdMS = (t1 - t0) * 1000          // wrap+letterbox+fill+predict
                 let preMS = fwdMS - raw.inferMs       // everything before predict
@@ -139,18 +149,20 @@ struct LiveView: View {
                     uiHz = Double(uiTicks) / (nowT - uiWindowStart)
                     uiTicks = 0; uiWindowStart = nowT
                 }
-                let f1 = { (v: Double) in String(format: "%.1f", v) }
-                let dbg = "pre \(f1(preMS)) | inf \(f1(raw.inferMs)) | dec \(f1(decMS)) " +
-                          "| loop \(f1(uiHz))Hz | dets \(dets.count)"
+                let infMS = raw.inferMs
                 let w = CGFloat(CVPixelBufferGetWidth(pb))
                 let h = CGFloat(CVPixelBufferGetHeight(pb))
                 // fire-and-forget: NEVER block the inference loop on the main
                 // thread - a busy render loop otherwise throttles detection to
                 // its leftover scheduling gaps
+                let hzNow = uiHz
                 Task { @MainActor in
                     detections = dets
-                    inferMS = fwdMS + decMS
-                    debugLine = dbg
+                    statPre = preMS
+                    statInf = infMS
+                    statDec = decMS
+                    statHz = hzNow
+                    statDets = dets.count
                     frameSize = CGSize(width: w, height: h)
                 }
                 // pace to ~30FPS: cools the phone, nothing visible is faster anyway

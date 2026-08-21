@@ -8,6 +8,8 @@ import YOLOMasterKit
 struct BundledModel: Identifiable, Hashable {
     let id: String       // display name, e.g. "p03_v01n_coco_fp16"
     let url: URL         // compiled .mlmodelc inside the app bundle
+    /// UI label: everything after the sixth character is noise on a phone screen
+    var shortID: String { String(id.prefix(6)) }
 
     static func discover() -> [BundledModel] {
         var found: [BundledModel] = []

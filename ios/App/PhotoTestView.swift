@@ -14,6 +14,15 @@ struct PhotoTestView: View {
     @State private var image: CGImage?
     @State private var dets: [Detection] = []
     @State private var status = "pick a photo"
+    @State private var conf = 0.25
+    @State private var iou = 0.5
+    @State private var showTuning = false
+    @State private var statInf: Double = 0
+    @State private var statDec: Double = 0
+    @State private var statPre: Double = 0
+    // cached forward pass: sliders re-decode WITHOUT re-running the model
+    @State private var lastDet: Detector?
+    @State private var lastRaw: Detector.RawOutput?
 
     var body: some View {
         NavigationStack {
@@ -40,21 +49,37 @@ struct PhotoTestView: View {
                     ContentUnavailableView("No photo", systemImage: "photo")
                         .frame(maxHeight: .infinity)
                 }
-                Text(status)
-                    .font(.caption.monospacedDigit())
-                    .lineLimit(4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
+                if showTuning {
+                    TuningPanel(conf: $conf, iou: $iou).padding(.horizontal, 8)
+                }
+                HStack {
+                    StatsHUD(fps: statInf > 0 ? 1000.0 / (statPre + statInf + statDec) : 0,
+                             pre: statPre, inf: statInf, dec: statDec,
+                             dets: dets.count, fpsLabel: "eqFPS")
+                }
+                if status.hasPrefix("ERROR") || status.hasPrefix("PROBE") || status.contains("'") {
+                    Text(status)
+                        .font(.caption2.monospaced())
+                        .lineLimit(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                }
             }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top) {
                 HStack {
                     Picker("Model", selection: $selectedModel) {
-                        ForEach(models) { m in Text(m.id).tag(Optional(m)) }
+                        ForEach(models) { m in Text(m.shortID).tag(Optional(m)) }
                     }
                     Picker("Compute", selection: $compute) {
                         ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).tag(c) }
                     }
+                    Button {
+                        withAnimation { showTuning.toggle() }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .buttonStyle(.bordered)
                     PhotosPicker(selection: $pick, matching: .images) {
                         Label("Photo", systemImage: "photo.badge.plus")
                             .labelStyle(.iconOnly)
@@ -72,6 +97,8 @@ struct PhotoTestView: View {
             .onChange(of: pick) { _, item in load(item) }
             .onChange(of: selectedModel) { _, _ in run() }
             .onChange(of: compute) { _, _ in run() }
+            .onChange(of: conf) { _, _ in retune() }
+            .onChange(of: iou) { _, _ in retune() }
         }
     }
 
@@ -95,21 +122,38 @@ struct PhotoTestView: View {
     private func run() {
         guard let img = image, let m = selectedModel else { return }
         let mode = compute.mode
+        let confNow = Float(conf), iouNow = CGFloat(iou)
         status = "running..."
         Task.detached {
             do {
                 let det = try Detector(modelURL: m.url, compute: mode)
                 let t0 = CFAbsoluteTimeGetCurrent()
                 let raw = try det.forward(img)
-                let d = det.decode(raw, conf: 0.25, iou: 0.5)
-                let total = (CFAbsoluteTimeGetCurrent() - t0) * 1000
-                let msg = "dets \(d.count)  infer " + String(format: "%.1f", raw.inferMs) +
-                          "ms  e2e " + String(format: "%.1f", total) + "ms"
-                await MainActor.run { dets = d; status = msg }
+                let t1 = CFAbsoluteTimeGetCurrent()
+                let d = det.decode(raw, conf: confNow, iou: iouNow)
+                let t2 = CFAbsoluteTimeGetCurrent()
+                let fwd = (t1 - t0) * 1000
+                await MainActor.run {
+                    dets = d
+                    lastDet = det; lastRaw = raw
+                    statPre = fwd - raw.inferMs
+                    statInf = raw.inferMs
+                    statDec = (t2 - t1) * 1000
+                    status = "ok"
+                }
             } catch {
                 await MainActor.run { status = "ERROR: \(error)" }
             }
         }
+    }
+
+    /// Slider retune: decode-only on the cached forward pass (instant, no model run).
+    private func retune() {
+        guard let det = lastDet, let raw = lastRaw else { return }
+        let t1 = CFAbsoluteTimeGetCurrent()
+        let d = det.decode(raw, conf: Float(conf), iou: CGFloat(iou))
+        statDec = (CFAbsoluteTimeGetCurrent() - t1) * 1000
+        dets = d
     }
 
     /// Kit-free raw-output probe (diagnostic; kept from the debugging session).
