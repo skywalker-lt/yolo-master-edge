@@ -17,16 +17,16 @@ private func lerp(_ a: RGB, _ b: RGB, _ t: Double) -> RGB {
 
 private func color(_ c: RGB) -> Color { Color(red: c.r, green: c.g, blue: c.b) }
 
-/// 0-10 red, 10-20 orange, 20-30 green, >30 purple - continuously blended
-/// through the band centers so the transition is a gradient, not a step.
+/// Pure band colors - 0-10 red, 10-20 orange, 20-30 green, >30 purple (past
+/// the camera's max). Transitions animate in TIME (fast gradient), the value
+/// itself never mixes bands.
 func fpsColor(_ fps: Double) -> Color {
-    let pts: [(Double, RGB)] = [(5, cRed), (15, cOrange), (25, cGreen), (32, cPurple)]
-    if fps <= pts[0].0 { return color(pts[0].1) }
-    for i in 1..<pts.count where fps <= pts[i].0 {
-        let (x0, c0) = pts[i - 1], (x1, c1) = pts[i]
-        return color(lerp(c0, c1, (fps - x0) / (x1 - x0)))
+    switch fps {
+    case ..<10: return color(cRed)
+    case ..<20: return color(cOrange)
+    case ..<30: return color(cGreen)
+    default: return color(cPurple)
     }
-    return color(pts.last!.1)
 }
 
 /// Stage bars: green while legit, blending to orange past ~20ms, fully orange
@@ -57,7 +57,7 @@ struct StatsHUD: View {
             }
             .gaugeStyle(.accessoryCircular)
             .tint(fpsColor(fps))
-            .animation(.easeOut(duration: 0.15), value: fps)
+            .animation(.easeInOut(duration: 0.25), value: fpsColor(fps))
             .frame(width: 56, height: 56)
 
             VStack(alignment: .leading, spacing: 5) {
