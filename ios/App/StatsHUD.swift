@@ -45,10 +45,36 @@ struct StatsHUD: View {
     let dets: Int
     var fpsLabel: String = "FPS"
     var active: Bool = true    // false while no model is loaded/running: N/A + grey
+    var extras: [(String, String)] = []   // optional detail rows (stats-card mode)
 
     @State private var thermal = ProcessInfo.processInfo.thermalState
 
     var body: some View {
+        VStack(spacing: 8) {
+            mainRow
+            if !extras.isEmpty {
+                Divider()
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
+                          alignment: .leading, spacing: 3) {
+                    ForEach(extras.indices, id: \.self) { i in
+                        HStack(spacing: 4) {
+                            Text(extras[i].0).foregroundStyle(.secondary)
+                            Text(extras[i].1).monospacedDigit()
+                        }
+                        .font(.caption2)
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .onReceive(NotificationCenter.default.publisher(
+            for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
+            thermal = ProcessInfo.processInfo.thermalState
+        }
+    }
+
+    private var mainRow: some View {
         HStack(spacing: 14) {
             Gauge(value: active ? min(max(fps, 0), 30) : 0, in: 0...30) {
                 Text(fpsLabel)
@@ -83,12 +109,6 @@ struct StatsHUD: View {
                 }
             }
             .frame(width: 48)
-        }
-        .padding(10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
-        .onReceive(NotificationCenter.default.publisher(
-            for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
-            thermal = ProcessInfo.processInfo.thermalState
         }
     }
 
