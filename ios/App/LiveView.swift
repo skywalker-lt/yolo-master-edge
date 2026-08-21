@@ -43,7 +43,7 @@ struct LiveView: View {
                 controls
                 Spacer()
                 Text(String(format: "%.1f ms  (%.0f FPS)  %@ @%@",
-                            inferMS, inferMS > 0 ? 1000 / inferMS : 0,
+                            inferMS, inferMS > 0 ? 1000.0 / inferMS : 0.0,
                             selectedModel?.id ?? "-", compute.rawValue))
                     .font(.caption.monospacedDigit())
                     .padding(6)
