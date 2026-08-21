@@ -32,6 +32,7 @@ struct LiveView: View {
     @State private var statHz: Double = 0
     @State private var statDets = 0
     @State private var showTuning = false
+    @State private var style: BoxStyle = .chip
     @StateObject private var tuning = Tuning()
     @State private var running = false
     @State private var loopTask: Task<Void, Never>?
@@ -78,9 +79,15 @@ struct LiveView: View {
             Picker("Model", selection: $selectedModel) {
                 ForEach(models) { m in Text(m.shortID).lineLimit(1).fixedSize().tag(Optional(m)) }
             }
+            .fixedSize()
             Picker("Compute", selection: $compute) {
-                ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).tag(c) }
+                ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).lineLimit(1).fixedSize().tag(c) }
             }
+            .fixedSize()
+            Picker("Style", selection: $style) {
+                ForEach(BoxStyle.allCases) { s in Text(s.label).lineLimit(1).fixedSize().tag(s) }
+            }
+            .fixedSize()
             Button {
                 withAnimation { showTuning.toggle() }
             } label: {
@@ -106,7 +113,7 @@ struct LiveView: View {
                                 size.height / frameSize.height)
                 let ox = (size.width - frameSize.width * scale) / 2
                 let oy = (size.height - frameSize.height * scale) / 2
-                DetOverlay.draw(ctx, detections, scale: scale, ox: ox, oy: oy)
+                DetOverlay.draw(ctx, detections, scale: scale, ox: ox, oy: oy, style: style)
             }
         }
         .allowsHitTesting(false)
