@@ -64,7 +64,7 @@ struct LiveView: View {
                 if showHUD {
                     StatsHUD(fps: statHz, pre: statPre, inf: statInf,
                              dec: statDec, dets: statDets, active: running)
-                        .padding(.bottom, 8)
+                        .padding(.bottom, 20)
                 }
             }
         }
