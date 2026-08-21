@@ -31,6 +31,10 @@ struct PhotoTestView: View {
     @State private var statInf: Double = 0
     @State private var statDec: Double = 0
     @State private var throughput: Double = 0
+    @State private var wallSeconds: Double = 0
+    @State private var perPre: [Double] = []
+    @State private var perInf: [Double] = []
+    @State private var perDec: [Double] = []
     @State private var errorText = ""
     @State private var lastDet: Detector?
     @State private var lastRaws: [Detector.RawOutput] = []
@@ -48,11 +52,7 @@ struct PhotoTestView: View {
                     TuningPanel(conf: $conf, iou: $iou, style: $style,
                                 hudVisible: $showHUD).padding(.horizontal, 8)
                 }
-                if showHUD {
-                    StatsHUD(fps: throughput, pre: statPre, inf: statInf, dec: statDec,
-                             dets: results.indices.contains(page) ? results[page].count : 0,
-                             fpsLabel: "img/s", active: statInf > 0)
-                }
+                if showHUD { hud }
                 if !errorText.isEmpty {
                     Text(errorText).font(.caption2).foregroundStyle(.red)
                         .lineLimit(3).padding(.horizontal, 12)
@@ -67,6 +67,35 @@ struct PhotoTestView: View {
             .onChange(of: conf) { _, _ in retune() }
             .onChange(of: iou) { _, _ in retune() }
         }
+    }
+
+    /// Pager: THIS image's stage times + its own capability FPS.
+    /// Gallery: batch averages + overall FPS + detail rows.
+    private var hud: some View {
+        let perImage = viewMode == .pager && perInf.indices.contains(page)
+        let p = perImage ? perPre[page] : statPre
+        let i = perImage ? perInf[page] : statInf
+        let d = perImage ? perDec[page] : statDec
+        let fps = perImage ? 1000.0 / max(p + i + d, 0.1) : throughput
+        var extras: [(String, String)] = []
+        if statInf > 0 {
+            if perImage {
+                let img = images[page]
+                extras = [("image", "\(page + 1)/\(images.count)"),
+                          ("size", "\(img.width)x\(img.height)"),
+                          ("e2e", String(format: "%.1f ms", p + i + d)),
+                          ("dets", "\(results.indices.contains(page) ? results[page].count : 0)")]
+            } else {
+                let totalDets = results.reduce(0) { $0 + $1.count }
+                extras = [("images", "\(images.count)"),
+                          ("wall", String(format: "%.2f s", wallSeconds)),
+                          ("total dets", "\(totalDets)"),
+                          ("avg e2e", String(format: "%.1f ms", statPre + statInf + statDec))]
+            }
+        }
+        return StatsHUD(fps: fps, pre: p, inf: i, dec: d,
+                        dets: results.indices.contains(page) ? results[page].count : 0,
+                        fpsLabel: "FPS", active: statInf > 0, extras: extras)
     }
 
     // MARK: pieces
@@ -85,6 +114,7 @@ struct PhotoTestView: View {
                 }
                 .padding(.horizontal, 8)
             }
+            .transition(.scale(scale: 0.92).combined(with: .opacity))
         } else {
             TabView(selection: $page) {
                 ForEach(images.indices, id: \.self) { i in
@@ -93,6 +123,14 @@ struct PhotoTestView: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .automatic))
+            .transition(.scale(scale: 1.08).combined(with: .opacity))
+            .gesture(
+                MagnifyGesture().onEnded { v in
+                    if v.magnification < 0.85 {          // pinch-out -> gallery
+                        withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
+                    }
+                }
+            )
         }
     }
 
@@ -114,7 +152,10 @@ struct PhotoTestView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
-            .onTapGesture { page = i; viewMode = .pager }
+            .onTapGesture {
+                page = i
+                withAnimation(.spring(duration: 0.35)) { viewMode = .pager }
+            }
         }
         .aspectRatio(1, contentMode: .fit)
     }
@@ -242,6 +283,7 @@ struct PhotoTestView: View {
         progress = 0
         progressTotal = imgs.count
         errorText = ""
+        perPre = []; perInf = []; perDec = []
         Task.detached {
             do {
                 let det = try Detector(modelURL: m.url, compute: mode)
@@ -262,9 +304,13 @@ struct PhotoTestView: View {
                     allDets.append(d)
                     let done = idx + 1
                     let dSnapshot = d
+                    let pPre = (b - a) * 1000 - raw.inferMs
+                    let pInf = raw.inferMs
+                    let pDec = (c - b) * 1000
                     await MainActor.run {
                         progress = done
                         if results.indices.contains(idx) { results[idx] = dSnapshot }
+                        perPre.append(pPre); perInf.append(pInf); perDec.append(pDec)
                     }
                 }
                 let wall = CFAbsoluteTimeGetCurrent() - t0
@@ -278,6 +324,7 @@ struct PhotoTestView: View {
                     statInf = sumInf / n
                     statDec = sumDec / n
                     throughput = n / max(wall, 0.001)
+                    wallSeconds = wall
                     phase = .idle
                     isRunning = false
                 }
