@@ -1,12 +1,15 @@
-// Batch photo detection: pick up to 24 images, swipe through annotated results.
-// Stats are PER-IMAGE stage averages plus an img/s throughput dial. Slider
-// retunes re-decode the cached forward passes - zero model re-runs.
+// Batch photo detection: up to 100 images, gallery (3-up grid) or pager view,
+// macOS-style phase progress (Loading/iCloud -> Inference), per-image stage
+// averages + img/s dial. Slider retunes re-decode cached passes - no re-runs.
 import CoreML
 import PhotosUI
 import SwiftUI
 import YOLOMasterKit
 
 struct PhotoTestView: View {
+    enum ViewMode { case gallery, pager }
+    enum Phase: Equatable { case idle, loading, inferring }
+
     @State private var models = BundledModel.discover()
     @State private var selectedModel: BundledModel?
     @State private var compute: ComputeChoice = .ane
@@ -15,36 +18,32 @@ struct PhotoTestView: View {
     @State private var images: [CGImage] = []
     @State private var results: [[Detection]] = []
     @State private var page = 0
+    @State private var viewMode: ViewMode = .gallery
     @State private var conf = 0.25
     @State private var iou = 0.5
     @State private var showTuning = false
     @State private var showHUD = true
     @State private var isRunning = false
+    @State private var phase: Phase = .idle
+    @State private var progress = 0
+    @State private var progressTotal = 0
     @State private var statPre: Double = 0
     @State private var statInf: Double = 0
     @State private var statDec: Double = 0
-    @State private var throughput: Double = 0     // img/s over the whole batch
-    @State private var status = ""
-    // cached forward passes for instant slider retunes
+    @State private var throughput: Double = 0
+    @State private var errorText = ""
     @State private var lastDet: Detector?
     @State private var lastRaws: [Detector.RawOutput] = []
+
+    private let gridCols = [GridItem(.flexible(), spacing: 4),
+                            GridItem(.flexible(), spacing: 4),
+                            GridItem(.flexible(), spacing: 4)]
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 8) {
-                if images.isEmpty {
-                    ContentUnavailableView("No photos", systemImage: "photo.on.rectangle.angled",
-                                           description: Text("Pick up to 24 images"))
-                        .frame(maxHeight: .infinity)
-                } else {
-                    TabView(selection: $page) {
-                        ForEach(images.indices, id: \.self) { i in
-                            annotated(images[i], results.indices.contains(i) ? results[i] : [])
-                                .tag(i)
-                        }
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .automatic))
-                }
+                content
+                if phase != .idle { progressBar }
                 if showTuning {
                     TuningPanel(conf: $conf, iou: $iou, style: $style,
                                 hudVisible: $showHUD).padding(.horizontal, 8)
@@ -54,12 +53,9 @@ struct PhotoTestView: View {
                              dets: results.indices.contains(page) ? results[page].count : 0,
                              fpsLabel: "img/s", active: statInf > 0)
                 }
-                if !status.isEmpty {
-                    Text(status)
-                        .font(.caption2.monospaced())
-                        .lineLimit(6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
+                if !errorText.isEmpty {
+                    Text(errorText).font(.caption2).foregroundStyle(.red)
+                        .lineLimit(3).padding(.horizontal, 12)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -71,6 +67,70 @@ struct PhotoTestView: View {
             .onChange(of: conf) { _, _ in retune() }
             .onChange(of: iou) { _, _ in retune() }
         }
+    }
+
+    // MARK: pieces
+
+    @ViewBuilder private var content: some View {
+        if images.isEmpty {
+            ContentUnavailableView("No photos", systemImage: "photo.on.rectangle.angled",
+                                   description: Text("Pick up to 100 images"))
+                .frame(maxHeight: .infinity)
+        } else if viewMode == .gallery {
+            ScrollView {
+                LazyVGrid(columns: gridCols, spacing: 4) {
+                    ForEach(images.indices, id: \.self) { i in
+                        galleryCell(i)
+                    }
+                }
+                .padding(.horizontal, 8)
+            }
+        } else {
+            TabView(selection: $page) {
+                ForEach(images.indices, id: \.self) { i in
+                    annotated(images[i], results.indices.contains(i) ? results[i] : [])
+                        .tag(i)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .automatic))
+        }
+    }
+
+    private func galleryCell(_ i: Int) -> some View {
+        GeometryReader { geo in
+            let img = images[i]
+            let scale = geo.size.width / CGFloat(img.width)
+            ZStack(alignment: .topLeading) {
+                Image(decorative: img, scale: 1).resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: geo.size.width, height: geo.size.width)
+                    .clipped()
+                Canvas { ctx, _ in
+                    if results.indices.contains(i) {
+                        DetOverlay.draw(ctx, results[i], scale: scale, ox: 0, oy: 0,
+                                        style: style)
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+            .onTapGesture { page = i; viewMode = .pager }
+        }
+        .aspectRatio(1, contentMode: .fit)
+    }
+
+    private var progressBar: some View {
+        HStack(spacing: 10) {
+            Text(phase == .loading ? "Loading / iCloud" : "Inference")
+                .font(.caption)
+            ProgressView(value: Double(progress), total: Double(max(progressTotal, 1)))
+                .progressViewStyle(.linear)
+            Text("\(progress)/\(progressTotal)")
+                .font(.caption.monospacedDigit())
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 8)
     }
 
     private var controls: some View {
@@ -90,16 +150,26 @@ struct PhotoTestView: View {
             .fixedSize()
             .disabled(isRunning)
             Spacer(minLength: 0)
+            if !images.isEmpty {
+                Button {
+                    withAnimation { viewMode = viewMode == .gallery ? .pager : .gallery }
+                } label: {
+                    Image(systemName: viewMode == .gallery
+                          ? "rectangle.portrait" : "square.grid.3x3")
+                }
+                .buttonStyle(.bordered)
+            }
             Button {
                 withAnimation { showTuning.toggle() }
             } label: {
                 Image(systemName: "slider.horizontal.3")
             }
             .buttonStyle(.bordered)
-            PhotosPicker(selection: $picks, maxSelectionCount: 24, matching: .images) {
+            PhotosPicker(selection: $picks, maxSelectionCount: 100, matching: .images) {
                 Image(systemName: "photo.badge.plus")
             }
             .buttonStyle(.borderedProminent)
+            .disabled(isRunning)
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -126,27 +196,37 @@ struct PhotoTestView: View {
         .padding(.horizontal, 8)
     }
 
+    // MARK: pipeline
+
     private func load(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
-        status = "loading \(items.count) photos..."
+        phase = .loading
+        progress = 0
+        progressTotal = items.count
+        errorText = ""
         Task {
             var loaded: [CGImage] = []
-            for item in items {
-                guard let data = try? await item.loadTransferable(type: Data.self),
-                      let src = CGImageSourceCreateWithData(data as CFData, nil),
-                      let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [
-                          kCGImageSourceCreateThumbnailWithTransform: true,   // EXIF
-                          kCGImageSourceCreateThumbnailFromImageAlways: true,
-                          kCGImageSourceThumbnailMaxPixelSize: 2048,
-                      ] as CFDictionary) else { continue }
-                loaded.append(img)
+            for (idx, item) in items.enumerated() {
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let src = CGImageSourceCreateWithData(data as CFData, nil),
+                   let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                       kCGImageSourceCreateThumbnailWithTransform: true,   // EXIF
+                       kCGImageSourceCreateThumbnailFromImageAlways: true,
+                       kCGImageSourceThumbnailMaxPixelSize: 2048,
+                   ] as CFDictionary) {
+                    loaded.append(img)
+                }
+                let done = idx + 1
+                await MainActor.run { progress = done }
             }
             let imgs = loaded
             await MainActor.run {
                 images = imgs
                 results = Array(repeating: [], count: imgs.count)
                 page = 0
-                status = imgs.isEmpty ? "no loadable photos" : ""
+                viewMode = imgs.count > 1 ? .gallery : .pager
+                phase = .idle
+                if imgs.isEmpty { errorText = "no loadable photos" }
             }
             run()
         }
@@ -157,8 +237,11 @@ struct PhotoTestView: View {
         let mode = compute.mode
         let confNow = Float(conf), iouNow = CGFloat(iou)
         let imgs = images
-        status = "running \(imgs.count) images..."
         isRunning = true
+        phase = .inferring
+        progress = 0
+        progressTotal = imgs.count
+        errorText = ""
         Task.detached {
             do {
                 let det = try Detector(modelURL: m.url, compute: mode)
@@ -166,7 +249,7 @@ struct PhotoTestView: View {
                 var allDets: [[Detection]] = []
                 var sumPre = 0.0, sumInf = 0.0, sumDec = 0.0
                 let t0 = CFAbsoluteTimeGetCurrent()
-                for img in imgs {
+                for (idx, img) in imgs.enumerated() {
                     let a = CFAbsoluteTimeGetCurrent()
                     let raw = try det.forward(img)
                     let b = CFAbsoluteTimeGetCurrent()
@@ -177,23 +260,33 @@ struct PhotoTestView: View {
                     sumDec += (c - b) * 1000
                     raws.append(raw)
                     allDets.append(d)
+                    let done = idx + 1
+                    let dSnapshot = d
+                    await MainActor.run {
+                        progress = done
+                        if results.indices.contains(idx) { results[idx] = dSnapshot }
+                    }
                 }
                 let wall = CFAbsoluteTimeGetCurrent() - t0
                 let n = Double(imgs.count)
-                let dets = allDets, rawsF = raws
+                let rawsF = raws, detsF = allDets
                 await MainActor.run {
-                    results = dets
+                    results = detsF
                     lastDet = det
                     lastRaws = rawsF
                     statPre = sumPre / n
                     statInf = sumInf / n
                     statDec = sumDec / n
                     throughput = n / max(wall, 0.001)
-                    status = ""
+                    phase = .idle
                     isRunning = false
                 }
             } catch {
-                await MainActor.run { status = "ERROR: \(error)"; isRunning = false }
+                await MainActor.run {
+                    errorText = "ERROR: \(error)"
+                    phase = .idle
+                    isRunning = false
+                }
             }
         }
     }
