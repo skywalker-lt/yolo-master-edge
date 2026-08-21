@@ -90,7 +90,7 @@ struct LiveView: View {
 
     private var overlay: some View {
         GeometryReader { geo in
-            Canvas { ctx, size in
+            Canvas(rendersAsynchronously: true) { ctx, size in
                 // the preview layer is resizeAspectFill: one uniform scale (the
                 // larger axis ratio), surplus cropped equally. Mirror exactly
                 // that mapping or boxes shear toward the center.
@@ -128,10 +128,15 @@ struct LiveView: View {
             var uiTicks = 0
             var uiWindowStart = CFAbsoluteTimeGetCurrent()
             var uiHz = 0.0
+            var lastFrameID: UInt64 = 0
             while !Task.isCancelled {
-                guard let pb = camera.grabLatest() else {
+                guard let (pb, fid) = camera.grabLatest() else {
                     try? await Task.sleep(nanoseconds: 20_000_000); continue
                 }
+                if fid == lastFrameID {                    // stale frame - don't reprocess
+                    try? await Task.sleep(nanoseconds: 5_000_000); continue
+                }
+                lastFrameID = fid
                 let t0 = CFAbsoluteTimeGetCurrent()
                 guard let raw = try? det.forward(pb) else { continue }
                 let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
@@ -148,7 +153,10 @@ struct LiveView: View {
                           String(format: "%.1f", uiHz) + "Hz"
                 let w = CGFloat(CVPixelBufferGetWidth(pb))
                 let h = CGFloat(CVPixelBufferGetHeight(pb))
-                await MainActor.run {
+                // fire-and-forget: NEVER block the inference loop on the main
+                // thread - a busy render loop otherwise throttles detection to
+                // its leftover scheduling gaps
+                Task { @MainActor in
                     detections = dets
                     inferMS = ms
                     debugLine = dbg

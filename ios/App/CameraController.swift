@@ -12,6 +12,7 @@ final class CameraController: NSObject, ObservableObject,
     /// Latest frame, overwritten continuously; the detection loop pulls at its own pace
     /// (frames are dropped, never queued - live detection wants freshness, not history).
     private(set) var latest: CVPixelBuffer?
+    private var frameID: UInt64 = 0
     private let latestLock = NSLock()
     @Published var authorized = false
 
@@ -51,11 +52,14 @@ final class CameraController: NSObject, ObservableObject,
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        latestLock.lock(); latest = pb; latestLock.unlock()
+        latestLock.lock(); latest = pb; frameID &+= 1; latestLock.unlock()
     }
 
-    func grabLatest() -> CVPixelBuffer? {
+    /// Freshest frame + a monotonically increasing id so consumers can skip
+    /// buffers they have already processed.
+    func grabLatest() -> (CVPixelBuffer, UInt64)? {
         latestLock.lock(); defer { latestLock.unlock() }
-        return latest
+        guard let pb = latest else { return nil }
+        return (pb, frameID)
     }
 }
