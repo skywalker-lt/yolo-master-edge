@@ -5,6 +5,7 @@ import CoreML
 import Photos
 import PhotosUI
 import SwiftUI
+import UIKit
 import YOLOMasterKit
 
 struct PhotoTestView: View {
@@ -48,6 +49,9 @@ struct PhotoTestView: View {
     @State private var isSeg = false
     @State private var classNames: [String] = cocoNames
     @State private var retuneGen = 0                 // drops stale async mask renders
+    @State private var exporting = false
+    @State private var exportMsg: String?            // non-nil -> result popup
+    @State private var exportOK = false
 
     private let gridCols = [GridItem(.flexible(), spacing: 4),
                             GridItem(.flexible(), spacing: 4),
@@ -89,6 +93,13 @@ struct PhotoTestView: View {
             .onChange(of: compute) { _, _ in run() }
             .onChange(of: conf) { _, _ in retune() }
             .onChange(of: iou) { _, _ in retune() }
+            .alert(exportOK ? "Export complete" : "Export failed",
+                   isPresented: Binding(get: { exportMsg != nil },
+                                        set: { if !$0 { exportMsg = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(exportMsg ?? "")
+            }
         }
     }
 
@@ -255,6 +266,20 @@ struct PhotoTestView: View {
                           ? "rectangle.portrait" : "square.grid.3x3")
                 }
                 .buttonStyle(.bordered)
+                // pager: export THIS image; gallery: export the whole batch
+                Button {
+                    exportImages(viewMode == .pager ? [page] : Array(images.indices))
+                } label: {
+                    if exporting {
+                        ProgressView()
+                    } else {
+                        Image(systemName: viewMode == .pager
+                              ? "square.and.arrow.down"
+                              : "square.and.arrow.down.on.square")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(exporting || isRunning)
             }
             Button {
                 withAnimation { showTuning.toggle() }
@@ -449,6 +474,54 @@ struct PhotoTestView: View {
         }
     }
 
+    /// Export annotated images (as rendered: mask layer + boxes per the current
+    /// overlay mode and style) to the photo library, then pop the result.
+    private func exportImages(_ idxs: [Int]) {
+        guard !exporting, !idxs.isEmpty else { return }
+        exporting = true
+        let imgs = images, dets = results, masks = maskImages
+        let drawMask = isSeg && segOverlay != .boxes
+        let drawBoxes = !(isSeg && segOverlay == .masks)
+        let names = classNames
+        let kitStyle = style.kitStyle
+        Task.detached(priority: .userInitiated) {
+            var uis: [UIImage] = []
+            for i in idxs where imgs.indices.contains(i) {
+                autoreleasepool {
+                    let cg = composeExport(imgs[i],
+                                           dets: dets.indices.contains(i) ? dets[i] : [],
+                                           mask: masks.indices.contains(i) ? masks[i] : nil,
+                                           drawMask: drawMask, drawBoxes: drawBoxes,
+                                           names: names, style: kitStyle)
+                    uis.append(UIImage(cgImage: cg))
+                }
+            }
+            if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
+                _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+            }
+            var ok = false
+            do {
+                let toSave = uis
+                try await PHPhotoLibrary.shared().performChanges {
+                    for ui in toSave {
+                        PHAssetChangeRequest.creationRequestForAsset(from: ui)
+                    }
+                }
+                ok = !toSave.isEmpty
+            } catch {
+                ok = false
+            }
+            let n = uis.count
+            await MainActor.run {
+                exporting = false
+                exportOK = ok
+                exportMsg = ok
+                    ? (n == 1 ? "Saved 1 image to Photos" : "Saved \(n) images to Photos")
+                    : "Could not save to Photos"
+            }
+        }
+    }
+
     /// Slider retune: decode-only over the cached forward passes. Boxes update
     /// synchronously (cheap); seg mask re-renders go off-main with a generation
     /// token so slider drags never hitch and stale renders are dropped.
@@ -474,6 +547,30 @@ struct PhotoTestView: View {
             }
         }
     }
+}
+
+/// Bake the on-screen annotation (mask composite under Kit-rendered boxes and
+/// labels) into a standalone image for export.
+private func composeExport(_ img: CGImage, dets: [Detection], mask: CGImage?,
+                           drawMask: Bool, drawBoxes: Bool,
+                           names: [String], style: YOLOMasterKit.BoxStyle) -> CGImage {
+    var out = img
+    if drawMask, let mask,
+       let ctx = CGContext(data: nil, width: img.width, height: img.height,
+                           bitsPerComponent: 8, bytesPerRow: 0,
+                           space: CGColorSpaceCreateDeviceRGB(),
+                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+        ctx.interpolationQuality = .high
+        let full = CGRect(x: 0, y: 0, width: img.width, height: img.height)
+        ctx.draw(img, in: full)
+        ctx.draw(mask, in: full)
+        if let o = ctx.makeImage() { out = o }
+    }
+    if !dets.isEmpty {
+        out = annotate(out, dets, names: names, style: style,
+                       label: .full, drawBoxes: drawBoxes) ?? out
+    }
+    return out
 }
 
 /// Photos-app zoom behavior via UIScrollView: pinch zoom anchored at the

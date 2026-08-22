@@ -511,13 +511,7 @@ struct LiveView: View {
         let drawBoxes = !(isSegModel && tuning.segOverlay == .masks)
         let names = classNames
         let fSize = frameSize
-        let kitStyle: YOLOMasterKit.BoxStyle = {
-            switch style {
-            case .neon: return .neon
-            case .hud, .minimal: return .hud
-            default: return .solid
-            }
-        }()
+        let kitStyle = style.kitStyle
         let fallback = camera.grabLatest().flatMap { Detector.cgImage(from: $0.0) }
         let t0 = CFAbsoluteTimeGetCurrent()
         camera.capturePhoto { photo in
