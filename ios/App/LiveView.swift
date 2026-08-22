@@ -206,8 +206,10 @@ struct LiveView: View {
                     let t1 = CFAbsoluteTimeGetCurrent()
                     let d = det.decode(raw, conf: confNow, iou: iouNow)
                     let t2 = CFAbsoluteTimeGetCurrent()
+                    // maxSide 640: quarter the composite pixels vs the 720x1280
+                    // frame; the proto grid is 160px, so nothing visible is lost
                     let mask: CGImage? = segNow && !d.isEmpty
-                        ? det.maskOverlay(Array(d.prefix(100)), raw) : nil
+                        ? det.maskOverlay(Array(d.prefix(100)), raw, maxSide: 640) : nil
                     let t3 = CFAbsoluteTimeGetCurrent()
                     let fwd = (t1 - t0) * 1000
                     return (d, mask, fwd - raw.inferMs, raw.inferMs,
