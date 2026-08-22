@@ -76,8 +76,10 @@ struct StatsHUD: View {
                 .frame(maxWidth: fullWidth ? .infinity : nil)
                 .background(GeometryReader { g in
                     Color.clear
-                        .onAppear { rowWidth = g.size.width }
-                        .onChange(of: g.size.width) { _, w in rowWidth = w }
+                        .onAppear { if !expanded { rowWidth = g.size.width } }
+                        .onChange(of: g.size.width) { _, w in
+                            if !expanded { rowWidth = w }   // collapsed layout owns the width
+                        }
                 })
             if expanded {
                 Group {
@@ -104,12 +106,6 @@ struct StatsHUD: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
         .contentShape(Rectangle())
         .onTapGesture { withAnimation(.spring(duration: 0.3)) { expanded.toggle() } }
-        .overlay(alignment: .topTrailing) {
-            Image(systemName: expanded ? "chevron.down" : "chevron.up")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .padding(6)
-        }
         .onReceive(NotificationCenter.default.publisher(
             for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
             thermal = ProcessInfo.processInfo.thermalState
@@ -152,12 +148,16 @@ struct StatsHUD: View {
 
             ThermalTach(level: Int(thermalLevel), color: thermalColor)
 
-            VStack(alignment: .leading, spacing: 5) {
-                StageBar(icon: "aspectratio", ms: pre)                       // preprocess
-                StageBar(icon: "cpu", ms: inf)                               // inference
-                StageBar(icon: "rectangle.dashed", ms: dec)                  // decode
-                if let mask {
-                    StageBar(icon: "person.and.background.dotted", ms: mask) // mask compose
+            // compact stage bars only while collapsed - the expanded view has
+            // the same stages as named detail rows, no duplication
+            if !expanded {
+                VStack(alignment: .leading, spacing: 5) {
+                    StageBar(icon: "aspectratio", ms: pre)                       // preprocess
+                    StageBar(icon: "cpu", ms: inf)                               // inference
+                    StageBar(icon: "rectangle.dashed", ms: dec)                  // decode
+                    if let mask {
+                        StageBar(icon: "person.and.background.dotted", ms: mask) // mask compose
+                    }
                 }
             }
 
@@ -233,7 +233,9 @@ struct ThermalTach: View {
     let color: Color
 
     private let span = 0.75          // 270 degrees, same as the accessory gauges
-    private let gap = 0.03
+    // round line caps extend half the line width past each trim end, so the
+    // nominal gap must be wide enough to stay visible after both caps bite in
+    private let gap = 0.055
     private var segLen: Double { (span - 3 * gap) / 4 }
 
     var body: some View {
@@ -243,9 +245,9 @@ struct ThermalTach: View {
                     .trim(from: Double(i) * (segLen + gap),
                           to: Double(i) * (segLen + gap) + segLen)
                     .stroke(i <= level ? AnyShapeStyle(color) : AnyShapeStyle(.quaternary),
-                            style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                            style: StrokeStyle(lineWidth: 6, lineCap: .round))
                     .rotationEffect(.degrees(135))   // start bottom-left, like the FPS dial
-                    .frame(width: 48, height: 48)
+                    .frame(width: 54, height: 54)    // matches the accessory dial's ring
             }
             Image(systemName: "thermometer.medium")
                 .font(.system(size: 24, weight: .medium))
