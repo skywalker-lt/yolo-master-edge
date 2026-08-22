@@ -546,7 +546,7 @@ public final class Detector {
     }
 
     /// Cheap BGRA `CVPixelBuffer` → `CGImage` (one memcpy via a buffer-backed context; no Core Image).
-    static func cgImage(from pb: CVPixelBuffer) -> CGImage? {
+    public static func cgImage(from pb: CVPixelBuffer) -> CGImage? {
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
