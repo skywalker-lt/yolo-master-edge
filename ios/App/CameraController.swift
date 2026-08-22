@@ -19,6 +19,7 @@ final class CameraController: NSObject, ObservableObject,
     private var rateCount = 0
     private var rateStart = CFAbsoluteTimeGetCurrent()
     private var rateValue: Double = 0
+    private var ageValue: Double = 0   // EMA of frame age at delivery, ms
     private var device: AVCaptureDevice?
     @Published var authorized = false
     /// videoZoomFactor of the 1x (wide) lens. On virtual multi-cam devices the
@@ -180,6 +181,13 @@ final class CameraController: NSObject, ObservableObject,
                 dev.setPrimaryConstituentDeviceSwitchingBehavior(
                     .auto, restrictedSwitchingBehaviorConditions: [])
             }
+            if dev.activeFormat.isVideoHDRSupported {
+                // video HDR runs frames through extra fusion stages: deeper
+                // buffering = staler data-output frames = overlay trailing the
+                // preview. A detection feed wants the low-latency SDR path.
+                dev.automaticallyAdjustsVideoHDREnabled = false
+                dev.isVideoHDREnabled = false
+            }
             dev.videoZoomFactor = zoomBias    // start on the wide lens = 1x
             dev.unlockForConfiguration()
         }
@@ -226,9 +234,19 @@ final class CameraController: NSObject, ObservableObject,
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        // frame age: capture timestamp vs the session clock NOW. The preview
+        // layer shows frames at near-zero age; if the data-output path hands us
+        // frames tens of ms old (virtual-device fusion/HDR pipelining), the
+        // overlay trails the preview by that much before we spend a single ms.
+        var ageMs: Double = 0
+        if let clock = session.synchronizationClock {
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            ageMs = max(0, CMTimeGetSeconds(CMTimeSubtract(CMClockGetTime(clock), pts)) * 1000)
+        }
         latestLock.lock()
         latest = pb
         frameID &+= 1
+        ageValue = ageValue == 0 ? ageMs : ageValue * 0.9 + ageMs * 0.1
         rateCount += 1
         let now = CFAbsoluteTimeGetCurrent()
         if now - rateStart >= 1 {
@@ -245,6 +263,12 @@ final class CameraController: NSObject, ObservableObject,
     func deliveryRate() -> Double {
         latestLock.lock(); defer { latestLock.unlock() }
         return rateValue
+    }
+
+    /// Smoothed frame age at delivery (ms) - the capture pipeline's own latency.
+    func frameAgeMs() -> Double {
+        latestLock.lock(); defer { latestLock.unlock() }
+        return ageValue
     }
 
     /// Freshest frame + a monotonically increasing id so consumers can skip
