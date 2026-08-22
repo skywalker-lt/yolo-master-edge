@@ -70,6 +70,9 @@ struct LiveView: View {
     @State private var lensCollapse: Task<Void, Never>?
     @State private var lensRect: CGRect = .zero   // global frame of the lens picker
     private let haptic = UIImpactFeedbackGenerator(style: .medium)
+    private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
+    private let heavyHaptic = UIImpactFeedbackGenerator(style: .heavy)
+    @State private var longPressFired = false  // swallow the tap that follows a long press
     @State private var loadingModel = false   // Detector init in flight (compile + unit load)
     @State private var running = false        // loop actually alive
     @State private var wantRun = true         // the user's intent - survives tab
@@ -183,6 +186,8 @@ struct LiveView: View {
         .onAppear {
             camera.start()
             haptic.prepare()
+            lightHaptic.prepare()
+            heavyHaptic.prepare()
             // first performChanges spins up the photo-library connection (seconds
             // on a cold start) - warm it here instead of on the first shutter tap
             if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .authorized {
@@ -295,9 +300,15 @@ struct LiveView: View {
             .fixedSize()
             .disabled(wantRun)
             Button {
+                lightHaptic.impactOccurred()
+                lightHaptic.prepare()
                 camera.setTorch(!camera.torchOn)
             } label: {
+                // flashlight glyphs are taller than the other symbols - pin the
+                // label box so every bordered button comes out the same height
                 Image(systemName: camera.torchOn ? "flashlight.on.fill" : "flashlight.off.fill")
+                    .font(.system(size: 15))
+                    .frame(width: 22, height: 20)
             }
             .buttonStyle(.bordered)
             .tint(camera.torchOn ? .yellow : nil)
@@ -305,18 +316,30 @@ struct LiveView: View {
                 withAnimation { showTuning.toggle() }
             } label: {
                 Image(systemName: "slider.horizontal.3")
+                    .frame(width: 22, height: 20)
             }
             .buttonStyle(.bordered)
             Button {
-                if wantRun { wantRun = false; stopLoop() }
-                else { wantRun = true; startLoop() }
+                if longPressFired { longPressFired = false; return }
+                togglePlay(strong: false)
             } label: {
                 Image(systemName: wantRun ? "pause.fill" : "play.fill")
-                    .frame(minWidth: 44)
+                    .frame(minWidth: 44, minHeight: 20)
             }
             .buttonStyle(.borderedProminent)
             .tint(wantRun ? .red : .accentColor)
             .disabled(selectedModel == nil)
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.4).onEnded { _ in
+                    longPressFired = true
+                    togglePlay(strong: true)
+                    // if the finger lifts outside the button no tap follows -
+                    // do not leave the swallow flag armed
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                        longPressFired = false
+                    }
+                }
+            )
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -541,6 +564,20 @@ struct LiveView: View {
     /// User-initiated stop (play/pause button).
     private func stopLoop() {
         suspendLoop()
+    }
+
+    /// Play/pause with haptics: medium on tap, heavy full-intensity on the
+    /// force/long press path.
+    private func togglePlay(strong: Bool) {
+        if strong {
+            heavyHaptic.impactOccurred(intensity: 1.0)
+            heavyHaptic.prepare()
+        } else {
+            haptic.impactOccurred()
+            haptic.prepare()
+        }
+        if wantRun { wantRun = false; stopLoop() }
+        else { wantRun = true; startLoop() }
     }
 }
 
