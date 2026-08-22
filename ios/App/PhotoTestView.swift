@@ -52,6 +52,7 @@ struct PhotoTestView: View {
     @State private var exporting = false
     @State private var exportMsg: String?            // non-nil -> result popup
     @State private var exportOK = false
+    @State private var exportToastGen = 0            // auto-dismiss generation
 
     private let gridCols = [GridItem(.flexible(), spacing: 4),
                             GridItem(.flexible(), spacing: 4),
@@ -93,12 +94,14 @@ struct PhotoTestView: View {
             .onChange(of: compute) { _, _ in run() }
             .onChange(of: conf) { _, _ in retune() }
             .onChange(of: iou) { _, _ in retune() }
-            .alert(exportOK ? "Export complete" : "Export failed",
-                   isPresented: Binding(get: { exportMsg != nil },
-                                        set: { if !$0 { exportMsg = nil } })) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(exportMsg ?? "")
+            .overlay {
+                if let msg = exportMsg {
+                    ExportToast(success: exportOK, message: msg)
+                        .transition(.scale(scale: 0.82).combined(with: .opacity))
+                        .onTapGesture {
+                            withAnimation(.easeOut(duration: 0.2)) { exportMsg = nil }
+                        }
+                }
             }
         }
     }
@@ -515,9 +518,19 @@ struct PhotoTestView: View {
             await MainActor.run {
                 exporting = false
                 exportOK = ok
-                exportMsg = ok
-                    ? (n == 1 ? "Saved 1 image to Photos" : "Saved \(n) images to Photos")
-                    : "Could not save to Photos"
+                exportToastGen += 1
+                let gen = exportToastGen
+                withAnimation(.spring(duration: 0.3)) {
+                    exportMsg = ok
+                        ? (n == 1 ? "Saved 1 image to Photos" : "Saved \(n) images to Photos")
+                        : "Could not save to Photos"
+                }
+                Task {
+                    try? await Task.sleep(nanoseconds: ok ? 1_600_000_000 : 2_400_000_000)
+                    if exportToastGen == gen {
+                        withAnimation(.easeOut(duration: 0.25)) { exportMsg = nil }
+                    }
+                }
             }
         }
     }
@@ -546,6 +559,69 @@ struct PhotoTestView: View {
                 }
             }
         }
+    }
+}
+
+/// Export-result popup: a stroke-animated tick (or cross) drawing itself in,
+/// then the card auto-dismisses. Tap dismisses early.
+struct ExportToast: View {
+    let success: Bool
+    let message: String
+    @State private var drawn = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .trim(from: 0, to: drawn ? 1 : 0)
+                    .stroke(success ? Color.green : Color.red,
+                            style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 46, height: 46)
+                Group {
+                    if success {
+                        TickShape()
+                            .trim(from: 0, to: drawn ? 1 : 0)
+                            .stroke(Color.green,
+                                    style: StrokeStyle(lineWidth: 3.5, lineCap: .round,
+                                                       lineJoin: .round))
+                    } else {
+                        CrossShape()
+                            .trim(from: 0, to: drawn ? 1 : 0)
+                            .stroke(Color.red,
+                                    style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+                    }
+                }
+                .frame(width: 20, height: 20)
+            }
+            Text(message).font(.caption)
+        }
+        .padding(20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.45).delay(0.05)) { drawn = true }
+        }
+    }
+}
+
+struct TickShape: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.midY + r.height * 0.08))
+        p.addLine(to: CGPoint(x: r.minX + r.width * 0.36, y: r.maxY - r.height * 0.08))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.minY + r.height * 0.1))
+        return p
+    }
+}
+
+struct CrossShape: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
+        p.move(to: CGPoint(x: r.maxX, y: r.minY))
+        p.addLine(to: CGPoint(x: r.minX, y: r.maxY))
+        return p
     }
 }
 
