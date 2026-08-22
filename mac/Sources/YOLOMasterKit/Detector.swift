@@ -753,6 +753,7 @@ public final class Detector {
         let u = 4
         let umw = mw * u, umh = mh * u, uplane = umw * umh
         var field = [Float](repeating: 0, count: uplane)   // upscaled sigmoid field
+        var hbuf = [Float](repeating: 0, count: mh * umw)  // horizontal-pass scratch
         var px = [UInt8](repeating: 0, count: uplane * 4)
         // per-det tint, fully vectorized (the scalar smoothstep loop was the other
         // debug-visible hot spot): coverage a = smoothstep(t) * alphaMax as vDSP
@@ -765,15 +766,40 @@ public final class Detector {
         for (r, d) in usable.enumerated() {
             let comps = classColor(d.cls).components ?? [1, 0.25, 0.25, 1]
             let cr = Float(comps[0]), cg = Float(comps[1]), cb = Float(comps[2])
-            acc.withUnsafeMutableBufferPointer { ap in
-                var src = vImage_Buffer(data: ap.baseAddress! + r * plane,
-                                        height: vImagePixelCount(mh),
-                                        width: vImagePixelCount(mw), rowBytes: mw * 4)
-                field.withUnsafeMutableBufferPointer { fp in
-                    var dst = vImage_Buffer(data: fp.baseAddress,
-                                            height: vImagePixelCount(umh),
-                                            width: vImagePixelCount(umw), rowBytes: umw * 4)
-                    vImageScale_PlanarF(&src, &dst, nil, vImage_Flags(kvImageEdgeExtend))
+            // Separable BILINEAR upscale, two vDSP passes. Deliberately NOT
+            // Lanczos (vImageScale): its negative lobes ring on a near-binary
+            // field, dipping interior values below the threshold band - seen
+            // on-device as pinholes and uneven opacity. Bilinear is monotone:
+            // interiors stay saturated, contours stay smooth curves.
+            acc.withUnsafeBufferPointer { ap in
+                let sp = ap.baseAddress! + r * plane
+                hbuf.withUnsafeMutableBufferPointer { hb in
+                    let hp = hb.baseAddress!
+                    for p in 0..<u {
+                        var w1 = Float(p) / Float(u)
+                        var w0 = 1 - w1
+                        for row in 0..<mh {
+                            let s = sp + row * mw
+                            vDSP_vsmsma(s, 1, &w0, s + 1, 1, &w1,
+                                        hp + row * umw + p, vDSP_Stride(u), vDSP_Length(mw - 1))
+                            hp[row * umw + (mw - 1) * u + p] = s[mw - 1]   // edge extend
+                        }
+                    }
+                }
+            }
+            hbuf.withUnsafeBufferPointer { hb in
+                let hp = hb.baseAddress!
+                field.withUnsafeMutableBufferPointer { fb in
+                    let fp = fb.baseAddress!
+                    for p in 0..<u {
+                        var w1 = Float(p) / Float(u)
+                        var w0 = 1 - w1
+                        for row in 0..<mh {
+                            let nxt = min(row + 1, mh - 1)                 // edge extend
+                            vDSP_vsmsma(hp + row * umw, 1, &w0, hp + nxt * umw, 1, &w1,
+                                        fp + (row * u + p) * umw, 1, vDSP_Length(umw))
+                        }
+                    }
                 }
             }
             // t = clip((sigmoid - e0) * inv, 0, 1); a = t*t*(3 - 2t) * alphaMax
