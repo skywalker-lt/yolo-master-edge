@@ -306,8 +306,18 @@ struct LiveView: View {
 
     private var controls: some View {
         HStack {
-            Picker("Model", selection: $selectedModel) {
-                ForEach(models) { m in Text(m.shortID).lineLimit(1).fixedSize().tag(Optional(m)) }
+            Menu {
+                Picker("Model", selection: $selectedModel) {
+                    ForEach(models) { m in
+                        Text(m.fullName).tag(Optional(m))
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Text(selectedModel?.shortID ?? "Model").lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                }
             }
             .fixedSize()
             .disabled(wantRun)          // pause inference before switching (mac GUI rule)

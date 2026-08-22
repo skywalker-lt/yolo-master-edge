@@ -6,10 +6,22 @@ import Foundation
 import YOLOMasterKit
 
 struct BundledModel: Identifiable, Hashable {
-    let id: String       // display name, e.g. "p03_v01n_coco_fp16"
+    let id: String       // bundle stem, e.g. "p03_v01n_coco_fp16"
     let url: URL         // compiled .mlmodelc inside the app bundle
-    /// UI label: everything after the sixth character is noise on a phone screen
-    var shortID: String { String(id.prefix(6)) }
+    /// Canonical display name: every model is presented as YOLO-Master-<stem>
+    /// (existing YOLO-Master prefixes are normalized, never doubled).
+    var fullName: String {
+        var base = id
+        for p in ["yolo-master-", "yolo-master_", "yolo_master_", "yolomaster-"]
+        where base.lowercased().hasPrefix(p) {
+            base = String(base.dropFirst(p.count))
+            break
+        }
+        return "YOLO-Master-" + base
+    }
+    /// Collapsed menu-bar label: truncated ("YOLO-Mas..."); the open candidate
+    /// list shows `fullName`.
+    var shortID: String { String(fullName.prefix(8)) + "..." }
 
     static func discover() -> [BundledModel] {
         var found: [BundledModel] = []
