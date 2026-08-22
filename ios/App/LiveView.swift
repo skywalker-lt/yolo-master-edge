@@ -55,6 +55,8 @@ struct LiveView: View {
     @State private var statMask: Double = 0
     @State private var statHz: Double = 0
     @State private var statDets = 0
+    @State private var statLoopHz: Double = 0   // ACTUAL label refresh rate
+    @State private var statCamHz: Double = 0    // sensor->app frame delivery rate
     @State private var maskImage: CGImage?          // seg: per-frame composite overlay
     @State private var isSegModel = false           // set once the running Detector loads
     @State private var classNames: [String] = cocoNames
@@ -175,6 +177,10 @@ struct LiveView: View {
                     StatsHUD(fps: statHz, pre: statPre, inf: statInf,
                              dec: statDec, dets: statDets,
                              active: running && !loadingModel,
+                             extras: running && !loadingModel
+                                 ? [("camera", String(format: "%.1f fps", statCamHz)),
+                                    ("loop", String(format: "%.1f fps", statLoopHz))]
+                                 : [],
                              mask: isSegModel ? statMask : nil)
                         .padding(.bottom, 20)
                 }
@@ -437,6 +443,7 @@ struct LiveView: View {
                     uiHz = Double(uiTicks) / (nowT - uiWindowStart)
                     uiTicks = 0; uiWindowStart = nowT
                 }
+                let camHz = cameraRef.deliveryRate()
 
                 let w = CGFloat(CVPixelBufferGetWidth(pb))
                 let h = CGFloat(CVPixelBufferGetHeight(pb))
@@ -455,6 +462,8 @@ struct LiveView: View {
                     statDec = decMS
                     statMask = maskMS
                     statHz = e2eFPS
+                    statLoopHz = uiHz
+                    statCamHz = camHz
                     statDets = dets.count
                     frameSize = CGSize(width: w, height: h)
                 }
@@ -585,6 +594,8 @@ struct LiveView: View {
         statDec = 0
         statMask = 0
         statHz = 0
+        statLoopHz = 0
+        statCamHz = 0
         statDets = 0
     }
 
