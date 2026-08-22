@@ -54,6 +54,9 @@ struct PhotoTestView: View {
     @State private var exportOK = false
     @State private var exportToastGen = 0            // auto-dismiss generation
 
+    private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
+    private let notifyHaptic = UINotificationFeedbackGenerator()
+
     private let gridCols = [GridItem(.flexible(), spacing: 4),
                             GridItem(.flexible(), spacing: 4),
                             GridItem(.flexible(), spacing: 4)]
@@ -78,6 +81,8 @@ struct PhotoTestView: View {
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top) { controls }
             .onAppear {
+                lightHaptic.prepare()
+                notifyHaptic.prepare()
                 guard models.isEmpty else { return }
                 Task.detached {
                     let found = BundledModel.discover()
@@ -263,6 +268,8 @@ struct PhotoTestView: View {
             Spacer(minLength: 0)
             if !images.isEmpty {
                 Button {
+                    lightHaptic.impactOccurred()
+                    lightHaptic.prepare()
                     withAnimation { viewMode = viewMode == .gallery ? .pager : .gallery }
                 } label: {
                     Image(systemName: viewMode == .gallery
@@ -271,6 +278,8 @@ struct PhotoTestView: View {
                 .buttonStyle(.bordered)
                 // pager: export THIS image; gallery: export the whole batch
                 Button {
+                    lightHaptic.impactOccurred()
+                    lightHaptic.prepare()
                     exportImages(viewMode == .pager ? [page] : Array(images.indices))
                 } label: {
                     if exporting {
@@ -520,6 +529,10 @@ struct PhotoTestView: View {
                 exportOK = ok
                 exportToastGen += 1
                 let gen = exportToastGen
+                // App Store purchase-style feedback: the system success
+                // notification haptic paired with the tick drawing in
+                notifyHaptic.notificationOccurred(ok ? .success : .error)
+                notifyHaptic.prepare()
                 withAnimation(.spring(duration: 0.3)) {
                     exportMsg = ok
                         ? (n == 1 ? "Saved 1 image to Photos" : "Saved \(n) images to Photos")
