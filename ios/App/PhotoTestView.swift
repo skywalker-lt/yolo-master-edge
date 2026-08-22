@@ -128,7 +128,7 @@ struct PhotoTestView: View {
         } else {
             TabView(selection: $page) {
                 ForEach(images.indices, id: \.self) { i in
-                    ZoomableView(onPinchExit: {
+                    ZoomableScrollView(onPinchExit: {
                         withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
                     }) {
                         annotated(images[i], results.indices.contains(i) ? results[i] : [])
@@ -385,63 +385,85 @@ struct PhotoTestView: View {
     }
 }
 
+/// Photos-app zoom behavior via UIScrollView: pinch zoom anchored at the
+/// fingers, one-finger pan ONLY while zoomed (1x swipes pass through to the
+/// pager), double-tap zooms to the tapped point, and pinching below minimum
+/// zoom (bounce region) exits to the gallery.
+struct ZoomableScrollView<Content: View>: UIViewRepresentable {
+    var onPinchExit: (() -> Void)?
+    @ViewBuilder var content: Content
 
-
-/// Pinch-zoomable page: zoom 1-5x with pan when zoomed, double-tap toggles
-/// 1x/2.5x, and pinching IN below 1x (with live shrink feedback) exits to the
-/// gallery - far more responsive than a hard end-of-gesture threshold.
-struct ZoomableView<Content: View>: View {
-    let onPinchExit: () -> Void
-    @ViewBuilder let content: Content
-    @State private var zoom: CGFloat = 1
-    @State private var baseZoom: CGFloat = 1
-    @State private var offset: CGSize = .zero
-    @State private var baseOffset: CGSize = .zero
-
-    var body: some View {
-        content
-            .scaleEffect(zoom)
-            .offset(offset)
-            .gesture(
-                MagnifyGesture()
-                    .onChanged { v in
-                        // below-1x rubber-band (the exit affordance) exists ONLY
-                        // when the gesture started at minimum zoom; zoomed-in
-                        // pinches bottom out at 1x
-                        let lower: CGFloat = baseZoom <= 1.01 ? 0.6 : 1
-                        zoom = min(max(baseZoom * v.magnification, lower), 5)
-                    }
-                    .onEnded { v in
-                        let target = baseZoom * v.magnification
-                        if baseZoom <= 1.01 && target < 0.95 {   // sensitive exit
-                            reset()
-                            onPinchExit()
-                            return
-                        }
-                        zoom = min(max(target, 1), 5)
-                        baseZoom = zoom
-                        if zoom <= 1.01 { withAnimation(.spring(duration: 0.25)) { offset = .zero }; baseOffset = .zero }
-                    }
-            )
-            .simultaneousGesture(
-                DragGesture()
-                    .onChanged { g in
-                        guard baseZoom > 1.01 else { return }
-                        offset = CGSize(width: baseOffset.width + g.translation.width,
-                                        height: baseOffset.height + g.translation.height)
-                    }
-                    .onEnded { _ in baseOffset = offset }
-            )
-            .onTapGesture(count: 2) {
-                withAnimation(.spring(duration: 0.3)) {
-                    if zoom > 1.5 { reset() } else { zoom = 2.5; baseZoom = 2.5 }
-                }
-            }
-            .animation(.easeOut(duration: 0.1), value: zoom)
-            .onDisappear { reset() }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(host: UIHostingController(rootView: content))
     }
 
-    private func reset() {
-        zoom = 1; baseZoom = 1; offset = .zero; baseOffset = .zero
+    func makeUIView(context: Context) -> UIScrollView {
+        let sv = UIScrollView()
+        sv.minimumZoomScale = 1
+        sv.maximumZoomScale = 5
+        sv.bouncesZoom = true
+        sv.showsHorizontalScrollIndicator = false
+        sv.showsVerticalScrollIndicator = false
+        sv.contentInsetAdjustmentBehavior = .never
+        sv.backgroundColor = .clear
+        sv.delegate = context.coordinator
+        let hostView = context.coordinator.host.view!
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+        hostView.backgroundColor = .clear
+        sv.addSubview(hostView)
+        NSLayoutConstraint.activate([
+            hostView.leadingAnchor.constraint(equalTo: sv.contentLayoutGuide.leadingAnchor),
+            hostView.trailingAnchor.constraint(equalTo: sv.contentLayoutGuide.trailingAnchor),
+            hostView.topAnchor.constraint(equalTo: sv.contentLayoutGuide.topAnchor),
+            hostView.bottomAnchor.constraint(equalTo: sv.contentLayoutGuide.bottomAnchor),
+            hostView.widthAnchor.constraint(equalTo: sv.frameLayoutGuide.widthAnchor),
+            hostView.heightAnchor.constraint(equalTo: sv.frameLayoutGuide.heightAnchor),
+        ])
+        let dt = UITapGestureRecognizer(target: context.coordinator,
+                                        action: #selector(Coordinator.doubleTap(_:)))
+        dt.numberOfTapsRequired = 2
+        sv.addGestureRecognizer(dt)
+        return sv
+    }
+
+    func updateUIView(_ sv: UIScrollView, context: Context) {
+        context.coordinator.host.rootView = content
+        context.coordinator.onPinchExit = onPinchExit
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        let host: UIHostingController<Content>
+        var onPinchExit: (() -> Void)?
+        private var exitFired = false
+        init(host: UIHostingController<Content>) { self.host = host }
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { host.view }
+
+        func scrollViewDidZoom(_ sv: UIScrollView) {
+            // bounce region below minimum zoom = the gallery-exit affordance;
+            // only reachable when the pinch started at 1x
+            if !exitFired, sv.zoomScale < sv.minimumZoomScale * 0.85,
+               sv.pinchGestureRecognizer?.state == .changed {
+                exitFired = true
+                onPinchExit?()
+            }
+        }
+
+        func scrollViewDidEndZooming(_ sv: UIScrollView, with view: UIView?,
+                                     atScale scale: CGFloat) {
+            exitFired = false
+        }
+
+        @objc func doubleTap(_ gr: UITapGestureRecognizer) {
+            guard let sv = gr.view as? UIScrollView else { return }
+            if sv.zoomScale > sv.minimumZoomScale * 1.3 {
+                sv.setZoomScale(sv.minimumZoomScale, animated: true)
+            } else {
+                let p = gr.location(in: host.view)
+                let w = sv.bounds.width / 2.5, h = sv.bounds.height / 2.5
+                sv.zoom(to: CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h),
+                        animated: true)
+            }
+        }
     }
 }
