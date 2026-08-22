@@ -6,13 +6,32 @@ import YOLOMasterKit
 
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    /// Tap callback with BOTH spaces: capture-device point (for focus) and
+    /// layer point (for drawing the focus indicator).
+    var onTap: ((CGPoint, CGPoint) -> Void)? = nil
     func makeUIView(context: Context) -> PreviewView {
         let v = PreviewView()
         v.videoPreviewLayer.session = session
         v.videoPreviewLayer.videoGravity = .resizeAspectFill
+        let tap = UITapGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.tapped(_:)))
+        v.addGestureRecognizer(tap)
         return v
     }
-    func updateUIView(_ uiView: PreviewView, context: Context) {}
+    func updateUIView(_ uiView: PreviewView, context: Context) {
+        context.coordinator.parent = self
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    final class Coordinator: NSObject {
+        var parent: CameraPreview
+        init(_ p: CameraPreview) { parent = p }
+        @objc func tapped(_ gr: UITapGestureRecognizer) {
+            guard let v = gr.view as? PreviewView else { return }
+            let lp = gr.location(in: v)
+            let dp = v.videoPreviewLayer.captureDevicePointConverted(fromLayerPoint: lp)
+            parent.onTap?(dp, lp)
+        }
+    }
     final class PreviewView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         var videoPreviewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
@@ -41,7 +60,9 @@ struct LiveView: View {
     @State private var showHUD = true
     @State private var style: BoxStyle = .chip
     @StateObject private var tuning = Tuning()
-    @State private var zoomBase: CGFloat = 1  // camera zoom factor at gesture start
+    @State private var zoomBase: CGFloat = 1  // display zoom factor at gesture start
+    @State private var focusPoint: CGPoint?   // last tap, preview-layer coords
+    @State private var focusVisible = false
     @State private var loadingModel = false   // Detector init in flight (compile + unit load)
     @State private var running = false        // loop actually alive
     @State private var wantRun = true         // the user's intent - survives tab
@@ -71,8 +92,23 @@ struct LiveView: View {
                 // full-screen, safe area ignored together, or boxes shear by
                 // the notch/home-bar insets
                 ZStack {
-                    CameraPreview(session: camera.session)
+                    CameraPreview(session: camera.session) { dp, lp in
+                        camera.focus(atDevicePoint: dp)
+                        focusPoint = lp
+                        withAnimation(.easeOut(duration: 0.15)) { focusVisible = true }
+                        Task {
+                            try? await Task.sleep(nanoseconds: 900_000_000)
+                            withAnimation(.easeOut(duration: 0.3)) { focusVisible = false }
+                        }
+                    }
                     overlay
+                    if let fp = focusPoint, focusVisible {
+                        RoundedRectangle(cornerRadius: 3)
+                            .stroke(.yellow, lineWidth: 1.5)
+                            .frame(width: 72, height: 72)
+                            .position(fp)
+                            .transition(.opacity)
+                    }
                 }
                 .ignoresSafeArea()
                 .gesture(
@@ -95,6 +131,14 @@ struct LiveView: View {
             }
             VStack {
                 Spacer()
+                if camera.authorized, !models.isEmpty {
+                    Text(zoomLabel)
+                        .font(.caption.monospacedDigit().bold())
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.bottom, 6)
+                }
                 if showHUD {
                     StatsHUD(fps: statHz, pre: statPre, inf: statInf,
                              dec: statDec, dets: statDets, active: running,
@@ -146,6 +190,12 @@ struct LiveView: View {
         }
     }
 
+    /// Camera-app style: whole numbers bare (1x, 2x), fractions one decimal (0.5x, 2.4x).
+    private var zoomLabel: String {
+        let r = (camera.displayZoom * 10).rounded() / 10
+        return r == r.rounded() ? "\(Int(r))x" : String(format: "%.1fx", r)
+    }
+
     private var controls: some View {
         HStack {
             Picker("Model", selection: $selectedModel) {
@@ -164,6 +214,13 @@ struct LiveView: View {
                 Image(systemName: "slider.horizontal.3")
             }
             .buttonStyle(.bordered)
+            Button {
+                camera.setTorch(!camera.torchOn)
+            } label: {
+                Image(systemName: camera.torchOn ? "flashlight.on.fill" : "flashlight.off.fill")
+            }
+            .buttonStyle(.bordered)
+            .tint(camera.torchOn ? .yellow : nil)
             Button {
                 if wantRun { wantRun = false; stopLoop() }
                 else { wantRun = true; startLoop() }

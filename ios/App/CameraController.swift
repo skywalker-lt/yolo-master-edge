@@ -16,20 +16,57 @@ final class CameraController: NSObject, ObservableObject,
     private let latestLock = NSLock()
     private var device: AVCaptureDevice?
     @Published var authorized = false
+    /// videoZoomFactor of the 1x (wide) lens. On virtual multi-cam devices the
+    /// factor space starts at the ULTRA-WIDE lens, so 1x = the first switch-over
+    /// factor; on single-camera phones (iPhone Air) it stays 1.
+    private(set) var zoomBias: CGFloat = 1
+    /// User-facing zoom (0.5x / 1x / 2x...), published for the HUD chip.
+    @Published var displayZoom: CGFloat = 1
+    @Published var torchOn = false
 
-    /// Pinch-zoom: set the capture zoom factor (focal change happens in the
-    /// capture pipeline, so detection frames and preview zoom together).
-    /// Returns the clamped factor actually applied.
+    /// Pinch-zoom in DISPLAY units (1 = wide lens, 0.5 = ultra-wide). The
+    /// virtual device switches lenses automatically as the factor crosses its
+    /// switch-over points. Returns the clamped display factor actually applied.
     @discardableResult
-    func setZoom(_ factor: CGFloat) -> CGFloat {
+    func setZoom(_ display: CGFloat) -> CGFloat {
         guard let dev = device else { return 1 }
-        let maxZ = min(dev.activeFormat.videoMaxZoomFactor, 16)
-        let z = min(max(factor, 1), maxZ)
+        let maxD = min(dev.activeFormat.videoMaxZoomFactor / zoomBias, 16)
+        let d = min(max(display, 1 / zoomBias), maxD)
         if (try? dev.lockForConfiguration()) != nil {
-            dev.videoZoomFactor = z
+            dev.videoZoomFactor = d * zoomBias
             dev.unlockForConfiguration()
         }
-        return z
+        DispatchQueue.main.async { self.displayZoom = d }
+        return d
+    }
+
+    /// Tap-to-focus: point in capture-device space (from
+    /// `captureDevicePointConverted`). Also re-anchors exposure there.
+    func focus(atDevicePoint p: CGPoint) {
+        guard let dev = device, (try? dev.lockForConfiguration()) != nil else { return }
+        if dev.isFocusPointOfInterestSupported {
+            dev.focusPointOfInterest = p
+            dev.focusMode = .autoFocus
+        }
+        if dev.isExposurePointOfInterestSupported {
+            dev.exposurePointOfInterest = p
+            dev.exposureMode = .autoExpose
+        }
+        dev.unlockForConfiguration()
+    }
+
+    /// Persistent torch: the desired state is kept and re-asserted every time
+    /// the session (re)starts, since AVFoundation drops the torch on stop.
+    func setTorch(_ on: Bool) {
+        torchOn = on
+        queue.async { self.applyTorch() }
+    }
+
+    private func applyTorch() {
+        guard let dev = device, dev.hasTorch,
+              (try? dev.lockForConfiguration()) != nil else { return }
+        dev.torchMode = torchOn && dev.isTorchAvailable ? .on : .off
+        dev.unlockForConfiguration()
     }
 
     func start() {
@@ -41,16 +78,35 @@ final class CameraController: NSObject, ObservableObject,
     }
 
     private func configure() {
-        guard session.inputs.isEmpty else { session.startRunning(); return }
+        guard session.inputs.isEmpty else {
+            session.startRunning()
+            applyTorch()
+            return
+        }
         session.beginConfiguration()
         session.sessionPreset = .hd1280x720
-        guard let dev = AVCaptureDevice.default(.builtInWideAngleCamera,
-                                                for: .video, position: .back),
+        // best virtual multi-cam first: the device auto-switches lenses as the
+        // zoom factor crosses its switch-over points (ultra-wide/wide/tele)
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInTripleCamera, .builtInDualWideCamera,
+                          .builtInDualCamera, .builtInWideAngleCamera],
+            mediaType: .video, position: .back)
+        guard let dev = discovery.devices.first,
               let input = try? AVCaptureDeviceInput(device: dev),
               session.canAddInput(input) else {
             session.commitConfiguration(); return
         }
         device = dev
+        if dev.isVirtualDevice,
+           dev.constituentDevices.contains(where: { $0.deviceType == .builtInUltraWideCamera }),
+           let so = dev.virtualDeviceSwitchOverVideoZoomFactors.first {
+            zoomBias = CGFloat(truncating: so)
+        }
+        if (try? dev.lockForConfiguration()) != nil {
+            dev.videoZoomFactor = zoomBias    // start on the wide lens = 1x
+            dev.unlockForConfiguration()
+        }
+        DispatchQueue.main.async { self.displayZoom = 1 }
         session.addInput(input)
         let out = AVCaptureVideoDataOutput()
         out.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String:
@@ -62,6 +118,7 @@ final class CameraController: NSObject, ObservableObject,
         out.connection(with: .video)?.videoRotationAngle = 90   // portrait
         session.commitConfiguration()
         session.startRunning()
+        applyTorch()
     }
 
     func stop() { queue.async { self.session.stopRunning() } }
