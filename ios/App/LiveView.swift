@@ -295,12 +295,6 @@ struct LiveView: View {
             .fixedSize()
             .disabled(wantRun)
             Button {
-                withAnimation { showTuning.toggle() }
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-            }
-            .buttonStyle(.bordered)
-            Button {
                 camera.setTorch(!camera.torchOn)
             } label: {
                 Image(systemName: camera.torchOn ? "flashlight.on.fill" : "flashlight.off.fill")
@@ -308,10 +302,17 @@ struct LiveView: View {
             .buttonStyle(.bordered)
             .tint(camera.torchOn ? .yellow : nil)
             Button {
+                withAnimation { showTuning.toggle() }
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+            }
+            .buttonStyle(.bordered)
+            Button {
                 if wantRun { wantRun = false; stopLoop() }
                 else { wantRun = true; startLoop() }
             } label: {
                 Image(systemName: wantRun ? "pause.fill" : "play.fill")
+                    .frame(minWidth: 44)
             }
             .buttonStyle(.borderedProminent)
             .tint(wantRun ? .red : .accentColor)
