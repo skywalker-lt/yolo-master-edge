@@ -4,9 +4,11 @@
 import AVFoundation
 import CoreVideo
 import Foundation
+import UIKit
 
 final class CameraController: NSObject, ObservableObject,
-                              AVCaptureVideoDataOutputSampleBufferDelegate {
+                              AVCaptureVideoDataOutputSampleBufferDelegate,
+                              AVCapturePhotoCaptureDelegate {
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "yolomaster.camera", qos: .userInitiated)
     /// Latest frame, overwritten continuously; the detection loop pulls at its own pace
@@ -22,7 +24,12 @@ final class CameraController: NSObject, ObservableObject,
     private(set) var zoomBias: CGFloat = 1
     /// User-facing zoom (0.5x / 1x / 2x...), published for the HUD chip.
     @Published var displayZoom: CGFloat = 1
+    /// Native lens factors in display units (e.g. [0.5, 1, 4]) for the lens picker.
+    @Published var lensFactors: [CGFloat] = [1]
     @Published var torchOn = false
+    private let photoOutput = AVCapturePhotoOutput()
+    private var photoDone: ((CGImage?) -> Void)?
+    private var focusRevert: DispatchWorkItem?
 
     /// Pinch-zoom in DISPLAY units (1 = wide lens, 0.5 = ultra-wide). The
     /// virtual device switches lenses automatically as the factor crosses its
@@ -41,7 +48,9 @@ final class CameraController: NSObject, ObservableObject,
     }
 
     /// Tap-to-focus: point in capture-device space (from
-    /// `captureDevicePointConverted`). Also re-anchors exposure there.
+    /// `captureDevicePointConverted`). Also re-anchors exposure there. Reverts
+    /// to continuous AF/AE after 5s: a lingering one-shot focus lock pins the
+    /// active constituent lens, which blocks the tele switch-over on zoom.
     func focus(atDevicePoint p: CGPoint) {
         guard let dev = device, (try? dev.lockForConfiguration()) != nil else { return }
         if dev.isFocusPointOfInterestSupported {
@@ -53,6 +62,54 @@ final class CameraController: NSObject, ObservableObject,
             dev.exposureMode = .autoExpose
         }
         dev.unlockForConfiguration()
+        focusRevert?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.revertFocus() }
+        focusRevert = work
+        queue.asyncAfter(deadline: .now() + 5, execute: work)
+    }
+
+    private func revertFocus() {
+        guard let dev = device, (try? dev.lockForConfiguration()) != nil else { return }
+        if dev.isFocusModeSupported(.continuousAutoFocus) { dev.focusMode = .continuousAutoFocus }
+        if dev.isExposureModeSupported(.continuousAutoExposure) { dev.exposureMode = .continuousAutoExposure }
+        dev.unlockForConfiguration()
+    }
+
+    /// Full-resolution still through AVCapturePhotoOutput (the video frames are
+    /// only 720p). Delivered upright with EXIF orientation baked into pixels;
+    /// nil when the output is unavailable (caller falls back to the video frame).
+    func capturePhoto(_ done: @escaping (CGImage?) -> Void) {
+        queue.async {
+            guard self.session.outputs.contains(self.photoOutput) else {
+                DispatchQueue.main.async { done(nil) }
+                return
+            }
+            self.photoDone = done
+            let st = AVCapturePhotoSettings()
+            st.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
+            if let c = self.photoOutput.connection(with: .video) { c.videoRotationAngle = 90 }
+            self.photoOutput.capturePhoto(with: st, delegate: self)
+        }
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput,
+                     didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        var cg: CGImage?
+        if error == nil, let data = photo.fileDataRepresentation(),
+           let ui = UIImage(data: data) {
+            if ui.imageOrientation == .up {
+                cg = ui.cgImage
+            } else {
+                let fmt = UIGraphicsImageRendererFormat()
+                fmt.scale = 1
+                cg = UIGraphicsImageRenderer(size: ui.size, format: fmt).image { _ in
+                    ui.draw(in: CGRect(origin: .zero, size: ui.size))
+                }.cgImage
+            }
+        }
+        let out = cg, cb = photoDone
+        photoDone = nil
+        DispatchQueue.main.async { cb?(out) }
     }
 
     /// Persistent torch: the desired state is kept and re-asserted every time
@@ -97,16 +154,32 @@ final class CameraController: NSObject, ObservableObject,
             session.commitConfiguration(); return
         }
         device = dev
-        if dev.isVirtualDevice,
-           dev.constituentDevices.contains(where: { $0.deviceType == .builtInUltraWideCamera }),
-           let so = dev.virtualDeviceSwitchOverVideoZoomFactors.first {
-            zoomBias = CGFloat(truncating: so)
+        let switchOvers = dev.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat(truncating: $0) }
+        let hasUW = dev.constituentDevices.contains { $0.deviceType == .builtInUltraWideCamera }
+        if dev.isVirtualDevice, hasUW, let so = switchOvers.first {
+            zoomBias = so
         }
+        // display-unit native lens stops: 1x wide, 0.5x ultra-wide when present,
+        // every further switch-over (tele) above
+        var stops: [CGFloat] = [1]
+        if hasUW { stops.append(1 / zoomBias) }
+        stops.append(contentsOf: (hasUW ? Array(switchOvers.dropFirst()) : switchOvers)
+            .map { $0 / zoomBias })
+        let lens = stops.sorted()
         if (try? dev.lockForConfiguration()) != nil {
+            if dev.isVirtualDevice {
+                // no focus/exposure restrictions on lens hand-off: without this
+                // (and with a stale focus lock) the tele never engages
+                dev.setPrimaryConstituentDeviceSwitchingBehavior(
+                    .auto, restrictedSwitchingBehaviorConditions: [])
+            }
             dev.videoZoomFactor = zoomBias    // start on the wide lens = 1x
             dev.unlockForConfiguration()
         }
-        DispatchQueue.main.async { self.displayZoom = 1 }
+        DispatchQueue.main.async {
+            self.displayZoom = 1
+            self.lensFactors = lens
+        }
         session.addInput(input)
         let out = AVCaptureVideoDataOutput()
         out.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String:
@@ -116,6 +189,12 @@ final class CameraController: NSObject, ObservableObject,
         guard session.canAddOutput(out) else { session.commitConfiguration(); return }
         session.addOutput(out)
         out.connection(with: .video)?.videoRotationAngle = 90   // portrait
+        if session.canAddOutput(photoOutput) {
+            session.addOutput(photoOutput)
+            if let dims = dev.activeFormat.supportedMaxPhotoDimensions.last {
+                photoOutput.maxPhotoDimensions = dims   // full stills off a video format
+            }
+        }
         session.commitConfiguration()
         session.startRunning()
         applyTorch()
