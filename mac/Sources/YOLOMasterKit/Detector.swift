@@ -636,10 +636,14 @@ public final class Detector {
     /// detections' coefficients form one [N,nm] matrix, and a single SGEMM ([N,nm]x[nm,plane],
     /// dispatched to the AMX matrix units) plus vectorized sigmoid produce every mask grid in
     /// one shot. Only the cheap per-pixel tint + the GPU-backed CG composite remain per mask.
-    public func maskOverlay(_ dets: [Detection], _ raw: RawOutput) -> CGImage? {
+    /// `maxSide` > 0 renders the composite at a downscaled resolution (longest side capped);
+    /// callers draw the overlay stretched over the image, and the proto grid is only 160px,
+    /// so nothing is lost - it just avoids a full-res RGBA canvas per large photo.
+    public func maskOverlay(_ dets: [Detection], _ raw: RawOutput, maxSide: Int = 0) -> CGImage? {
         guard isSegment, let proto = raw.proto, proto.shape.count == 4, !dets.isEmpty else { return nil }
-        let w = raw.origW, h = raw.origH
-        guard w > 0, h > 0 else { return nil }
+        guard raw.origW > 0, raw.origH > 0 else { return nil }
+        let f: CGFloat = maxSide > 0 ? min(1, CGFloat(maxSide) / CGFloat(max(raw.origW, raw.origH))) : 1
+        let w = max(1, Int((CGFloat(raw.origW) * f).rounded())), h = max(1, Int((CGFloat(raw.origH) * f).rounded()))
         let cm = proto.shape[1].intValue, mh = proto.shape[2].intValue, mw = proto.shape[3].intValue
         let plane = mh * mw
         guard cm > 0, plane > 0 else { return nil }
@@ -728,7 +732,8 @@ public final class Detector {
                              width: crop.width * CGFloat(mw), height: crop.height * CGFloat(mh))
             guard sub.width > 0, sub.height > 0, let cropped = img.cropping(to: sub) else { continue }
             ctx.saveGState()
-            ctx.clip(to: CGRect(x: d.rect.minX, y: CGFloat(h) - d.rect.maxY, width: d.rect.width, height: d.rect.height))
+            ctx.clip(to: CGRect(x: d.rect.minX * f, y: CGFloat(h) - d.rect.maxY * f,
+                                width: d.rect.width * f, height: d.rect.height * f))
             ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))  // upright, matches Canvas top-left mapping
             ctx.restoreGState()
             drew = true
