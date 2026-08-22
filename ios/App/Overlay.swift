@@ -31,6 +31,18 @@ private let palette: [Color] = [
 ]
 private let darkText: Set<Int> = [2, 3, 6, 8]   // light palette entries -> black label text
 
+extension BoxStyle {
+    /// Nearest Kit `annotate` style for baked exports (chip/minimal have no
+    /// direct Kit equivalent).
+    var kitStyle: YOLOMasterKit.BoxStyle {
+        switch self {
+        case .neon: return .neon
+        case .hud, .minimal: return .hud
+        default: return .solid
+        }
+    }
+}
+
 enum DetOverlay {
     /// `boxes: false` (segmentation masks-only mode) keeps the per-style labels but
     /// skips the box geometry - the mask carries the shape.
