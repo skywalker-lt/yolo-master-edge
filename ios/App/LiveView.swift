@@ -36,6 +36,7 @@ struct LiveView: View {
     @State private var showHUD = true
     @State private var style: BoxStyle = .chip
     @StateObject private var tuning = Tuning()
+    @State private var zoomBase: CGFloat = 1  // camera zoom factor at gesture start
     @State private var running = false        // loop actually alive
     @State private var wantRun = false        // the user's intent - survives tab
                                               // switches and app backgrounding
@@ -54,7 +55,13 @@ struct LiveView: View {
                 ZStack {
                     CameraPreview(session: camera.session)
                     overlay
-                }.ignoresSafeArea()
+                }
+                .ignoresSafeArea()
+                .gesture(
+                    MagnifyGesture()
+                        .onChanged { v in camera.setZoom(zoomBase * v.magnification) }
+                        .onEnded { v in zoomBase = camera.setZoom(zoomBase * v.magnification) }
+                )
             } else {
                 ContentUnavailableView("Camera access required",
                                        systemImage: "camera.fill")
