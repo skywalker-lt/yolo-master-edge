@@ -8,20 +8,20 @@ import YOLOMasterKit
 struct BundledModel: Identifiable, Hashable {
     let id: String       // bundle stem, e.g. "p03_v01n_coco_fp16"
     let url: URL         // compiled .mlmodelc inside the app bundle
+    /// Distinctive part of the name (the canonical YOLO-Master prefix stripped).
+    private var stem: String {
+        for p in ["yolo-master-", "yolo-master_", "yolo_master_", "yolomaster-"]
+        where id.lowercased().hasPrefix(p) {
+            return String(id.dropFirst(p.count))
+        }
+        return id
+    }
     /// Canonical display name: every model is presented as YOLO-Master-<stem>
     /// (existing YOLO-Master prefixes are normalized, never doubled).
-    var fullName: String {
-        var base = id
-        for p in ["yolo-master-", "yolo-master_", "yolo_master_", "yolomaster-"]
-        where base.lowercased().hasPrefix(p) {
-            base = String(base.dropFirst(p.count))
-            break
-        }
-        return "YOLO-Master-" + base
-    }
-    /// Collapsed menu-bar label: truncated ("YOLO-Mas..."); the open candidate
-    /// list shows `fullName`.
-    var shortID: String { String(fullName.prefix(8)) + "..." }
+    var fullName: String { "YOLO-Master-" + stem }
+    /// Collapsed menu-bar label: the first 6 characters of the model's own name
+    /// (the stem - the shared YOLO-Master prefix carries no information there).
+    var shortID: String { stem.count > 6 ? String(stem.prefix(6)) + "..." : stem }
 
     static func discover() -> [BundledModel] {
         var found: [BundledModel] = []
