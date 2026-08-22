@@ -68,6 +68,7 @@ struct LiveView: View {
     @State private var shutterFlash = false   // brief black blink on capture
     @State private var lensExpanded = false   // zoom chip expanded to lens buttons
     @State private var lensCollapse: Task<Void, Never>?
+    @State private var lensRect: CGRect = .zero   // global frame of the lens picker
     private let haptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var loadingModel = false   // Detector init in flight (compile + unit load)
     @State private var running = false        // loop actually alive
@@ -99,6 +100,10 @@ struct LiveView: View {
                 // the notch/home-bar insets
                 ZStack {
                     CameraPreview(session: camera.session) { dp, lp in
+                        // dead zone: taps on or near the lens picker are zoom
+                        // interaction, never focus selection (the preview is
+                        // full-screen, so its coords equal global coords)
+                        if lensRect.insetBy(dx: -28, dy: -28).contains(lp) { return }
                         camera.focus(atDevicePoint: dp)
                         focusPoint = lp
                         withAnimation(.easeOut(duration: 0.15)) { focusVisible = true }
@@ -260,6 +265,11 @@ struct LiveView: View {
         .padding(.horizontal, lensExpanded ? 8 : 0)
         .background(.ultraThinMaterial, in: Capsule())
         .buttonStyle(.plain)
+        .background(GeometryReader { g in
+            Color.clear
+                .onAppear { lensRect = g.frame(in: .global) }
+                .onChange(of: g.frame(in: .global)) { _, r in lensRect = r }
+        })
     }
 
     /// Restart the 3s auto-collapse window.
