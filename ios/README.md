@@ -11,7 +11,8 @@ harness).
 ```bash
 brew install xcodegen              # once
 scp root@185.76.11.54:/yolotmp/p03-coreml.tar . && tar xf p03-coreml.tar
-cp -R p03_coreml/*.mlpackage ios/Models/       # models are NOT in git
+cp -R p03_coreml/*.mlpackage ios/Models/       # detection models are NOT in git
+cp -R mac/Resources/v0.1-seg-N.mlpackage ios/Models/   # segmentation model (in git)
 cd ios && xcodegen                 # -> YOLOMasterIOS.xcodeproj
 open YOLOMasterIOS.xcodeproj
 ```
@@ -24,6 +25,12 @@ the ANE only exist on-device.)
 
 - **Live tab** - camera preview with detection overlay; model and compute-unit
   (ANE / GPU / CPU) pickers; per-frame inference latency + FPS readout.
+- **Photo tab** - batch detection over up to 100 album images; gallery and
+  pager views; conf/IoU sliders retune from cached passes without re-running.
+- **Segmentation** - bundle a seg .mlpackage (e.g. v0.1-seg-N above) and both
+  tabs render instance masks tinted by class, with a Masks / Boxes / Both
+  switch in the tuning panel and a mask-compose stage bar in the HUD. Same
+  decode + SGEMM mask math as macOS, shared through the Kit.
 - **Bench tab** - the criterion harness:
   - *cold sweep*: every bundled model x every compute unit, 50-iter median +
     p90 after warmup;
