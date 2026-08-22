@@ -22,7 +22,8 @@ struct CameraPreview: UIViewRepresentable {
 struct LiveView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var camera = CameraController()
-    @State private var models = BundledModel.discover()
+    @State private var models: [BundledModel] = []
+    @State private var initializing = true    // first-launch discovery/compile in flight
     @State private var selectedModel: BundledModel?
     @State private var compute: ComputeChoice = .ane
     @State private var detections: [Detection] = []
@@ -43,16 +44,28 @@ struct LiveView: View {
     @State private var zoomBase: CGFloat = 1  // camera zoom factor at gesture start
     @State private var loadingModel = false   // Detector init in flight (compile + unit load)
     @State private var running = false        // loop actually alive
-    @State private var wantRun = false        // the user's intent - survives tab
-                                              // switches and app backgrounding
+    @State private var wantRun = true         // the user's intent - survives tab
+                                              // switches and app backgrounding;
+                                              // true at launch = cold-start auto-run
     @State private var loopTask: Task<Void, Never>?
 
     var body: some View {
         ZStack {
             if models.isEmpty {
-                ContentUnavailableView("No models bundled",
-                                       systemImage: "shippingbox",
-                                       description: Text("Copy .mlpackage files into ios/Models/, re-run xcodegen, rebuild."))
+                if initializing {
+                    // first run after install: .mlpackage -> .mlmodelc compile
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Initializing...")
+                    }
+                    .font(.caption)
+                    .padding(14)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                } else {
+                    ContentUnavailableView("No models bundled",
+                                           systemImage: "shippingbox",
+                                           description: Text("Copy .mlpackage files into ios/Models/, re-run xcodegen, rebuild."))
+                }
             } else if camera.authorized {
                 // preview and overlay MUST share one coordinate space: both
                 // full-screen, safe area ignored together, or boxes shear by
@@ -104,8 +117,23 @@ struct LiveView: View {
         }
         .onAppear {
             camera.start()
-            if selectedModel == nil { selectedModel = models.first }
-            if wantRun { startLoop() }                 // auto-resume on tab return
+            if models.isEmpty {
+                // discovery compiles bundled packages on first launch - keep it
+                // off the main thread, behind the Initializing card
+                Task.detached(priority: .userInitiated) {
+                    let found = BundledModel.discover()
+                    await MainActor.run {
+                        models = found
+                        initializing = false
+                        if selectedModel == nil {
+                            selectedModel = BundledModel.preferred(in: found)
+                        }
+                        if wantRun { startLoop() }     // cold-start auto-run
+                    }
+                }
+            } else if wantRun {
+                startLoop()                            // auto-resume on tab return
+            }
         }
         .onDisappear { suspendLoop(); camera.stop() }  // pause, intent preserved
         .onChange(of: scenePhase) { _, phase in
