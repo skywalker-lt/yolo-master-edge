@@ -38,9 +38,16 @@ struct PhotoTestView: View {
     @State private var perPre: [Double] = []
     @State private var perInf: [Double] = []
     @State private var perDec: [Double] = []
+    @State private var perMask: [Double] = []
+    @State private var statMask: Double = 0
     @State private var errorText = ""
     @State private var lastDet: Detector?
     @State private var lastRaws: [Detector.RawOutput] = []
+    @State private var maskImages: [CGImage?] = []   // seg composites, per image
+    @State private var segOverlay: SegOverlay = .both
+    @State private var isSeg = false
+    @State private var classNames: [String] = cocoNames
+    @State private var retuneGen = 0                 // drops stale async mask renders
 
     private let gridCols = [GridItem(.flexible(), spacing: 4),
                             GridItem(.flexible(), spacing: 4),
@@ -53,7 +60,9 @@ struct PhotoTestView: View {
                 if phase != .idle { progressBar }
                 if showTuning {
                     TuningPanel(conf: $conf, iou: $iou, style: $style,
-                                hudVisible: $showHUD).padding(.horizontal, 8)
+                                hudVisible: $showHUD,
+                                segOverlay: isSeg ? $segOverlay : nil)
+                        .padding(.horizontal, 8)
                 }
                 if showHUD { hud.padding(.bottom, 20) }
                 if !errorText.isEmpty {
@@ -79,7 +88,8 @@ struct PhotoTestView: View {
         let p = perImage ? perPre[page] : statPre
         let i = perImage ? perInf[page] : statInf
         let d = perImage ? perDec[page] : statDec
-        let e2e = p + i + d
+        let mk = perImage && perMask.indices.contains(page) ? perMask[page] : statMask
+        let e2e = p + i + d + (isSeg ? mk : 0)
         var extras: [(String, String)] = []
         if statInf > 0 {
             if perImage {
@@ -95,7 +105,8 @@ struct PhotoTestView: View {
                 extras = [("images", "\(images.count)"),
                           ("wall", String(format: "%.2f s", wallSeconds)),
                           ("total dets", "\(totalDets)"),
-                          ("avg e2e", String(format: "%.1f ms", statPre + statInf + statDec))]
+                          ("avg e2e", String(format: "%.1f ms",
+                                             statPre + statInf + statDec + (isSeg ? statMask : 0)))]
             }
         }
         // pager dial = this image's END-TO-END ms (0-30 scale, band colors);
@@ -103,7 +114,8 @@ struct PhotoTestView: View {
         return StatsHUD(fps: perImage ? e2e : throughput, pre: p, inf: i, dec: d,
                         dets: results.indices.contains(page) ? results[page].count : 0,
                         fpsLabel: perImage ? "ms" : "FPS", active: statInf > 0,
-                        extras: extras, mode: perImage ? .ms : .fps, fullWidth: true)
+                        extras: extras, mode: perImage ? .ms : .fps, fullWidth: true,
+                        mask: isSeg ? mk : nil)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 8)
     }
@@ -131,7 +143,8 @@ struct PhotoTestView: View {
                     ZoomableScrollView(onPinchExit: {
                         withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
                     }) {
-                        annotated(images[i], results.indices.contains(i) ? results[i] : [])
+                        annotated(images[i], results.indices.contains(i) ? results[i] : [],
+                                  maskImages.indices.contains(i) ? maskImages[i] : nil)
                     }
                     .tag(i)
                 }
@@ -150,10 +163,20 @@ struct PhotoTestView: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(width: geo.size.width, height: geo.size.width)
                     .clipped()
+                // mask composite shares the photo's aspect: identical modifiers
+                // guarantee pixel alignment under the .fill crop
+                if segOverlay != .boxes, maskImages.indices.contains(i),
+                   let mask = maskImages[i] {
+                    Image(decorative: mask, scale: 1).resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geo.size.width, height: geo.size.width)
+                        .clipped()
+                }
                 Canvas { ctx, _ in
                     if results.indices.contains(i) {
                         DetOverlay.draw(ctx, results[i], scale: scale, ox: 0, oy: 0,
-                                        style: style)
+                                        style: style, names: classNames,
+                                        boxes: !(isSeg && segOverlay == .masks))
                     }
                 }
             }
@@ -225,7 +248,7 @@ struct PhotoTestView: View {
         .padding(.horizontal, 8)
     }
 
-    private func annotated(_ img: CGImage, _ dets: [Detection]) -> some View {
+    private func annotated(_ img: CGImage, _ dets: [Detection], _ mask: CGImage?) -> some View {
         GeometryReader { geo in
             let scale = min(geo.size.width / CGFloat(img.width),
                             geo.size.height / CGFloat(img.height))
@@ -234,8 +257,14 @@ struct PhotoTestView: View {
             ZStack(alignment: .topLeading) {
                 Image(decorative: img, scale: 1).resizable()
                     .frame(width: w, height: h)
+                if let mask, segOverlay != .boxes {
+                    Image(decorative: mask, scale: 1).resizable()
+                        .frame(width: w, height: h)
+                }
                 Canvas { ctx, _ in
-                    DetOverlay.draw(ctx, dets, scale: scale, ox: 0, oy: 0, style: style)
+                    DetOverlay.draw(ctx, dets, scale: scale, ox: 0, oy: 0, style: style,
+                                    names: classNames,
+                                    boxes: !(isSeg && segOverlay == .masks))
                 }
                 .frame(width: w, height: h)
             }
@@ -297,6 +326,7 @@ struct PhotoTestView: View {
                 fileNames = ns
                 fileTypes = ts
                 results = Array(repeating: [], count: imgs.count)
+                maskImages = Array(repeating: nil, count: imgs.count)
                 page = 0
                 viewMode = imgs.count > 1 ? .gallery : .pager
                 phase = .idle
@@ -316,32 +346,42 @@ struct PhotoTestView: View {
         progress = 0
         progressTotal = imgs.count
         errorText = ""
-        perPre = []; perInf = []; perDec = []
+        perPre = []; perInf = []; perDec = []; perMask = []
+        maskImages = Array(repeating: nil, count: imgs.count)
         Task.detached {
             do {
                 let det = try Detector(modelURL: m.url, compute: mode)
                 var raws: [Detector.RawOutput] = []
                 var allDets: [[Detection]] = []
-                var sumPre = 0.0, sumInf = 0.0, sumDec = 0.0
+                var sumPre = 0.0, sumInf = 0.0, sumDec = 0.0, sumMask = 0.0
                 let t0 = CFAbsoluteTimeGetCurrent()
                 // cache raw passes for slider retune only on modest batches:
-                // 100 tensors x ~3MB is a jetsam invitation
-                let cacheRaws = imgs.count <= 40
+                // 100 tensors x ~3MB is a jetsam invitation, and seg raws also
+                // carry the proto tensor - roughly half the headroom
+                let cacheRaws = imgs.count <= (det.isSegment ? 20 : 40)
                 for (idx, img) in imgs.enumerated() {
-                    let step: (Detector.RawOutput, [Detection], Double, Double, Double) =
+                    let step: (Detector.RawOutput, [Detection], CGImage?,
+                               Double, Double, Double, Double) =
                         try autoreleasepool {
                             let a = CFAbsoluteTimeGetCurrent()
                             let raw = try det.forward(img)
                             let b = CFAbsoluteTimeGetCurrent()
                             let d = det.decode(raw, conf: confNow, iou: iouNow)
                             let c = CFAbsoluteTimeGetCurrent()
-                            return (raw, d, (b - a) * 1000 - raw.inferMs,
-                                    raw.inferMs, (c - b) * 1000)
+                            // masks render for EVERY image, cached raw or not -
+                            // beyond the cache cap they just stay at run-time
+                            // conf/iou (same as the boxes there)
+                            let mk = det.isSegment
+                                ? det.maskOverlay(d, raw, maxSide: 1024) : nil
+                            let e = CFAbsoluteTimeGetCurrent()
+                            return (raw, d, mk, (b - a) * 1000 - raw.inferMs,
+                                    raw.inferMs, (c - b) * 1000, (e - c) * 1000)
                         }
-                    let (raw, d, pPreV, pInfV, pDecV) = step
+                    let (raw, d, mk, pPreV, pInfV, pDecV, pMaskV) = step
                     sumPre += pPreV
                     sumInf += pInfV
                     sumDec += pDecV
+                    sumMask += pMaskV
                     if cacheRaws { raws.append(raw) }
                     allDets.append(d)
                     let done = idx + 1
@@ -349,7 +389,9 @@ struct PhotoTestView: View {
                     await MainActor.run {
                         progress = done
                         if results.indices.contains(idx) { results[idx] = dSnapshot }
+                        if maskImages.indices.contains(idx) { maskImages[idx] = mk }
                         perPre.append(pPreV); perInf.append(pInfV); perDec.append(pDecV)
+                        perMask.append(pMaskV)
                     }
                 }
                 let wall = CFAbsoluteTimeGetCurrent() - t0
@@ -359,9 +401,12 @@ struct PhotoTestView: View {
                     results = detsF
                     lastDet = det
                     lastRaws = rawsF
+                    isSeg = det.isSegment
+                    classNames = det.classNames
                     statPre = sumPre / n
                     statInf = sumInf / n
                     statDec = sumDec / n
+                    statMask = sumMask / n
                     throughput = n / max(wall, 0.001)
                     wallSeconds = wall
                     phase = .idle
@@ -377,11 +422,30 @@ struct PhotoTestView: View {
         }
     }
 
-    /// Slider retune: decode-only over the cached forward passes.
+    /// Slider retune: decode-only over the cached forward passes. Boxes update
+    /// synchronously (cheap); seg mask re-renders go off-main with a generation
+    /// token so slider drags never hitch and stale renders are dropped.
     private func retune() {
         guard let det = lastDet, !lastRaws.isEmpty else { return }
         let confNow = Float(conf), iouNow = CGFloat(iou)
-        results = lastRaws.map { det.decode($0, conf: confNow, iou: iouNow) }
+        let newDets = lastRaws.map { det.decode($0, conf: confNow, iou: iouNow) }
+        results = newDets
+        guard det.isSegment else { return }
+        retuneGen += 1
+        let gen = retuneGen, raws = lastRaws
+        Task.detached(priority: .userInitiated) {
+            var masks: [CGImage?] = []
+            for (raw, d) in zip(raws, newDets) {
+                autoreleasepool { masks.append(det.maskOverlay(d, raw, maxSide: 1024)) }
+            }
+            let m = masks
+            await MainActor.run {
+                guard gen == retuneGen else { return }
+                for (i, mk) in m.enumerated() where maskImages.indices.contains(i) {
+                    maskImages[i] = mk
+                }
+            }
+        }
     }
 }
 
