@@ -652,17 +652,44 @@ public final class Detector {
         let N = usable.count
 
         // ---- proto -> contiguous [cm, plane] Float32, once ----
+        // The unpack MUST be vectorized: 32x160x160 = 819k elements per frame, and
+        // a scalar half->float loop here alone costs ~100ms on-device (the same
+        // failure mode as the old scalar decode path). Contiguous rows (s3 == 1,
+        // the CoreML/ANE layout) take one bulk vImage convert of the full strided
+        // extent + row memcpys; anything else falls back to the scalar walk.
         let s1 = proto.strides[1].intValue, s2 = proto.strides[2].intValue, s3 = proto.strides[3].intValue
         var protoF = [Float](repeating: 0, count: cm * plane)
         if proto.dataType == .float16 {
             let rp = proto.dataPointer
-            protoF.withUnsafeMutableBufferPointer { dst in
-                for k in 0..<cm {
-                    let ko = k * plane
-                    for i in 0..<mh {
-                        let ro = ko + i * mw, so = k * s1 + i * s2
-                        for j in 0..<mw {
-                            dst[ro + j] = halfToFloat(rp.load(fromByteOffset: (so + j * s3) * 2, as: UInt16.self))
+            if s3 == 1 {
+                let n = cm * s1
+                var tmp = [Float](repeating: 0, count: n)
+                tmp.withUnsafeMutableBufferPointer { t in
+                    var src = vImage_Buffer(data: rp, height: 1,
+                                            width: vImagePixelCount(n), rowBytes: n * 2)
+                    var dst = vImage_Buffer(data: t.baseAddress, height: 1,
+                                            width: vImagePixelCount(n), rowBytes: n * 4)
+                    vImageConvert_Planar16FtoPlanarF(&src, &dst, vImage_Flags(kvImageNoFlags))
+                }
+                protoF.withUnsafeMutableBufferPointer { dst in
+                    tmp.withUnsafeBufferPointer { sp in
+                        for k in 0..<cm {
+                            for i in 0..<mh {
+                                memcpy(dst.baseAddress! + (k * plane + i * mw),
+                                       sp.baseAddress! + (k * s1 + i * s2), mw * 4)
+                            }
+                        }
+                    }
+                }
+            } else {
+                protoF.withUnsafeMutableBufferPointer { dst in
+                    for k in 0..<cm {
+                        let ko = k * plane
+                        for i in 0..<mh {
+                            let ro = ko + i * mw, so = k * s1 + i * s2
+                            for j in 0..<mw {
+                                dst[ro + j] = halfToFloat(rp.load(fromByteOffset: (so + j * s3) * 2, as: UInt16.self))
+                            }
                         }
                     }
                 }
@@ -671,11 +698,20 @@ public final class Detector {
             proto.withUnsafeBufferPointer(ofType: Float32.self) { buf in
                 guard let pp = buf.baseAddress else { return }
                 protoF.withUnsafeMutableBufferPointer { dst in
-                    for k in 0..<cm {
-                        let ko = k * plane
-                        for i in 0..<mh {
-                            let ro = ko + i * mw, so = k * s1 + i * s2
-                            for j in 0..<mw { dst[ro + j] = pp[so + j * s3] }
+                    if s3 == 1 {
+                        for k in 0..<cm {
+                            for i in 0..<mh {
+                                memcpy(dst.baseAddress! + (k * plane + i * mw),
+                                       pp + (k * s1 + i * s2), mw * 4)
+                            }
+                        }
+                    } else {
+                        for k in 0..<cm {
+                            let ko = k * plane
+                            for i in 0..<mh {
+                                let ro = ko + i * mw, so = k * s1 + i * s2
+                                for j in 0..<mw { dst[ro + j] = pp[so + j * s3] }
+                            }
                         }
                     }
                 }
@@ -710,19 +746,54 @@ public final class Detector {
         let band: Float = 0.14, e0 = threshold - band, e1 = threshold + band, inv = 1 / (e1 - e0)
         var drew = false
         var px = [UInt8](repeating: 0, count: plane * 4)
+        // per-det tint, fully vectorized (the scalar smoothstep loop was the other
+        // debug-visible hot spot): coverage a = smoothstep(t) * alphaMax as vDSP
+        // planes, premultiplied channel planes, one vImage 4-plane interleave.
+        var aF = [Float](repeating: 0, count: plane)   // coverage (ends premultiplied alpha)
+        var tt = [Float](repeating: 0, count: plane)   // t^2 scratch
+        var chF = [Float](repeating: 0, count: plane)  // channel scratch
+        var chR = [UInt8](repeating: 0, count: plane), chG = chR, chB = chR, chA = chR
+        let vn = vDSP_Length(plane)
         for (r, d) in usable.enumerated() {
             let comps = classColor(d.cls).components ?? [1, 0.25, 0.25, 1]
             let cr = Float(comps[0]), cg = Float(comps[1]), cb = Float(comps[2])
-            for i in 0..<plane * 4 { px[i] = 0 }
-            let row = r * plane
-            for i in 0..<plane {
-                var t = (acc[row + i] - e0) * inv
-                if t <= 0 { continue }
-                if t > 1 { t = 1 }
-                let a = t * t * (3 - 2 * t) * alphaMax
-                let o = i * 4
-                px[o] = UInt8(min(255, cr * a)); px[o + 1] = UInt8(min(255, cg * a))
-                px[o + 2] = UInt8(min(255, cb * a)); px[o + 3] = UInt8(min(255, a))
+            // t = clip((sigmoid - e0) * inv, 0, 1); a = t*t*(3 - 2t) * alphaMax
+            acc.withUnsafeBufferPointer { ap in
+                var m = inv, add = -e0 * inv
+                vDSP_vsmsa(ap.baseAddress! + r * plane, 1, &m, &add, &aF, 1, vn)
+            }
+            var lo: Float = 0, hi: Float = 1
+            vDSP_vclip(aF, 1, &lo, &hi, &aF, 1, vn)
+            vDSP_vsq(aF, 1, &tt, 1, vn)
+            var mneg2: Float = -2, add3: Float = 3
+            vDSP_vsmsa(aF, 1, &mneg2, &add3, &aF, 1, vn)   // 3 - 2t
+            vDSP_vmul(tt, 1, aF, 1, &aF, 1, vn)            // t^2 * (3 - 2t)
+            var aMaxV = alphaMax
+            vDSP_vsmul(aF, 1, &aMaxV, &aF, 1, vn)          // * alphaMax
+            func plane8(_ scale: Float, _ out: inout [UInt8]) {
+                var s = scale
+                vDSP_vsmul(aF, 1, &s, &chF, 1, vn)
+                vDSP_vfixru8(chF, 1, &out, 1, vn)
+            }
+            plane8(cr, &chR); plane8(cg, &chG); plane8(cb, &chB); plane8(1, &chA)
+            px.withUnsafeMutableBytes { pd in
+                chR.withUnsafeMutableBytes { rr in
+                    chG.withUnsafeMutableBytes { gg in
+                        chB.withUnsafeMutableBytes { bb in
+                            chA.withUnsafeMutableBytes { aa in
+                                func vb(_ p: UnsafeMutableRawBufferPointer, _ rb: Int) -> vImage_Buffer {
+                                    vImage_Buffer(data: p.baseAddress, height: vImagePixelCount(mh),
+                                                  width: vImagePixelCount(mw), rowBytes: rb)
+                                }
+                                var vr = vb(rr, mw), vg = vb(gg, mw), vbP = vb(bb, mw), va = vb(aa, mw)
+                                var dest = vb(pd, mw * 4)
+                                // planes interleave in argument order -> RGBA bytes
+                                vImageConvert_Planar8toARGB8888(&vr, &vg, &vbP, &va, &dest,
+                                                                vImage_Flags(kvImageNoFlags))
+                            }
+                        }
+                    }
+                }
             }
             guard let mctx = CGContext(data: &px, width: mw, height: mh, bitsPerComponent: 8, bytesPerRow: mw * 4,
                                        space: CGColorSpaceCreateDeviceRGB(),
