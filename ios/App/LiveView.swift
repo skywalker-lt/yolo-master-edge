@@ -30,8 +30,12 @@ struct LiveView: View {
     @State private var statPre: Double = 0
     @State private var statInf: Double = 0
     @State private var statDec: Double = 0
+    @State private var statMask: Double = 0
     @State private var statHz: Double = 0
     @State private var statDets = 0
+    @State private var maskImage: CGImage?          // seg: per-frame composite overlay
+    @State private var isSegModel = false           // set once the running Detector loads
+    @State private var classNames: [String] = cocoNames
     @State private var showTuning = false
     @State private var showHUD = true
     @State private var style: BoxStyle = .chip
@@ -70,7 +74,8 @@ struct LiveView: View {
                 Spacer()
                 if showHUD {
                     StatsHUD(fps: statHz, pre: statPre, inf: statInf,
-                             dec: statDec, dets: statDets, active: running)
+                             dec: statDec, dets: statDets, active: running,
+                             mask: isSegModel ? statMask : nil)
                         .padding(.bottom, 20)
                 }
             }
@@ -81,7 +86,8 @@ struct LiveView: View {
                 controls
                 if showTuning {
                     TuningPanel(conf: $tuning.conf, iou: $tuning.iou, style: $style,
-                                hudVisible: $showHUD)
+                                hudVisible: $showHUD,
+                                segOverlay: isSegModel ? $tuning.segOverlay : nil)
                         .padding(.horizontal)
                 }
             }
@@ -145,7 +151,16 @@ struct LiveView: View {
                                 size.height / frameSize.height)
                 let ox = (size.width - frameSize.width * scale) / 2
                 let oy = (size.height - frameSize.height * scale) / 2
-                DetOverlay.draw(ctx, detections, scale: scale, ox: ox, oy: oy, style: style)
+                // mask composite is camera-frame-sized: same rect as the frame
+                // itself under aspect-fill, drawn beneath the boxes/labels
+                if let mask = maskImage {
+                    ctx.draw(Image(decorative: mask, scale: 1),
+                             in: CGRect(x: ox, y: oy, width: frameSize.width * scale,
+                                        height: frameSize.height * scale))
+                }
+                DetOverlay.draw(ctx, detections, scale: scale, ox: ox, oy: oy, style: style,
+                                names: classNames,
+                                boxes: !(isSegModel && tuning.segOverlay == .masks))
             }
         }
         .allowsHitTesting(false)
@@ -162,6 +177,9 @@ struct LiveView: View {
                 await MainActor.run { running = false }
                 return
             }
+            let seg = det.isSegment
+            let names = det.classNames
+            await MainActor.run { isSegModel = seg; classNames = names }
             var uiTicks = 0
             var uiWindowStart = CFAbsoluteTimeGetCurrent()
             var uiHz = 0.0
@@ -180,15 +198,22 @@ struct LiveView: View {
                 // autoreleasepool per frame: without it, autoreleased CoreML/CG
                 // transients accumulate on the cooperative thread until jetsam
                 // kills the app (~40s in CPU mode, whose transients are largest)
-                let frame: ([Detection], Double, Double, Double)? = autoreleasepool {
+                // masks only when wanted this frame: boxes-only mode skips the
+                // whole SGEMM+composite, and the stage bar drops to ~0
+                let segNow = seg && tuningRef.segOverlay != .boxes
+                let frame: ([Detection], CGImage?, Double, Double, Double, Double)? = autoreleasepool {
                     guard let raw = try? det.forward(pb) else { return nil }
                     let t1 = CFAbsoluteTimeGetCurrent()
                     let d = det.decode(raw, conf: confNow, iou: iouNow)
                     let t2 = CFAbsoluteTimeGetCurrent()
+                    let mask: CGImage? = segNow && !d.isEmpty
+                        ? det.maskOverlay(Array(d.prefix(100)), raw) : nil
+                    let t3 = CFAbsoluteTimeGetCurrent()
                     let fwd = (t1 - t0) * 1000
-                    return (d, fwd - raw.inferMs, raw.inferMs, (t2 - t1) * 1000)
+                    return (d, mask, fwd - raw.inferMs, raw.inferMs,
+                            (t2 - t1) * 1000, (t3 - t2) * 1000)
                 }
-                guard let (dets, preMS, infMS, decMS) = frame else { continue }
+                guard let (dets, mask, preMS, infMS, decMS, maskMS) = frame else { continue }
                 uiTicks += 1
                 let nowT = CFAbsoluteTimeGetCurrent()
                 if nowT - uiWindowStart >= 1.0 {
@@ -203,13 +228,15 @@ struct LiveView: View {
                 // its leftover scheduling gaps
                 // model end-to-end capability, NOT the paced loop rate: this
                 // can exceed the camera's 30 and peg the dial purple
-                let e2eFPS = 1000.0 / max(preMS + infMS + decMS, 0.1)
+                let e2eFPS = 1000.0 / max(preMS + infMS + decMS + maskMS, 0.1)
                 Task { @MainActor in
                     guard running else { return }   // zombie frame after pause: drop
                     detections = dets
+                    maskImage = mask
                     statPre = preMS
                     statInf = infMS
                     statDec = decMS
+                    statMask = maskMS
                     statHz = e2eFPS
                     statDets = dets.count
                     frameSize = CGSize(width: w, height: h)
@@ -230,6 +257,8 @@ struct LiveView: View {
         loopTask?.cancel()
         loopTask = nil
         detections = []
+        maskImage = nil          // same autowipe rule as the boxes
+        statMask = 0
         statDets = 0
     }
 

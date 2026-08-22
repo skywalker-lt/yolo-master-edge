@@ -1,6 +1,7 @@
 // Shared stats HUD: FPS tachometer (smooth color ramp), per-stage latency bars
 // (green -> orange as a stage misbehaves), detection count, thermal state.
 import SwiftUI
+import YOLOMasterKit
 
 // MARK: - color ramps
 
@@ -61,6 +62,7 @@ struct StatsHUD: View {
     var extras: [(String, String)] = []   // optional detail rows (stats-card mode)
     var mode: DialMode = .fps
     var fullWidth: Bool = false
+    var mask: Double? = nil    // seg mask-compose ms; nil hides the bar (det models)
 
     @State private var thermal = ProcessInfo.processInfo.thermalState
 
@@ -112,6 +114,7 @@ struct StatsHUD: View {
                 StageBar(label: "pre", ms: pre)
                 StageBar(label: "inf", ms: inf)
                 StageBar(label: "dec", ms: dec)
+                if let mask { StageBar(label: "mask", ms: mask) }
             }
 
             VStack(spacing: 2) {
@@ -189,6 +192,7 @@ struct TuningPanel: View {
     @Binding var iou: Double
     var style: Binding<BoxStyle>? = nil
     var hudVisible: Binding<Bool>? = nil
+    var segOverlay: Binding<SegOverlay>? = nil   // non-nil only for seg models
     var body: some View {
         VStack(spacing: 6) {
             if let hudVisible {
@@ -199,6 +203,14 @@ struct TuningPanel: View {
                 Picker("Style", selection: style) {
                     ForEach(BoxStyle.allCases) { s in
                         Text(s.label).lineLimit(1).fixedSize().tag(s)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            if let segOverlay {
+                Picker("Overlay", selection: segOverlay) {
+                    ForEach(SegOverlay.allCases, id: \.self) { o in
+                        Text(o.rawValue.capitalized).lineLimit(1).fixedSize().tag(o)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -224,4 +236,5 @@ struct TuningPanel: View {
 final class Tuning: ObservableObject {
     @Published var conf: Double = 0.25
     @Published var iou: Double = 0.5
+    @Published var segOverlay: SegOverlay = .both   // masks / boxes / both (mac default)
 }
