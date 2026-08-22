@@ -65,30 +65,59 @@ struct StatsHUD: View {
     var mask: Double? = nil    // seg mask-compose ms; nil hides the bar (det models)
 
     @State private var thermal = ProcessInfo.processInfo.thermalState
+    @State private var expanded = false   // tap toggles the detailed-stats section
 
     var body: some View {
         VStack(spacing: 8) {
             mainRow
                 .frame(maxWidth: fullWidth ? .infinity : nil)
-            if !extras.isEmpty {
+            if expanded {
                 Divider()
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
-                          alignment: .leading, spacing: 3) {
-                    ForEach(extras.indices, id: \.self) { i in
-                        HStack(spacing: 4) {
-                            Text(extras[i].0).foregroundStyle(.secondary)
-                            Text(extras[i].1).monospacedDigit()
+                details
+                if !extras.isEmpty {
+                    Divider()
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
+                              alignment: .leading, spacing: 3) {
+                        ForEach(extras.indices, id: \.self) { i in
+                            HStack(spacing: 4) {
+                                Text(extras[i].0).foregroundStyle(.secondary)
+                                Text(extras[i].1).monospacedDigit()
+                            }
+                            .font(.caption2)
                         }
-                        .font(.caption2)
                     }
                 }
             }
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation(.spring(duration: 0.3)) { expanded.toggle() } }
+        .overlay(alignment: .topTrailing) {
+            Image(systemName: expanded ? "chevron.down" : "chevron.up")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(6)
+        }
         .onReceive(NotificationCenter.default.publisher(
             for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
             thermal = ProcessInfo.processInfo.thermalState
+        }
+    }
+
+    /// Expanded section: every stage as [symbol] metric ---- bar, plus derived
+    /// postprocess and end-to-end rows on wider scales.
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            DetailBar(icon: "aspectratio", name: "preprocess", ms: pre)
+            DetailBar(icon: "cpu", name: "inference", ms: inf)
+            DetailBar(icon: "rectangle.dashed", name: "decode", ms: dec)
+            if let mask {
+                DetailBar(icon: "person.and.background.dotted", name: "mask", ms: mask)
+            }
+            DetailBar(icon: "gearshape.2", name: "postprocess", ms: dec + (mask ?? 0))
+            DetailBar(icon: "timer", name: "end to end",
+                      ms: pre + inf + dec + (mask ?? 0), fullScale: 100)
         }
     }
 
@@ -127,9 +156,18 @@ struct StatsHUD: View {
                     Text("dets").font(.caption2).foregroundStyle(.secondary)
                 }
                 VStack(spacing: 0) {
-                    Image(systemName: "thermometer.medium")
-                        .foregroundStyle(thermalColor)
-                        .animation(.easeOut(duration: 0.3), value: thermal)
+                    // four discrete fill levels, one per thermal state
+                    Gauge(value: thermalLevel + 1, in: 0...4) {
+                        EmptyView()
+                    } currentValueLabel: {
+                        Image(systemName: "thermometer.medium")
+                            .font(.system(size: 11))
+                            .foregroundStyle(thermalColor)
+                    }
+                    .gaugeStyle(.accessoryCircular)
+                    .tint(thermalColor)
+                    .frame(width: 40, height: 40)
+                    .animation(.easeOut(duration: 0.3), value: thermalLevel)
                     Text(thermalLabel).font(.caption2).foregroundStyle(.secondary)
                 }
             }
@@ -139,6 +177,16 @@ struct StatsHUD: View {
 
     private var dialColor: Color {
         mode == .fps ? fpsColor(fps) : msColor(fps)
+    }
+
+    private var thermalLevel: Double {
+        switch thermal {
+        case .nominal: return 0
+        case .fair: return 1
+        case .serious: return 2
+        case .critical: return 3
+        @unknown default: return 0
+        }
     }
 
     private var thermalColor: Color {
@@ -185,6 +233,38 @@ struct StageBar: View {
             Text(String(format: "%4.1f", ms))
                 .font(.caption2.monospacedDigit())
                 .frame(width: 36, alignment: .trailing)
+        }
+    }
+}
+
+/// Expanded-HUD row: [symbol] metric name, then a full-width bar + ms value.
+struct DetailBar: View {
+    let icon: String
+    let name: String
+    let ms: Double
+    var fullScale = 50.0
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 20, alignment: .center)
+            Text(name)
+                .font(.caption2)
+                .frame(width: 78, alignment: .leading)
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.quaternary)
+                    Capsule().fill(stageColor(ms))
+                        .frame(width: max(3, min(ms / fullScale, 1) * g.size.width))
+                }
+            }
+            .frame(height: 6)
+            .animation(.easeOut(duration: 0.15), value: ms)
+            Text(String(format: "%5.1f", ms))
+                .font(.caption2.monospacedDigit())
+                .frame(width: 40, alignment: .trailing)
         }
     }
 }
