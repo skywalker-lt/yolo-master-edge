@@ -111,10 +111,12 @@ struct StatsHUD: View {
             .frame(width: 56, height: 56)
 
             VStack(alignment: .leading, spacing: 5) {
-                StageBar(label: "pre", ms: pre)
-                StageBar(label: "inf", ms: inf)
-                StageBar(label: "dec", ms: dec)
-                if let mask { StageBar(label: "mask", ms: mask) }
+                StageBar(icon: "aspectratio", ms: pre)                       // preprocess
+                StageBar(icon: "cpu", ms: inf)                               // inference
+                StageBar(icon: "rectangle.dashed", ms: dec)                  // decode
+                if let mask {
+                    StageBar(icon: "person.and.background.dotted", ms: mask) // mask compose
+                }
             }
 
             VStack(spacing: 2) {
@@ -161,15 +163,16 @@ struct StatsHUD: View {
 }
 
 struct StageBar: View {
-    let label: String
+    let icon: String   // SF Symbol naming the stage
     let ms: Double
     private let fullScale = 50.0   // bar saturates at 50ms
 
     var body: some View {
         HStack(spacing: 6) {
-            Text(label)
+            Image(systemName: icon)
                 .font(.caption2)
-                .frame(width: 24, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .center)
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.quaternary)
