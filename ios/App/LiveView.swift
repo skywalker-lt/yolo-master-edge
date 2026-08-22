@@ -41,6 +41,7 @@ struct LiveView: View {
     @State private var style: BoxStyle = .chip
     @StateObject private var tuning = Tuning()
     @State private var zoomBase: CGFloat = 1  // camera zoom factor at gesture start
+    @State private var loadingModel = false   // Detector init in flight (compile + unit load)
     @State private var running = false        // loop actually alive
     @State private var wantRun = false        // the user's intent - survives tab
                                               // switches and app backgrounding
@@ -69,6 +70,15 @@ struct LiveView: View {
             } else {
                 ContentUnavailableView("Camera access required",
                                        systemImage: "camera.fill")
+            }
+            if loadingModel {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Loading the model to \(compute.rawValue)")
+                }
+                .font(.caption)
+                .padding(14)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
             VStack {
                 Spacer()
@@ -169,17 +179,18 @@ struct LiveView: View {
     private func startLoop() {
         guard let model = selectedModel, !running else { return }
         running = true
+        loadingModel = true
         let mode = compute.mode
         let tuningRef = tuning      // plain class ref: detached-safe, no wrapper
         let cameraRef = camera
         loopTask = Task.detached(priority: .userInitiated) {
             guard let det = try? Detector(modelURL: model.url, compute: mode) else {
-                await MainActor.run { running = false }
+                await MainActor.run { running = false; loadingModel = false }
                 return
             }
             let seg = det.isSegment
             let names = det.classNames
-            await MainActor.run { isSegModel = seg; classNames = names }
+            await MainActor.run { isSegModel = seg; classNames = names; loadingModel = false }
             var uiTicks = 0
             var uiWindowStart = CFAbsoluteTimeGetCurrent()
             var uiHz = 0.0
@@ -256,11 +267,18 @@ struct LiveView: View {
     /// lifecycle pauses auto-resume.
     private func suspendLoop() {
         running = false
+        loadingModel = false
         loopTask?.cancel()
         loopTask = nil
         detections = []
         maskImage = nil          // same autowipe rule as the boxes
+        // full HUD reset - only the thermal state stays (it is device-ambient,
+        // not a property of the stopped run)
+        statPre = 0
+        statInf = 0
+        statDec = 0
         statMask = 0
+        statHz = 0
         statDets = 0
     }
 

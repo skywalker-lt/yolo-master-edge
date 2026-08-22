@@ -9,7 +9,7 @@ import YOLOMasterKit
 
 struct PhotoTestView: View {
     enum ViewMode { case gallery, pager }
-    enum Phase: Equatable { case idle, loading, inferring }
+    enum Phase: Equatable { case idle, loading, loadingModel, inferring }
 
     @State private var models = BundledModel.discover()
     @State private var selectedModel: BundledModel?
@@ -192,12 +192,19 @@ struct PhotoTestView: View {
 
     private var progressBar: some View {
         HStack(spacing: 10) {
-            Text(phase == .loading ? "Loading / iCloud" : "Inference")
-                .font(.caption)
-            ProgressView(value: Double(progress), total: Double(max(progressTotal, 1)))
-                .progressViewStyle(.linear)
-            Text("\(progress)/\(progressTotal)")
-                .font(.caption.monospacedDigit())
+            if phase == .loadingModel {
+                ProgressView()
+                Text("Loading the model to \(compute.rawValue)")
+                    .font(.caption)
+                Spacer(minLength: 0)
+            } else {
+                Text(phase == .loading ? "Loading / iCloud" : "Inference")
+                    .font(.caption)
+                ProgressView(value: Double(progress), total: Double(max(progressTotal, 1)))
+                    .progressViewStyle(.linear)
+                Text("\(progress)/\(progressTotal)")
+                    .font(.caption.monospacedDigit())
+            }
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -342,7 +349,7 @@ struct PhotoTestView: View {
         let confNow = Float(conf), iouNow = CGFloat(iou)
         let imgs = images
         isRunning = true
-        phase = .inferring
+        phase = .loadingModel
         progress = 0
         progressTotal = imgs.count
         errorText = ""
@@ -351,6 +358,7 @@ struct PhotoTestView: View {
         Task.detached {
             do {
                 let det = try Detector(modelURL: m.url, compute: mode)
+                await MainActor.run { phase = .inferring }
                 var raws: [Detector.RawOutput] = []
                 var allDets: [[Detection]] = []
                 var sumPre = 0.0, sumInf = 0.0, sumDec = 0.0, sumMask = 0.0
