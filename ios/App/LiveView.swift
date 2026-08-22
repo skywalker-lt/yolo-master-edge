@@ -495,6 +495,7 @@ struct LiveView: View {
             }
         }()
         let fallback = camera.grabLatest().flatMap { Detector.cgImage(from: $0.0) }
+        let t0 = CFAbsoluteTimeGetCurrent()
         camera.capturePhoto { photo in
             Task.detached(priority: .userInitiated) {
                 var base: CGImage? = nil
@@ -520,7 +521,7 @@ struct LiveView: View {
                 }
                 if base == nil { base = fallback; s = 1 }
                 guard var img = base else {
-                    await MainActor.run { capturing = false }
+                    await rearmShutter(t0)
                     return
                 }
                 let scaled = s == 1 ? dets : dets.map {
@@ -551,9 +552,20 @@ struct LiveView: View {
                 try? await PHPhotoLibrary.shared().performChanges {
                     PHAssetChangeRequest.creationRequestForAsset(from: ui)
                 }
-                await MainActor.run { capturing = false }
+                await rearmShutter(t0)
             }
         }
+    }
+
+    /// Re-enable the shutter no sooner than ~1s after the tap: the system
+    /// shutter sound is about that long, and a fast save re-arming earlier lets
+    /// rapid taps overlap sounds into a stutter.
+    private func rearmShutter(_ t0: CFAbsoluteTime) async {
+        let elapsed = CFAbsoluteTimeGetCurrent() - t0
+        if elapsed < 1.0 {
+            try? await Task.sleep(nanoseconds: UInt64((1.0 - elapsed) * 1e9))
+        }
+        await MainActor.run { capturing = false }
     }
 
     /// Stop the loop and WIPE the overlay; keeps `wantRun` untouched so
