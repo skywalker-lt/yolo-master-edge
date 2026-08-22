@@ -66,6 +66,7 @@ struct LiveView: View {
     @State private var focusPoint: CGPoint?   // last tap, preview-layer coords
     @State private var focusVisible = false
     @State private var shutterFlash = false   // brief black blink on capture
+    @State private var capturing = false      // capture->compose->save in flight
     @State private var lensExpanded = false   // zoom chip expanded to lens buttons
     @State private var lensCollapse: Task<Void, Never>?
     @State private var lensRect: CGRect = .zero   // global frame of the lens picker
@@ -156,11 +157,18 @@ struct LiveView: View {
                         ZStack {
                             Circle().stroke(.white.opacity(0.9), lineWidth: 3)
                                 .frame(width: 58, height: 58)
-                            Circle().fill(.white)
-                                .frame(width: 46, height: 46)
+                            if capturing {
+                                ProgressView()
+                                    .tint(.white)
+                                    .scaleEffect(1.4)
+                            } else {
+                                Circle().fill(.white)
+                                    .frame(width: 46, height: 46)
+                            }
                         }
                     }
                     .buttonStyle(ShutterStyle())
+                    .disabled(capturing)
                     .padding(.bottom, 8)
                 }
                 if showHUD {
@@ -464,6 +472,8 @@ struct LiveView: View {
     /// baked in off-main and the result saved to Photos. Falls back to the
     /// 720p video frame if the photo capture fails.
     private func captureFrame() {
+        guard !capturing else { return }
+        capturing = true
         AudioServicesPlaySystemSound(1108)                       // classic shutter
         haptic.impactOccurred()
         haptic.prepare()
@@ -509,7 +519,10 @@ struct LiveView: View {
                     }
                 }
                 if base == nil { base = fallback; s = 1 }
-                guard var img = base else { return }
+                guard var img = base else {
+                    await MainActor.run { capturing = false }
+                    return
+                }
                 let scaled = s == 1 ? dets : dets.map {
                     Detection(cls: $0.cls, score: $0.score,
                               rect: CGRect(x: $0.rect.minX * s, y: $0.rect.minY * s,
@@ -538,6 +551,7 @@ struct LiveView: View {
                 try? await PHPhotoLibrary.shared().performChanges {
                     PHAssetChangeRequest.creationRequestForAsset(from: ui)
                 }
+                await MainActor.run { capturing = false }
             }
         }
     }
