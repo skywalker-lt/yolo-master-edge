@@ -405,7 +405,11 @@ struct ZoomableView<Content: View>: View {
             .gesture(
                 MagnifyGesture()
                     .onChanged { v in
-                        zoom = min(max(baseZoom * v.magnification, 0.6), 5)
+                        // below-1x rubber-band (the exit affordance) exists ONLY
+                        // when the gesture started at minimum zoom; zoomed-in
+                        // pinches bottom out at 1x
+                        let lower: CGFloat = baseZoom <= 1.01 ? 0.6 : 1
+                        zoom = min(max(baseZoom * v.magnification, lower), 5)
                     }
                     .onEnded { v in
                         let target = baseZoom * v.magnification
