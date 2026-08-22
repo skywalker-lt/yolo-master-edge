@@ -66,27 +66,38 @@ struct StatsHUD: View {
 
     @State private var thermal = ProcessInfo.processInfo.thermalState
     @State private var expanded = false   // tap toggles the detailed-stats section
+    @State private var rowWidth: CGFloat = 0   // measured main-row width: the expanded
+                                               // section is pinned to it so toggling
+                                               // never changes the card width
 
     var body: some View {
         VStack(spacing: 8) {
             mainRow
                 .frame(maxWidth: fullWidth ? .infinity : nil)
+                .background(GeometryReader { g in
+                    Color.clear
+                        .onAppear { rowWidth = g.size.width }
+                        .onChange(of: g.size.width) { _, w in rowWidth = w }
+                })
             if expanded {
-                Divider()
-                details
-                if !extras.isEmpty {
+                Group {
                     Divider()
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
-                              alignment: .leading, spacing: 3) {
-                        ForEach(extras.indices, id: \.self) { i in
-                            HStack(spacing: 4) {
-                                Text(extras[i].0).foregroundStyle(.secondary)
-                                Text(extras[i].1).monospacedDigit()
+                    details
+                    if !extras.isEmpty {
+                        Divider()
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())],
+                                  alignment: .leading, spacing: 3) {
+                            ForEach(extras.indices, id: \.self) { i in
+                                HStack(spacing: 4) {
+                                    Text(extras[i].0).foregroundStyle(.secondary)
+                                    Text(extras[i].1).monospacedDigit()
+                                }
+                                .font(.caption2)
                             }
-                            .font(.caption2)
                         }
                     }
                 }
+                .frame(width: fullWidth || rowWidth <= 0 ? nil : rowWidth)
             }
         }
         .padding(10)
@@ -139,6 +150,8 @@ struct StatsHUD: View {
             .animation(.easeInOut(duration: 0.25), value: active ? dialColor : .gray)
             .frame(width: 56, height: 56)
 
+            ThermalTach(level: Int(thermalLevel), color: thermalColor)
+
             VStack(alignment: .leading, spacing: 5) {
                 StageBar(icon: "aspectratio", ms: pre)                       // preprocess
                 StageBar(icon: "cpu", ms: inf)                               // inference
@@ -148,30 +161,13 @@ struct StatsHUD: View {
                 }
             }
 
-            VStack(spacing: 2) {
-                VStack(spacing: 0) {
-                    Text("\(dets)")
-                        .font(.system(.title3, design: .rounded).bold())
-                        .foregroundStyle(.green)
-                    Text("dets").font(.caption2).foregroundStyle(.secondary)
-                }
-                VStack(spacing: 0) {
-                    // four discrete fill levels, one per thermal state
-                    Gauge(value: thermalLevel + 1, in: 0...4) {
-                        EmptyView()
-                    } currentValueLabel: {
-                        Image(systemName: "thermometer.medium")
-                            .font(.system(size: 11))
-                            .foregroundStyle(thermalColor)
-                    }
-                    .gaugeStyle(.accessoryCircular)
-                    .tint(thermalColor)
-                    .frame(width: 40, height: 40)
-                    .animation(.easeOut(duration: 0.3), value: thermalLevel)
-                    Text(thermalLabel).font(.caption2).foregroundStyle(.secondary)
-                }
+            VStack(spacing: 0) {
+                Text("\(dets)")
+                    .font(.system(.title3, design: .rounded).bold())
+                    .foregroundStyle(.green)
+                Text("dets").font(.caption2).foregroundStyle(.secondary)
             }
-            .frame(width: 48)
+            .frame(width: 40)
         }
     }
 
@@ -199,15 +195,6 @@ struct StatsHUD: View {
         }
     }
 
-    private var thermalLabel: String {
-        switch thermal {
-        case .nominal: return "cool"
-        case .fair: return "fair"
-        case .serious: return "hot"
-        case .critical: return "crit"
-        @unknown default: return "?"
-        }
-    }
 }
 
 struct StageBar: View {
@@ -234,6 +221,39 @@ struct StageBar: View {
                 .font(.caption2.monospacedDigit())
                 .frame(width: 36, alignment: .trailing)
         }
+    }
+}
+
+/// Discrete thermal tachometer: a 270-degree dial split into FOUR separate arc
+/// segments (one per thermal state), filled up to the current level in the
+/// state's color - no needle, no dot. A large centered thermometer symbol,
+/// nudged down like the FPS dial's value.
+struct ThermalTach: View {
+    let level: Int     // 0 nominal ... 3 critical
+    let color: Color
+
+    private let span = 0.75          // 270 degrees, same as the accessory gauges
+    private let gap = 0.03
+    private var segLen: Double { (span - 3 * gap) / 4 }
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<4, id: \.self) { i in
+                Circle()
+                    .trim(from: Double(i) * (segLen + gap),
+                          to: Double(i) * (segLen + gap) + segLen)
+                    .stroke(i <= level ? AnyShapeStyle(color) : AnyShapeStyle(.quaternary),
+                            style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(135))   // start bottom-left, like the FPS dial
+                    .frame(width: 48, height: 48)
+            }
+            Image(systemName: "thermometer.medium")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(color)
+                .offset(y: 3)
+        }
+        .frame(width: 56, height: 56)
+        .animation(.easeOut(duration: 0.3), value: level)
     }
 }
 
