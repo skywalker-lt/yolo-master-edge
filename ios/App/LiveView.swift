@@ -66,6 +66,9 @@ struct LiveView: View {
     @State private var focusPoint: CGPoint?   // last tap, preview-layer coords
     @State private var focusVisible = false
     @State private var shutterFlash = false   // brief black blink on capture
+    @State private var lensExpanded = false   // zoom chip expanded to lens buttons
+    @State private var lensCollapse: Task<Void, Never>?
+    private let haptic = UIImpactFeedbackGenerator(style: .medium)
     @State private var loadingModel = false   // Detector init in flight (compile + unit load)
     @State private var running = false        // loop actually alive
     @State private var wantRun = true         // the user's intent - survives tab
@@ -139,11 +142,7 @@ struct LiveView: View {
             VStack {
                 Spacer()
                 if camera.authorized, !models.isEmpty {
-                    Text(zoomLabel)
-                        .font(.caption.monospacedDigit().bold())
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(.ultraThinMaterial, in: Capsule())
+                    lensControl
                         .padding(.bottom, 6)
                     Button { captureFrame() } label: {
                         ZStack {
@@ -178,6 +177,14 @@ struct LiveView: View {
         }
         .onAppear {
             camera.start()
+            haptic.prepare()
+            // first performChanges spins up the photo-library connection (seconds
+            // on a cold start) - warm it here instead of on the first shutter tap
+            if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .authorized {
+                Task.detached(priority: .utility) {
+                    try? await PHPhotoLibrary.shared().performChanges {}
+                }
+            }
             if models.isEmpty {
                 // discovery compiles bundled packages on first launch - keep it
                 // off the main thread, behind the Initializing card
@@ -208,9 +215,61 @@ struct LiveView: View {
     }
 
     /// Camera-app style: whole numbers bare (1x, 2x), fractions one decimal (0.5x, 2.4x).
-    private var zoomLabel: String {
-        let r = (camera.displayZoom * 10).rounded() / 10
+    private func zoomLabel(_ z: CGFloat) -> String {
+        let r = (z * 10).rounded() / 10
         return r == r.rounded() ? "\(Int(r))x" : String(format: "%.1fx", r)
+    }
+
+    /// The native lens the current zoom is riding on (nearest stop at or below).
+    private var activeLens: CGFloat {
+        camera.lensFactors.last { camera.displayZoom >= $0 - 0.05 }
+            ?? camera.lensFactors.first ?? 1
+    }
+
+    /// Collapsed: one chip with the current factor. Tapped: one button per
+    /// native lens (camera-app style); collapses back after 3s of no input.
+    private var lensControl: some View {
+        HStack(spacing: 4) {
+            if lensExpanded {
+                ForEach(camera.lensFactors, id: \.self) { f in
+                    let isActive = f == activeLens
+                    Button {
+                        zoomBase = camera.setZoom(f)
+                        bumpLensTimer()
+                    } label: {
+                        // active button reads the LIVE zoom, others their stop
+                        Text(isActive ? zoomLabel(camera.displayZoom) : zoomLabel(f))
+                            .font(.caption.monospacedDigit().bold())
+                            .foregroundStyle(isActive ? .yellow : .primary)
+                            .frame(minWidth: 34)
+                            .padding(.vertical, 6)
+                    }
+                }
+            } else {
+                Button {
+                    withAnimation(.spring(duration: 0.25)) { lensExpanded = true }
+                    bumpLensTimer()
+                } label: {
+                    Text(zoomLabel(camera.displayZoom))
+                        .font(.caption.monospacedDigit().bold())
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                }
+            }
+        }
+        .padding(.horizontal, lensExpanded ? 8 : 0)
+        .background(.ultraThinMaterial, in: Capsule())
+        .buttonStyle(.plain)
+    }
+
+    /// Restart the 3s auto-collapse window.
+    private func bumpLensTimer() {
+        lensCollapse?.cancel()
+        lensCollapse = Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.spring(duration: 0.25)) { lensExpanded = false }
+        }
     }
 
     private var controls: some View {
@@ -365,14 +424,15 @@ struct LiveView: View {
         }
     }
 
-    /// Shutter: sound + haptic + black blink, then compose the current frame
-    /// with the live overlay (mask composite + Kit-rendered boxes/labels,
-    /// honoring the Masks/Boxes/Both mode) off-main and save it to Photos.
+    /// Shutter: sound + haptic + black blink, then a FULL-RESOLUTION still via
+    /// AVCapturePhotoOutput, cropped to the video FOV so the live overlay maps
+    /// onto it by pure scaling; mask composite + Kit-rendered boxes/labels are
+    /// baked in off-main and the result saved to Photos. Falls back to the
+    /// 720p video frame if the photo capture fails.
     private func captureFrame() {
-        guard let (pb, _) = camera.grabLatest(),
-              let frame = Detector.cgImage(from: pb) else { return }
         AudioServicesPlaySystemSound(1108)                       // classic shutter
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        haptic.impactOccurred()
+        haptic.prepare()
         shutterFlash = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             withAnimation(.easeOut(duration: 0.2)) { shutterFlash = false }
@@ -382,6 +442,7 @@ struct LiveView: View {
         let drawMask = isSegModel && tuning.segOverlay != .boxes
         let drawBoxes = !(isSegModel && tuning.segOverlay == .masks)
         let names = classNames
+        let fSize = frameSize
         let kitStyle: YOLOMasterKit.BoxStyle = {
             switch style {
             case .neon: return .neon
@@ -389,29 +450,60 @@ struct LiveView: View {
             default: return .solid
             }
         }()
-        Task.detached(priority: .userInitiated) {
-            var img = frame
-            if drawMask, let mask,
-               let ctx = CGContext(data: nil, width: img.width, height: img.height,
-                                   bitsPerComponent: 8, bytesPerRow: 0,
-                                   space: CGColorSpaceCreateDeviceRGB(),
-                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-                ctx.interpolationQuality = .high
-                let full = CGRect(x: 0, y: 0, width: img.width, height: img.height)
-                ctx.draw(img, in: full)
-                ctx.draw(mask, in: full)
-                if let out = ctx.makeImage() { img = out }
-            }
-            if !dets.isEmpty || drawBoxes {
-                img = annotate(img, dets, names: names, style: kitStyle,
-                               label: .full, drawBoxes: drawBoxes) ?? img
-            }
-            let ui = UIImage(cgImage: img)
-            if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
-                _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
-            }
-            try? await PHPhotoLibrary.shared().performChanges {
-                PHAssetChangeRequest.creationRequestForAsset(from: ui)
+        let fallback = camera.grabLatest().flatMap { Detector.cgImage(from: $0.0) }
+        camera.capturePhoto { photo in
+            Task.detached(priority: .userInitiated) {
+                var base: CGImage? = nil
+                var s: CGFloat = 1
+                if let photo {
+                    // photo sensor FOV is wider than the 16:9 video FOV the
+                    // detections live in - crop to the centered video-aspect
+                    // region, then overlay coords map by one scale factor
+                    let pw = CGFloat(photo.width), ph = CGFloat(photo.height)
+                    let va = fSize.width / fSize.height
+                    var crop = CGRect(x: 0, y: 0, width: pw, height: ph)
+                    if pw / ph > va {
+                        let cw = (ph * va).rounded()
+                        crop = CGRect(x: ((pw - cw) / 2).rounded(), y: 0, width: cw, height: ph)
+                    } else if pw / ph < va {
+                        let ch = (pw / va).rounded()
+                        crop = CGRect(x: 0, y: ((ph - ch) / 2).rounded(), width: pw, height: ch)
+                    }
+                    if let c = photo.cropping(to: crop) {
+                        base = c
+                        s = crop.height / fSize.height
+                    }
+                }
+                if base == nil { base = fallback; s = 1 }
+                guard var img = base else { return }
+                let scaled = s == 1 ? dets : dets.map {
+                    Detection(cls: $0.cls, score: $0.score,
+                              rect: CGRect(x: $0.rect.minX * s, y: $0.rect.minY * s,
+                                           width: $0.rect.width * s, height: $0.rect.height * s),
+                              maskCoeffs: $0.maskCoeffs)
+                }
+                if drawMask, let mask,
+                   let ctx = CGContext(data: nil, width: img.width, height: img.height,
+                                       bitsPerComponent: 8, bytesPerRow: 0,
+                                       space: CGColorSpaceCreateDeviceRGB(),
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                    ctx.interpolationQuality = .high
+                    let full = CGRect(x: 0, y: 0, width: img.width, height: img.height)
+                    ctx.draw(img, in: full)
+                    ctx.draw(mask, in: full)   // mask covers the video FOV = the cropped base
+                    if let out = ctx.makeImage() { img = out }
+                }
+                if !scaled.isEmpty {
+                    img = annotate(img, scaled, names: names, style: kitStyle,
+                                   label: .full, drawBoxes: drawBoxes) ?? img
+                }
+                let ui = UIImage(cgImage: img)
+                if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
+                    _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+                }
+                try? await PHPhotoLibrary.shared().performChanges {
+                    PHAssetChangeRequest.creationRequestForAsset(from: ui)
+                }
             }
         }
     }
