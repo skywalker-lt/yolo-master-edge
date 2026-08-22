@@ -94,22 +94,26 @@ final class CameraController: NSObject, ObservableObject,
 
     func photoOutput(_ output: AVCapturePhotoOutput,
                      didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
-        var cg: CGImage?
-        if error == nil, let data = photo.fileDataRepresentation(),
-           let ui = UIImage(data: data) {
-            if ui.imageOrientation == .up {
-                cg = ui.cgImage
-            } else {
-                let fmt = UIGraphicsImageRendererFormat()
-                fmt.scale = 1
-                cg = UIGraphicsImageRenderer(size: ui.size, format: fmt).image { _ in
-                    ui.draw(in: CGRect(origin: .zero, size: ui.size))
-                }.cgImage
-            }
-        }
-        let out = cg, cb = photoDone
+        let data = error == nil ? photo.fileDataRepresentation() : nil
+        let cb = photoDone
         photoDone = nil
-        DispatchQueue.main.async { cb?(out) }
+        // the orientation bake redraws a 12-24MP image - never on the capture
+        // callback queue (it stalls the session), never on main
+        DispatchQueue.global(qos: .userInitiated).async {
+            var cg: CGImage?
+            if let data, let ui = UIImage(data: data) {
+                if ui.imageOrientation == .up {
+                    cg = ui.cgImage
+                } else {
+                    let fmt = UIGraphicsImageRendererFormat()
+                    fmt.scale = 1
+                    cg = UIGraphicsImageRenderer(size: ui.size, format: fmt).image { _ in
+                        ui.draw(in: CGRect(origin: .zero, size: ui.size))
+                    }.cgImage
+                }
+            }
+            DispatchQueue.main.async { cb?(cg) }
+        }
     }
 
     /// Persistent torch: the desired state is kept and re-asserted every time
@@ -191,13 +195,22 @@ final class CameraController: NSObject, ObservableObject,
         out.connection(with: .video)?.videoRotationAngle = 90   // portrait
         if session.canAddOutput(photoOutput) {
             session.addOutput(photoOutput)
-            if let dims = dev.activeFormat.supportedMaxPhotoDimensions.last {
-                photoOutput.maxPhotoDimensions = dims   // full stills off a video format
+            // stock-camera default output class (<= 24MP): the 48MP mode doubles
+            // per-shot decode/compose cost for no visible gain in an annotated capture
+            let dims = dev.activeFormat.supportedMaxPhotoDimensions
+            if let pick = dims.last(where: { Int($0.width) * Int($0.height) <= 25_000_000 })
+                ?? dims.first {
+                photoOutput.maxPhotoDimensions = pick
             }
         }
         session.commitConfiguration()
         session.startRunning()
         applyTorch()
+        // pre-warm the photo pipeline: without prepared settings the FIRST
+        // capture pays ~0.5-1s of one-time buffer/settings negotiation
+        let warm = AVCapturePhotoSettings()
+        warm.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+        photoOutput.setPreparedPhotoSettingsArray([warm], completionHandler: nil)
     }
 
     func stop() { queue.async { self.session.stopRunning() } }

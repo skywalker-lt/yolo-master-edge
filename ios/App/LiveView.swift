@@ -173,7 +173,8 @@ struct LiveView: View {
                 }
                 if showHUD {
                     StatsHUD(fps: statHz, pre: statPre, inf: statInf,
-                             dec: statDec, dets: statDets, active: running,
+                             dec: statDec, dets: statDets,
+                             active: running && !loadingModel,
                              mask: isSegModel ? statMask : nil)
                         .padding(.bottom, 20)
                 }
