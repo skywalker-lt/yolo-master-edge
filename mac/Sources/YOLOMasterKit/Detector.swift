@@ -745,22 +745,41 @@ public final class Detector {
         let threshold: Float = 0.5, alphaMax: Float = 165
         let band: Float = 0.14, e0 = threshold - band, e1 = threshold + band, inv = 1 / (e1 - e0)
         var drew = false
-        var px = [UInt8](repeating: 0, count: plane * 4)
+        // Edge quality: the proto grid is only imgsz/4 (160px at 640), so thresholding
+        // AT proto resolution bakes its staircase into the contour no matter how the
+        // bitmap is upscaled later. Instead, Lanczos-upscale the CONTINUOUS sigmoid
+        // field 4x first, then smoothstep-threshold at that resolution: the iso-line
+        // follows interpolated curves (rounded, blended edges), not grid steps.
+        let u = 4
+        let umw = mw * u, umh = mh * u, uplane = umw * umh
+        var field = [Float](repeating: 0, count: uplane)   // upscaled sigmoid field
+        var px = [UInt8](repeating: 0, count: uplane * 4)
         // per-det tint, fully vectorized (the scalar smoothstep loop was the other
         // debug-visible hot spot): coverage a = smoothstep(t) * alphaMax as vDSP
         // planes, premultiplied channel planes, one vImage 4-plane interleave.
-        var aF = [Float](repeating: 0, count: plane)   // coverage (ends premultiplied alpha)
-        var tt = [Float](repeating: 0, count: plane)   // t^2 scratch
-        var chF = [Float](repeating: 0, count: plane)  // channel scratch
-        var chR = [UInt8](repeating: 0, count: plane), chG = chR, chB = chR, chA = chR
-        let vn = vDSP_Length(plane)
+        var aF = [Float](repeating: 0, count: uplane)   // coverage (ends premultiplied alpha)
+        var tt = [Float](repeating: 0, count: uplane)   // t^2 scratch
+        var chF = [Float](repeating: 0, count: uplane)  // channel scratch
+        var chR = [UInt8](repeating: 0, count: uplane), chG = chR, chB = chR, chA = chR
+        let vn = vDSP_Length(uplane)
         for (r, d) in usable.enumerated() {
             let comps = classColor(d.cls).components ?? [1, 0.25, 0.25, 1]
             let cr = Float(comps[0]), cg = Float(comps[1]), cb = Float(comps[2])
+            acc.withUnsafeMutableBufferPointer { ap in
+                var src = vImage_Buffer(data: ap.baseAddress! + r * plane,
+                                        height: vImagePixelCount(mh),
+                                        width: vImagePixelCount(mw), rowBytes: mw * 4)
+                field.withUnsafeMutableBufferPointer { fp in
+                    var dst = vImage_Buffer(data: fp.baseAddress,
+                                            height: vImagePixelCount(umh),
+                                            width: vImagePixelCount(umw), rowBytes: umw * 4)
+                    vImageScale_PlanarF(&src, &dst, nil, vImage_Flags(kvImageEdgeExtend))
+                }
+            }
             // t = clip((sigmoid - e0) * inv, 0, 1); a = t*t*(3 - 2t) * alphaMax
-            acc.withUnsafeBufferPointer { ap in
+            field.withUnsafeBufferPointer { ap in
                 var m = inv, add = -e0 * inv
-                vDSP_vsmsa(ap.baseAddress! + r * plane, 1, &m, &add, &aF, 1, vn)
+                vDSP_vsmsa(ap.baseAddress!, 1, &m, &add, &aF, 1, vn)
             }
             var lo: Float = 0, hi: Float = 1
             vDSP_vclip(aF, 1, &lo, &hi, &aF, 1, vn)
@@ -782,11 +801,11 @@ public final class Detector {
                         chB.withUnsafeMutableBytes { bb in
                             chA.withUnsafeMutableBytes { aa in
                                 func vb(_ p: UnsafeMutableRawBufferPointer, _ rb: Int) -> vImage_Buffer {
-                                    vImage_Buffer(data: p.baseAddress, height: vImagePixelCount(mh),
-                                                  width: vImagePixelCount(mw), rowBytes: rb)
+                                    vImage_Buffer(data: p.baseAddress, height: vImagePixelCount(umh),
+                                                  width: vImagePixelCount(umw), rowBytes: rb)
                                 }
-                                var vr = vb(rr, mw), vg = vb(gg, mw), vbP = vb(bb, mw), va = vb(aa, mw)
-                                var dest = vb(pd, mw * 4)
+                                var vr = vb(rr, umw), vg = vb(gg, umw), vbP = vb(bb, umw), va = vb(aa, umw)
+                                var dest = vb(pd, umw * 4)
                                 // planes interleave in argument order -> RGBA bytes
                                 vImageConvert_Planar8toARGB8888(&vr, &vg, &vbP, &va, &dest,
                                                                 vImage_Flags(kvImageNoFlags))
@@ -795,12 +814,12 @@ public final class Detector {
                     }
                 }
             }
-            guard let mctx = CGContext(data: &px, width: mw, height: mh, bitsPerComponent: 8, bytesPerRow: mw * 4,
+            guard let mctx = CGContext(data: &px, width: umw, height: umh, bitsPerComponent: 8, bytesPerRow: umw * 4,
                                        space: CGColorSpaceCreateDeviceRGB(),
                                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
                   let img = mctx.makeImage() else { continue }
-            let sub = CGRect(x: crop.minX * CGFloat(mw), y: crop.minY * CGFloat(mh),
-                             width: crop.width * CGFloat(mw), height: crop.height * CGFloat(mh))
+            let sub = CGRect(x: crop.minX * CGFloat(umw), y: crop.minY * CGFloat(umh),
+                             width: crop.width * CGFloat(umw), height: crop.height * CGFloat(umh))
             guard sub.width > 0, sub.height > 0, let cropped = img.cropping(to: sub) else { continue }
             ctx.saveGState()
             ctx.clip(to: CGRect(x: d.rect.minX * f, y: CGFloat(h) - d.rect.maxY * f,
