@@ -13,7 +13,7 @@ struct BenchRow: Identifiable {
 }
 
 struct BenchView: View {
-    @State private var models = BundledModel.discover()
+    @State private var models: [BundledModel] = []
     @State private var rows: [BenchRow] = []
     @State private var status = "idle"
     @State private var busy = false
@@ -49,6 +49,13 @@ struct BenchView: View {
                 }
             }
             .navigationTitle("Benchmark")
+            .onAppear {
+                guard models.isEmpty else { return }
+                Task.detached {
+                    let found = BundledModel.discover()
+                    await MainActor.run { models = found }
+                }
+            }
         }
     }
 

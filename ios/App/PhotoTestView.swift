@@ -11,7 +11,7 @@ struct PhotoTestView: View {
     enum ViewMode { case gallery, pager }
     enum Phase: Equatable { case idle, loading, loadingModel, inferring }
 
-    @State private var models = BundledModel.discover()
+    @State private var models: [BundledModel] = []
     @State private var selectedModel: BundledModel?
     @State private var compute: ComputeChoice = .ane
     @State private var style: BoxStyle = .chip
@@ -72,7 +72,18 @@ struct PhotoTestView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top) { controls }
-            .onAppear { if selectedModel == nil { selectedModel = models.first } }
+            .onAppear {
+                guard models.isEmpty else { return }
+                Task.detached {
+                    let found = BundledModel.discover()
+                    await MainActor.run {
+                        models = found
+                        if selectedModel == nil {
+                            selectedModel = BundledModel.preferred(in: found)
+                        }
+                    }
+                }
+            }
             .onChange(of: picks) { _, items in load(items) }
             .onChange(of: selectedModel) { _, _ in run() }
             .onChange(of: compute) { _, _ in run() }

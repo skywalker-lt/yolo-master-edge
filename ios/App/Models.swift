@@ -43,6 +43,12 @@ struct BundledModel: Identifiable, Hashable {
         }
         return found.sorted { $0.id < $1.id }
     }
+
+    /// Launch default: the bundled segmentation model when present (v0.1-seg-N,
+    /// the richest demo), else the first model alphabetically.
+    static func preferred(in models: [BundledModel]) -> BundledModel? {
+        models.first { $0.id.localizedCaseInsensitiveContains("seg") } ?? models.first
+    }
 }
 
 /// UI wrapper over the Kit's ComputeMode. `.all` routes to the ANE - on A-series
