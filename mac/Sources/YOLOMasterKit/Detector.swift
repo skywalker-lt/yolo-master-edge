@@ -180,9 +180,31 @@ public final class Detector {
 
         self.inputName = inName
         self.outputName = outName
-        self.protoName = meta["proto"] ?? ""
+        // proto/nm: metadata keys when the exporter stamped them; else recover from
+        // shapes (proto = the rank-4 output that isn't the det tensor, nm = its dim1).
+        // Without this, a seg model missing `nm` decodes with empty coeffs and
+        // renders zero masks with no error.
+        let protoResolved: String = {
+            if let p = meta["proto"], !p.isEmpty { return p }
+            guard segTask else { return "" }
+            return md.outputDescriptionsByName.first {
+                $0.key != outName && ($0.value.multiArrayConstraint?.shape.count ?? 0) == 4
+            }?.key ?? ""
+        }()
+        let nmResolved: Int = {
+            guard segTask else { return 0 }
+            if let v = Int(meta["nm"] ?? ""), v > 0 { return v }
+            if let sh = md.outputDescriptionsByName[protoResolved]?.multiArrayConstraint?.shape,
+               sh.count == 4 { return sh[1].intValue }
+            if let sh = md.outputDescriptionsByName[outName]?.multiArrayConstraint?.shape,
+               sh.count == 3, sh[1].intValue > 4 + metaNames.count {
+                return sh[1].intValue - 4 - metaNames.count
+            }
+            return 0
+        }()
+        self.protoName = protoResolved
         self.isSegment = segTask
-        self.nm = Int(meta["nm"] ?? "0") ?? 0
+        self.nm = nmResolved
         self.nc = ncFinal
         self.classNames = metaNames.count == ncFinal ? metaNames : (0..<ncFinal).map { "class\($0)" }
         self.imgsz = szResolved
