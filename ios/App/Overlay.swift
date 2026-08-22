@@ -18,6 +18,9 @@ enum BoxStyle: String, CaseIterable, Identifiable {
     }
 }
 
+/// COCO-80 fallback when a model carries no usable names metadata.
+let cocoNames = ["person","bicycle","car","motorcycle","airplane","bus","train","truck","boat","traffic light","fire hydrant","stop sign","parking meter","bench","bird","cat","dog","horse","sheep","cow","elephant","bear","zebra","giraffe","backpack","umbrella","handbag","tie","suitcase","frisbee","skis","snowboard","sports ball","kite","baseball bat","baseball glove","skateboard","surfboard","tennis racket","bottle","wine glass","cup","fork","knife","spoon","bowl","banana","apple","sandwich","orange","broccoli","carrot","hot dog","pizza","donut","cake","chair","couch","potted plant","bed","dining table","toilet","tv","laptop","mouse","remote","keyboard","cell phone","microwave","oven","toaster","sink","refrigerator","book","clock","vase","scissors","teddy bear","hair drier","toothbrush"]
+
 /// Same palette as mac/Sources/YOLOMasterKit/Annotate.swift and the C++ runner.
 private let palette: [Color] = [
     Color(red: 0.98, green: 0.26, blue: 0.30), Color(red: 0.20, green: 0.71, blue: 0.98),
@@ -29,61 +32,74 @@ private let palette: [Color] = [
 private let darkText: Set<Int> = [2, 3, 6, 8]   // light palette entries -> black label text
 
 enum DetOverlay {
+    /// `boxes: false` (segmentation masks-only mode) keeps the per-style labels but
+    /// skips the box geometry - the mask carries the shape.
     static func draw(_ ctx: GraphicsContext, _ dets: [Detection],
                      scale: CGFloat, ox: CGFloat, oy: CGFloat,
-                     style: BoxStyle = .chip) {
+                     style: BoxStyle = .chip, names: [String] = cocoNames,
+                     boxes: Bool = true) {
         for d in dets {
             let r = CGRect(x: d.rect.minX * scale + ox, y: d.rect.minY * scale + oy,
                            width: d.rect.width * scale, height: d.rect.height * scale)
             let ci = ((d.cls % palette.count) + palette.count) % palette.count
             let col = palette[ci]
-            let name = d.cls < cocoNames.count ? cocoNames[d.cls] : "\(d.cls)"
+            let name = d.cls < names.count ? names[d.cls] : "\(d.cls)"
             let title = "\(name) \(Int(d.score * 100))%"
             let corner = min(min(r.width, r.height) * 0.14, 10)
 
             switch style {
             case .solid:
-                ctx.stroke(Path(roundedRect: r, cornerRadius: corner),
-                           with: .color(col), lineWidth: 2.4)
+                if boxes {
+                    ctx.stroke(Path(roundedRect: r, cornerRadius: corner),
+                               with: .color(col), lineWidth: 2.4)
+                }
                 chipLabel(ctx, title, at: r, color: col, dark: darkText.contains(ci))
 
             case .neon:
-                var glow = ctx
-                glow.addFilter(.shadow(color: col.opacity(0.95), radius: 8))
-                glow.stroke(Path(roundedRect: r, cornerRadius: corner),
-                            with: .color(col), lineWidth: 2.6)
-                ctx.stroke(Path(roundedRect: r, cornerRadius: corner),
-                           with: .color(col), lineWidth: 1.2)
+                if boxes {
+                    var glow = ctx
+                    glow.addFilter(.shadow(color: col.opacity(0.95), radius: 8))
+                    glow.stroke(Path(roundedRect: r, cornerRadius: corner),
+                                with: .color(col), lineWidth: 2.6)
+                    ctx.stroke(Path(roundedRect: r, cornerRadius: corner),
+                               with: .color(col), lineWidth: 1.2)
+                }
                 var t = ctx
                 t.addFilter(.shadow(color: col.opacity(0.9), radius: 5))
                 let txt = t.resolve(Text(title).font(.caption2.bold()).foregroundStyle(col))
                 t.draw(txt, at: CGPoint(x: r.minX + 2, y: max(r.minY - 9, 6)), anchor: .leading)
 
             case .hud:
-                ctx.fill(Path(r), with: .color(col.opacity(0.08)))
-                ctx.stroke(Path(r), with: .color(col.opacity(0.35)), lineWidth: 1)
-                let arm = min(min(r.width, r.height) * 0.28, 26)
-                var p = Path()
-                for (cx, cy, sx, sy): (CGFloat, CGFloat, CGFloat, CGFloat) in
-                    [(r.minX, r.minY, 1, 1), (r.maxX, r.minY, -1, 1),
-                     (r.minX, r.maxY, 1, -1), (r.maxX, r.maxY, -1, -1)] {
-                    p.move(to: CGPoint(x: cx + arm * sx, y: cy))
-                    p.addLine(to: CGPoint(x: cx, y: cy))
-                    p.addLine(to: CGPoint(x: cx, y: cy + arm * sy))
+                if boxes {
+                    ctx.fill(Path(r), with: .color(col.opacity(0.08)))
+                    ctx.stroke(Path(r), with: .color(col.opacity(0.35)), lineWidth: 1)
+                    let arm = min(min(r.width, r.height) * 0.28, 26)
+                    var p = Path()
+                    for (cx, cy, sx, sy): (CGFloat, CGFloat, CGFloat, CGFloat) in
+                        [(r.minX, r.minY, 1, 1), (r.maxX, r.minY, -1, 1),
+                         (r.minX, r.maxY, 1, -1), (r.maxX, r.maxY, -1, -1)] {
+                        p.move(to: CGPoint(x: cx + arm * sx, y: cy))
+                        p.addLine(to: CGPoint(x: cx, y: cy))
+                        p.addLine(to: CGPoint(x: cx, y: cy + arm * sy))
+                    }
+                    ctx.stroke(p, with: .color(col), lineWidth: 2.8)
                 }
-                ctx.stroke(p, with: .color(col), lineWidth: 2.8)
                 let txt = ctx.resolve(Text(title.uppercased())
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(col))
                 ctx.draw(txt, at: CGPoint(x: r.minX + 3, y: max(r.minY - 9, 6)), anchor: .leading)
 
             case .chip:
-                ctx.stroke(Path(roundedRect: r, cornerRadius: 3),
-                           with: .color(col), lineWidth: 2)
+                if boxes {
+                    ctx.stroke(Path(roundedRect: r, cornerRadius: 3),
+                               with: .color(col), lineWidth: 2)
+                }
                 chipLabel(ctx, title, at: r, color: col, dark: darkText.contains(ci))
 
             case .minimal:
-                ctx.stroke(Path(r), with: .color(.white.opacity(0.9)), lineWidth: 1)
+                if boxes {
+                    ctx.stroke(Path(r), with: .color(.white.opacity(0.9)), lineWidth: 1)
+                }
                 let txt = ctx.resolve(Text(title)
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.white.opacity(0.9)))
