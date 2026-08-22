@@ -14,7 +14,23 @@ final class CameraController: NSObject, ObservableObject,
     private(set) var latest: CVPixelBuffer?
     private var frameID: UInt64 = 0
     private let latestLock = NSLock()
+    private var device: AVCaptureDevice?
     @Published var authorized = false
+
+    /// Pinch-zoom: set the capture zoom factor (focal change happens in the
+    /// capture pipeline, so detection frames and preview zoom together).
+    /// Returns the clamped factor actually applied.
+    @discardableResult
+    func setZoom(_ factor: CGFloat) -> CGFloat {
+        guard let dev = device else { return 1 }
+        let maxZ = min(dev.activeFormat.videoMaxZoomFactor, 16)
+        let z = min(max(factor, 1), maxZ)
+        if (try? dev.lockForConfiguration()) != nil {
+            dev.videoZoomFactor = z
+            dev.unlockForConfiguration()
+        }
+        return z
+    }
 
     func start() {
         AVCaptureDevice.requestAccess(for: .video) { [weak self] ok in
@@ -34,6 +50,7 @@ final class CameraController: NSObject, ObservableObject,
               session.canAddInput(input) else {
             session.commitConfiguration(); return
         }
+        device = dev
         session.addInput(input)
         let out = AVCaptureVideoDataOutput()
         out.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String:

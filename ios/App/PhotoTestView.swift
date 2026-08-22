@@ -128,19 +128,16 @@ struct PhotoTestView: View {
         } else {
             TabView(selection: $page) {
                 ForEach(images.indices, id: \.self) { i in
-                    annotated(images[i], results.indices.contains(i) ? results[i] : [])
-                        .tag(i)
+                    ZoomableView(onPinchExit: {
+                        withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
+                    }) {
+                        annotated(images[i], results.indices.contains(i) ? results[i] : [])
+                    }
+                    .tag(i)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .automatic))
             .transition(.scale(scale: 1.08).combined(with: .opacity))
-            .gesture(
-                MagnifyGesture().onEnded { v in
-                    if v.magnification < 0.85 {          // pinch-out -> gallery
-                        withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
-                    }
-                }
-            )
         }
     }
 
@@ -388,3 +385,59 @@ struct PhotoTestView: View {
     }
 }
 
+
+
+/// Pinch-zoomable page: zoom 1-5x with pan when zoomed, double-tap toggles
+/// 1x/2.5x, and pinching IN below 1x (with live shrink feedback) exits to the
+/// gallery - far more responsive than a hard end-of-gesture threshold.
+struct ZoomableView<Content: View>: View {
+    let onPinchExit: () -> Void
+    @ViewBuilder let content: Content
+    @State private var zoom: CGFloat = 1
+    @State private var baseZoom: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var baseOffset: CGSize = .zero
+
+    var body: some View {
+        content
+            .scaleEffect(zoom)
+            .offset(offset)
+            .gesture(
+                MagnifyGesture()
+                    .onChanged { v in
+                        zoom = min(max(baseZoom * v.magnification, 0.6), 5)
+                    }
+                    .onEnded { v in
+                        let target = baseZoom * v.magnification
+                        if baseZoom <= 1.01 && target < 0.95 {   // sensitive exit
+                            reset()
+                            onPinchExit()
+                            return
+                        }
+                        zoom = min(max(target, 1), 5)
+                        baseZoom = zoom
+                        if zoom <= 1.01 { withAnimation(.spring(duration: 0.25)) { offset = .zero }; baseOffset = .zero }
+                    }
+            )
+            .simultaneousGesture(
+                DragGesture()
+                    .onChanged { g in
+                        guard baseZoom > 1.01 else { return }
+                        offset = CGSize(width: baseOffset.width + g.translation.width,
+                                        height: baseOffset.height + g.translation.height)
+                    }
+                    .onEnded { _ in baseOffset = offset }
+            )
+            .onTapGesture(count: 2) {
+                withAnimation(.spring(duration: 0.3)) {
+                    if zoom > 1.5 { reset() } else { zoom = 2.5; baseZoom = 2.5 }
+                }
+            }
+            .animation(.easeOut(duration: 0.1), value: zoom)
+            .onDisappear { reset() }
+    }
+
+    private func reset() {
+        zoom = 1; baseZoom = 1; offset = .zero; baseOffset = .zero
+    }
+}
