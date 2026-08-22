@@ -292,11 +292,11 @@ public final class Detector {
             dets.sort { $0.score > $1.score }
             return dets
         }
-        // fast path: contiguous anchors, no masks, float32 OR float16. The fp16
+        // fast path: contiguous anchors, float32 OR float16, det AND seg. The fp16
         // case is the ANE's native output - the generic path costs ~100ms/frame
         // there (per-element closure + scalar half->float); here it is one
         // vectorized vImage conversion followed by the same vDSP-gated scan.
-        if !end2end, nm == 0, s2 == 1,
+        if !end2end, s2 == 1,
            y.dataType == .float32 || y.dataType == .float16 {
             func scan(_ yp: UnsafePointer<Float32>) {
                 for c in 0..<nc {
@@ -314,9 +314,17 @@ public final class Detector {
                         x1 = max(0, min(CGFloat(origW), x1)); x2 = max(0, min(CGFloat(origW), x2))
                         y1 = max(0, min(CGFloat(origH), y1)); y2 = max(0, min(CGFloat(origH), y2))
                         if x2 > x1 && y2 > y1 {
+                            // seg: gather the nm coeffs down this anchor's column,
+                            // survivors only (the whole-tensor work stays vectorized)
+                            var coeffs: [Float] = []
+                            if nm > 0 {
+                                coeffs.reserveCapacity(nm)
+                                let base = yp + (4 + nc) * s1 + a
+                                for k in 0..<nm { coeffs.append(base[k * s1]) }
+                            }
                             dets.append(Detection(cls: c, score: s,
                                                   rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1),
-                                                  maskCoeffs: []))
+                                                  maskCoeffs: coeffs))
                         }
                     }
                 }
