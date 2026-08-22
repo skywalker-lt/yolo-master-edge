@@ -1,6 +1,8 @@
 // Live camera detection: preview layer + Canvas overlay + model/compute pickers.
 // Detection loop: grab freshest frame -> Kit forward(pixelBuffer) -> decode -> draw.
+import AudioToolbox
 import AVFoundation
+import Photos
 import SwiftUI
 import YOLOMasterKit
 
@@ -63,6 +65,7 @@ struct LiveView: View {
     @State private var zoomBase: CGFloat = 1  // display zoom factor at gesture start
     @State private var focusPoint: CGPoint?   // last tap, preview-layer coords
     @State private var focusVisible = false
+    @State private var shutterFlash = false   // brief black blink on capture
     @State private var loadingModel = false   // Detector init in flight (compile + unit load)
     @State private var running = false        // loop actually alive
     @State private var wantRun = true         // the user's intent - survives tab
@@ -120,6 +123,10 @@ struct LiveView: View {
                 ContentUnavailableView("Camera access required",
                                        systemImage: "camera.fill")
             }
+            Color.black
+                .opacity(shutterFlash ? 1 : 0)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
             if loadingModel {
                 HStack(spacing: 10) {
                     ProgressView()
@@ -138,6 +145,16 @@ struct LiveView: View {
                         .padding(.vertical, 5)
                         .background(.ultraThinMaterial, in: Capsule())
                         .padding(.bottom, 6)
+                    Button { captureFrame() } label: {
+                        ZStack {
+                            Circle().stroke(.white.opacity(0.9), lineWidth: 3)
+                                .frame(width: 58, height: 58)
+                            Circle().fill(.white)
+                                .frame(width: 46, height: 46)
+                        }
+                    }
+                    .buttonStyle(ShutterStyle())
+                    .padding(.bottom, 8)
                 }
                 if showHUD {
                     StatsHUD(fps: statHz, pre: statPre, inf: statInf,
@@ -348,6 +365,57 @@ struct LiveView: View {
         }
     }
 
+    /// Shutter: sound + haptic + black blink, then compose the current frame
+    /// with the live overlay (mask composite + Kit-rendered boxes/labels,
+    /// honoring the Masks/Boxes/Both mode) off-main and save it to Photos.
+    private func captureFrame() {
+        guard let (pb, _) = camera.grabLatest(),
+              let frame = Detector.cgImage(from: pb) else { return }
+        AudioServicesPlaySystemSound(1108)                       // classic shutter
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        shutterFlash = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            withAnimation(.easeOut(duration: 0.2)) { shutterFlash = false }
+        }
+        let dets = detections
+        let mask = maskImage
+        let drawMask = isSegModel && tuning.segOverlay != .boxes
+        let drawBoxes = !(isSegModel && tuning.segOverlay == .masks)
+        let names = classNames
+        let kitStyle: YOLOMasterKit.BoxStyle = {
+            switch style {
+            case .neon: return .neon
+            case .hud, .minimal: return .hud
+            default: return .solid
+            }
+        }()
+        Task.detached(priority: .userInitiated) {
+            var img = frame
+            if drawMask, let mask,
+               let ctx = CGContext(data: nil, width: img.width, height: img.height,
+                                   bitsPerComponent: 8, bytesPerRow: 0,
+                                   space: CGColorSpaceCreateDeviceRGB(),
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                ctx.interpolationQuality = .high
+                let full = CGRect(x: 0, y: 0, width: img.width, height: img.height)
+                ctx.draw(img, in: full)
+                ctx.draw(mask, in: full)
+                if let out = ctx.makeImage() { img = out }
+            }
+            if !dets.isEmpty || drawBoxes {
+                img = annotate(img, dets, names: names, style: kitStyle,
+                               label: .full, drawBoxes: drawBoxes) ?? img
+            }
+            let ui = UIImage(cgImage: img)
+            if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
+                _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+            }
+            try? await PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAsset(from: ui)
+            }
+        }
+    }
+
     /// Stop the loop and WIPE the overlay; keeps `wantRun` untouched so
     /// lifecycle pauses auto-resume.
     private func suspendLoop() {
@@ -370,5 +438,14 @@ struct LiveView: View {
     /// User-initiated stop (play/pause button).
     private func stopLoop() {
         suspendLoop()
+    }
+}
+
+/// Camera-app shutter feel: quick shrink while pressed.
+struct ShutterStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.85 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
