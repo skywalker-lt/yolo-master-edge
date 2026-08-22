@@ -30,10 +30,11 @@ func fpsColor(_ fps: Double) -> Color {
     }
 }
 
-/// Stage bars: green while legit, blending to orange past ~20ms, fully orange
-/// at 35ms+ ("extraordinarily slow" for any single stage of a 30FPS budget).
-func stageColor(_ ms: Double) -> Color {
-    color(lerp(cGreen, cOrange, (ms - 20) / 15))
+/// Stage bars: green while legit, blending to orange past `greenUntil` (default
+/// ~20ms, "extraordinarily slow" for any single stage of a 30FPS budget). Rows
+/// measuring a whole pipeline pass a higher threshold.
+func stageColor(_ ms: Double, greenUntil: Double = 20) -> Color {
+    color(lerp(cGreen, cOrange, (ms - greenUntil) / 15))
 }
 
 // MARK: - HUD
@@ -124,7 +125,7 @@ struct StatsHUD: View {
             }
             DetailBar(icon: "gearshape.2", name: "postprocess", ms: dec + (mask ?? 0))
             DetailBar(icon: "timer", name: "end to end",
-                      ms: pre + inf + dec + (mask ?? 0), fullScale: 100)
+                      ms: pre + inf + dec + (mask ?? 0), fullScale: 100, greenUntil: 50)
         }
     }
 
@@ -265,6 +266,7 @@ struct DetailBar: View {
     let name: String
     let ms: Double
     var fullScale = 50.0
+    var greenUntil = 20.0   // whole-pipeline rows warn later than single stages
 
     var body: some View {
         HStack(spacing: 6) {
@@ -278,7 +280,7 @@ struct DetailBar: View {
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.quaternary)
-                    Capsule().fill(stageColor(ms))
+                    Capsule().fill(stageColor(ms, greenUntil: greenUntil))
                         .frame(width: max(3, min(ms / fullScale, 1) * g.size.width))
                 }
             }
