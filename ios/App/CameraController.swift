@@ -16,6 +16,9 @@ final class CameraController: NSObject, ObservableObject,
     private(set) var latest: CVPixelBuffer?
     private var frameID: UInt64 = 0
     private let latestLock = NSLock()
+    private var rateCount = 0
+    private var rateStart = CFAbsoluteTimeGetCurrent()
+    private var rateValue: Double = 0
     private var device: AVCaptureDevice?
     @Published var authorized = false
     /// videoZoomFactor of the 1x (wide) lens. On virtual multi-cam devices the
@@ -204,6 +207,11 @@ final class CameraController: NSObject, ObservableObject,
             }
         }
         session.commitConfiguration()
+        if (try? dev.lockForConfiguration()) != nil {
+            dev.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
+            dev.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
+            dev.unlockForConfiguration()
+        }
         session.startRunning()
         applyTorch()
         // pre-warm the photo pipeline: without prepared settings the FIRST
@@ -218,7 +226,25 @@ final class CameraController: NSObject, ObservableObject,
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        latestLock.lock(); latest = pb; frameID &+= 1; latestLock.unlock()
+        latestLock.lock()
+        latest = pb
+        frameID &+= 1
+        rateCount += 1
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - rateStart >= 1 {
+            rateValue = Double(rateCount) / (now - rateStart)
+            rateCount = 0
+            rateStart = now
+        }
+        latestLock.unlock()
+    }
+
+    /// Sensor->app frame delivery rate (Hz), 1s window. THE diagnostic for
+    /// "labels lag the preview": if this reads below ~29 the capture pipeline
+    /// is starving the loop, and no decode optimization can help.
+    func deliveryRate() -> Double {
+        latestLock.lock(); defer { latestLock.unlock() }
+        return rateValue
     }
 
     /// Freshest frame + a monotonically increasing id so consumers can skip
