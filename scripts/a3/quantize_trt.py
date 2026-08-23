@@ -601,8 +601,6 @@ def main():
                     m50, mm = eval_engine(ep, str(yaml_path), args.imgsz, 1, args.workers,
                                           args.eval_max_images, None)
                     break
-            if info is None:
-                continue
                 m50, mm = eval_engine(ep, str(yaml_path), args.imgsz, 1, args.workers,
                                       args.eval_max_images, None)
                 d = mm - base_map if base_map is not None else 0.0
@@ -616,6 +614,8 @@ def main():
                 pins_used.update(nxt)
                 print(f"          pinning next {len(nxt)} ranked layers: {nxt[:3]}...")
                 round_i += 1
+            if info is None:
+                continue   # infeasible base-pin set recorded above; next mode
         else:
             info = build_engine(model_path, ep, mode, args.imgsz,
                                 calib_imgs if mode == "int8-naive" else None,
