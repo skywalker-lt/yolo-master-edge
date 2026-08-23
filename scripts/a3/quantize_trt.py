@@ -358,6 +358,21 @@ def eval_engine(engine_path: Path, data: str, imgsz: int, batch: int, workers: i
 # main
 # ---------------------------------------------------------------------------
 
+def _write_ladder(ladder, out):
+    import csv
+    if not ladder:
+        return
+    fp32 = next((r for r in ladder if r["mode"] == "fp32"), None)
+    for r in ladder:
+        if fp32 and fp32["lat_ms_median"]:
+            r["speedup_vs_fp32"] = round(fp32["lat_ms_median"] / r["lat_ms_median"], 2)
+            r["lat_cut_pct"] = round(100 * (1 - r["lat_ms_median"] / fp32["lat_ms_median"]), 1)
+    with open(out / "ladder.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=[k for k in ladder[0].keys() if k != "pinned"])
+        w.writeheader()
+        w.writerows(ladder)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--model", required=True, help=".pt (exported to onnx here) or .onnx")
@@ -382,6 +397,8 @@ def main():
                     help="on = adaptive whole-module bisection instead of greedy per-layer pinning")
     ap.add_argument("--pin-attn-core", choices=["off", "on"], default="off",
                     help="on = pin attention QK^T/softmax/PV FP16, keep qkv+proj convs INT8")
+    ap.add_argument("--pins", choices=["all", "head", "routers", "none"], default="all",
+                    help="always-pinned FP16 sets for implicit int8: head+routers (all), one of them, or none")
     ap.add_argument("--tf32-baseline", choices=["on", "off"], default="on",
                     help="off = criterion-faithful pure-FP32 baseline (TF32 disabled)")
     args = ap.parse_args()
@@ -430,6 +447,9 @@ def main():
     print(f"[head] pinned subgraph prefix: {head_prefix} (mixed-semantics concat lives here)")
     router_prefixes = router_prefixes_from_onnx(model_path)
     print(f"[router] always-pinned router subgraphs: {router_prefixes}")
+    base_pins = {"all": [head_prefix] + router_prefixes, "head": [head_prefix],
+                 "routers": list(router_prefixes), "none": []}[args.pins]
+    print(f"[pins] --pins {args.pins}: {base_pins}")
 
     print("[scan] per-layer sensitivity (ORT fp32 activation statistics)...")
     rows = sensitivity_scan(model_path, calib_imgs, args.imgsz, out / "sensitivity_report.csv")
@@ -557,7 +577,7 @@ def main():
             while True:
                 try:
                     info = build_engine(model_path, ep, "int8", args.imgsz, calib_imgs, cache,
-                                        pin_fp16_prefixes=[head_prefix] + router_prefixes + recipe,
+                                        pin_fp16_prefixes=base_pins + recipe,
                                         pin_fp16_layers=pins_used)
                 except RuntimeError as e:
                     # OBEY hazard: a pin that splits a fusion group (e.g. only the Mul
@@ -566,12 +586,23 @@ def main():
                     print(f"[int8 round {round_i}] build infeasible with batch {nxt[:3]}...; "
                           f"reverting batch and stopping greedy ({e})")
                     pins_used.difference_update(nxt)
-                    info = build_engine(model_path, ep, "int8", args.imgsz, calib_imgs, cache,
-                                        pin_fp16_prefixes=[head_prefix] + router_prefixes + recipe,
-                                        pin_fp16_layers=pins_used)
+                    try:
+                        info = build_engine(model_path, ep, "int8", args.imgsz, calib_imgs, cache,
+                                            pin_fp16_prefixes=base_pins + recipe,
+                                            pin_fp16_layers=pins_used)
+                    except RuntimeError as e2:
+                        # infeasible even without greedy pins: the always-pin set itself
+                        # splits a fusion group on this graph. That is a finding; record
+                        # it and keep the ladder going.
+                        print(f"[int8] FAILED (base pins {args.pins}): {e2}")
+                        (out / "failed_int8.txt").write_text(f"pins={args.pins} {e2}\n")
+                        info = None
+                        break
                     m50, mm = eval_engine(ep, str(yaml_path), args.imgsz, 1, args.workers,
                                           args.eval_max_images, None)
                     break
+            if info is None:
+                continue
                 m50, mm = eval_engine(ep, str(yaml_path), args.imgsz, 1, args.workers,
                                       args.eval_max_images, None)
                 d = mm - base_map if base_map is not None else 0.0
@@ -600,17 +631,9 @@ def main():
                "n_pinned_fp16": info.get("n_pinned_fp16", 0)}
         ladder.append(row)
         print(f"[{mode}] {lat['lat_ms_median']}ms  mAP50-95 {mm:.4f}  size {info['size_MB']}MB")
+        _write_ladder(ladder, out)   # rows survive a later infeasible rung
 
-    fp32 = next((r for r in ladder if r["mode"] == "fp32"), None)
-    for r in ladder:
-        if fp32 and fp32["lat_ms_median"]:
-            r["speedup_vs_fp32"] = round(fp32["lat_ms_median"] / r["lat_ms_median"], 2)
-            r["lat_cut_pct"] = round(100 * (1 - r["lat_ms_median"] / fp32["lat_ms_median"]), 1)
-    import csv
-    with open(out / "ladder.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=[k for k in ladder[0].keys() if k != "pinned"])
-        w.writeheader()
-        w.writerows(ladder)
+    _write_ladder(ladder, out)
     (out / "pins.json").write_text(json.dumps({"head_prefix": head_prefix,
                                                "greedy_pins": sorted(pins_used)}, indent=2))
     print("\n===== ladder =====")
