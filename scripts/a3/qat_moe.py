@@ -129,8 +129,14 @@ def main():
     print(f"[calib] {len(calib)} train images from {train_dir}")
 
     def forward_loop(model):
+        # Calibrate in EXPORT-EQUIVALENT mode. On the unpruned models (k < E) the eager
+        # path routes sparsely, so experts never selected for any calibration image
+        # get no activation statistics - but the exported graph computes ALL experts
+        # (stack + gather), so every expert quantizer must be calibrated on every
+        # input, exactly what the graph will see. Same mock the exporters use.
+        from unittest import mock
         model.eval()
-        with torch.no_grad():
+        with torch.no_grad(), mock.patch("torch.onnx.is_in_onnx_export", return_value=True):
             for i in range(0, len(calib), 16):
                 blobs = [qt.letterbox_blob(p, args.imgsz) for p in calib[i:i + 16]]
                 x = torch.from_numpy(np.concatenate(blobs, 0)).cuda()
@@ -141,7 +147,20 @@ def main():
         mtq.quantize(model, qcfg, forward_loop)
         n_q = sum(1 for _, m in model.named_modules()
                   if type(m).__name__ == "TensorQuantizer" and m.is_enabled)
-        print(f"[mtq] calibrated in {time.time() - t0:.0f}s, {n_q} active quantizers")
+        # explicit coverage audit: a quantizer that saw no data cannot be exported;
+        # never let that surface as a silent assert deep in the exporter
+        uncal = [n for n, m in model.named_modules()
+                 if type(m).__name__ == "TensorQuantizer" and m.is_enabled
+                 and getattr(m, "amax", None) is None and not getattr(m, "_dynamic", False)]
+        if uncal:
+            print(f"[mtq] WARNING {len(uncal)} quantizers received NO calibration data "
+                  f"(routed-expert coverage gap); disabling them (kept FP16): {uncal[:8]}...")
+            for n, m in model.named_modules():
+                if n in uncal:
+                    m.disable()
+            n_q -= len(uncal)
+        print(f"[mtq] calibrated in {time.time() - t0:.0f}s, {n_q} active quantizers, "
+              f"{len(uncal)} uncalibrated->disabled")
         return n_q
 
     # ---- QAT finetune --------------------------------------------------------
