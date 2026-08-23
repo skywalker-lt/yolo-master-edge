@@ -182,6 +182,7 @@ def parity(yolo, onnx_path: Path, images: list[Path], imgsz: int) -> dict:
     prov = ["CUDAExecutionProvider", "CPUExecutionProvider"] if "CUDAExecutionProvider" in providers \
         else ["CPUExecutionProvider"]
     sess = ort.InferenceSession(str(onnx_path), providers=prov)
+    prov = sess.get_providers()   # the providers ACTUALLY in use (CUDA can silently fall back)
     in_name = sess.get_inputs()[0].name
     # eager reference on CPU fp32: the REAL model semantics (sparse where sparse),
     # fused + single-tensor head output exactly like the exporter prepares it
