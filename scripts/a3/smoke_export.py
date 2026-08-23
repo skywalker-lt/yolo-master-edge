@@ -190,7 +190,7 @@ def parity(yolo, onnx_path: Path, images: list[Path], imgsz: int) -> dict:
     ref.fuse() if hasattr(ref, "fuse") else None
     head = ref.model[-1]
     head.export, head.format = True, "onnx"
-    abs_max, rel_max, abs_mean, box_agree = [], [], [], []
+    abs_max, rel_max, abs_mean, box_agree, norm_rel = [], [], [], [], []
     with torch.no_grad():
         for p in images:
             x = letterbox(cv2.imread(str(p)), imgsz)
@@ -201,13 +201,17 @@ def parity(yolo, onnx_path: Path, images: list[Path], imgsz: int) -> dict:
             abs_max.append(float(diff.max()))
             abs_mean.append(float(diff.mean()))
             rel_max.append(float((diff / (np.abs(y_ref) + 1e-3)).max()))
+            # scale-normalized error: box rows are in pixels (0..640), class rows in
+            # 0..1, so elementwise relative error on near-zero entries is meaningless
+            norm_rel.append(float(diff.max() / (np.abs(y_ref).max() + 1e-6)))
             # top-100 anchors by max class score: do both backends pick the same set?
             sc_r = y_ref[0, 4:].max(0); sc_o = y_ort[0, 4:].max(0)
             top_r = set(np.argsort(-sc_r)[:100]); top_o = set(np.argsort(-sc_o)[:100])
             box_agree.append(len(top_r & top_o) / 100.0)
     return {"providers": prov[0], "n_images": len(images),
             "max_abs": max(abs_max), "mean_abs": float(np.mean(abs_mean)),
-            "max_rel": max(rel_max), "top100_anchor_agreement": float(np.mean(box_agree))}
+            "max_rel_elementwise": max(rel_max), "max_norm_rel": max(norm_rel),
+            "top100_anchor_agreement": float(np.mean(box_agree))}
 
 
 def main():
@@ -308,8 +312,10 @@ def main():
         fails.append(f"data-dependent control flow in graph: {bad}")
     if n_expert_conv_onnx and n_expert_conv_onnx < n_expert_conv_mod:
         fails.append(f"expert convs lost in export: {n_expert_conv_onnx} < {n_expert_conv_mod}")
-    if rep["parity"]["max_rel"] > args.rel_tol:
-        fails.append(f"ORT parity max_rel {rep['parity']['max_rel']:.2e} > {args.rel_tol}")
+    if rep["parity"]["max_norm_rel"] > args.rel_tol:
+        fails.append(f"ORT parity scale-normalized error {rep['parity']['max_norm_rel']:.2e} > {args.rel_tol}")
+    if rep["parity"]["top100_anchor_agreement"] < 0.95:
+        fails.append(f"ORT parity top-100 anchor agreement {rep['parity']['top100_anchor_agreement']:.3f} < 0.95")
     rep["verification"] = {"failures": fails}
     rep["status"] = "pass" if not fails else "fail"
     rep["elapsed_s"] = round(time.time() - t0, 1)
