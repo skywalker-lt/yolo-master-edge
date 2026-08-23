@@ -1,5 +1,12 @@
 # A3：动态路由、Softmax、top-k 与异构专家在 ONNX / TensorRT / INT8 下的真实兼容性
 
+**本README目前仅包含Smoke Test、8月24日准入测试以及部份P0结果。**
+
+<img width="3386" height="1241" alt="50001 copy" src="https://github.com/user-attachments/assets/e2c83800-36d6-4ea2-be5c-af2abbc43524" />
+
+<br>
+<br>
+
 Branch `dev/a3-smoke` rebased基于边缘仓库冻结基线`446f53ac`创建。本文档只覆盖**8.24 smoke test / 准入检查**的范围：
 - 最小`yolo.export` smoke test
 - 环境矩阵+后端版本
