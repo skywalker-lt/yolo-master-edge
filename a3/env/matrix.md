@@ -1,6 +1,6 @@
 | item | value |
 |---|---|
-| captured_utc | 2026-08-23T02:24:49+00:00 |
+| captured_utc | 2026-08-23T07:14:33+00:00 |
 | host | fea95d9954c8 |
 | os | Ubuntu 22.04.5 LTS |
 | kernel | 6.8.0-50-generic |
@@ -23,7 +23,7 @@
 | modelopt | 0.27.1 |
 | pycocotools | installed (no __version__) |
 | opencv | 5.0.0 |
-| ultralytics | 8.3.240 |
+| ultralytics | 8.4.101 |
 | ultralytics_file | /data/YOLO-Master/ultralytics/__init__.py |
-| yolo_master_repo | `3ea98305a844` (2026-08-01, littlemod-moa, dirty: scripts/reproduce/bench_coco_latency.py) |
-| edge_repo | `fdf7894549aa` (2026-08-23, dev/a3-smoke) |
+| yolo_master_repo | `acce839c7e89` (2026-08-21, main) |
+| edge_repo | `30dd3c3f156e` (2026-08-23, dev/a3-smoke, dirty: a3/env/pip-freeze.txt) |

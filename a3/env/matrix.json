@@ -1,5 +1,5 @@
 {
-  "captured_utc": "2026-08-23T02:24:49+00:00",
+  "captured_utc": "2026-08-23T07:14:33+00:00",
   "host": "fea95d9954c8",
   "os": "Ubuntu 22.04.5 LTS",
   "kernel": "6.8.0-50-generic",
@@ -22,22 +22,22 @@
   "modelopt": "0.27.1",
   "pycocotools": "installed (no __version__)",
   "opencv": "5.0.0",
-  "ultralytics": "8.3.240",
+  "ultralytics": "8.4.101",
   "ultralytics_file": "/data/YOLO-Master/ultralytics/__init__.py",
   "yolo_master_repo": {
     "path": "/data/YOLO-Master",
-    "commit": "3ea98305a8449d8d9f4a00845e26ff9d8bf3b66e",
-    "date": "2026-08-01",
-    "branch": "littlemod-moa",
-    "dirty_tracked_files": [
-      "scripts/reproduce/bench_coco_latency.py"
-    ]
+    "commit": "acce839c7e895d6b179de7f7093fa879e237cc7b",
+    "date": "2026-08-21",
+    "branch": "main",
+    "dirty_tracked_files": []
   },
   "edge_repo": {
     "path": ".",
-    "commit": "fdf7894549aa496d1b6aa38dc5d10ca61824c1bf",
+    "commit": "30dd3c3f156e0150201ec3f2ca7b413e60dac0ae",
     "date": "2026-08-23",
     "branch": "dev/a3-smoke",
-    "dirty_tracked_files": []
+    "dirty_tracked_files": [
+      "a3/env/pip-freeze.txt"
+    ]
   }
 }
