@@ -32,7 +32,6 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "project03"))  # diagnose_moe repairs
 import quantize_trt as qt  # letterbox_blob, build_engine, eval/time helpers
 
 

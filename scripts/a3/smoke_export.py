@@ -51,7 +51,7 @@ os.environ.setdefault("YOLO_AUTOINSTALL", "False")   # never let export mutate t
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "project03"))
+sys.path.insert(0, str(Path(__file__).parent))
 from diagnose_moe import _fix_add_residual, _force_dense_esmoe, _strip_property_shadows  # noqa: E402
 
 EXACT_GATHER = {"OptimizedMOEImproved", "ModularRouterExpertMoE", "OptimizedMOE"}
