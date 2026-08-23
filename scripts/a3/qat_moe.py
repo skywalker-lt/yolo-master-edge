@@ -91,8 +91,9 @@ def main():
 
     yolo = YOLO(args.model)
     # A3 rebase onto the RELEASED (non-pruned) weights (see quantize_trt.py)
-    from diagnose_moe import _fix_add_residual, _force_dense_esmoe
+    from diagnose_moe import _fix_add_residual, _force_dense_esmoe, _strip_property_shadows
     print(f"[repair] add_residual forced False on {_fix_add_residual(yolo)} blocks; "
+          f"property shadows stripped {_strip_property_shadows(yolo)}; "
           f"ES_MOE dense={_force_dense_esmoe(yolo)}")
     net = yolo.model.cuda().eval()
 
