@@ -1,52 +1,49 @@
-# A3: 动态路由 / Softmax / top-k / 异构专家在 ONNX / TensorRT / INT8 下的真实兼容性
-# A3: Real compatibility of dynamic routing under ONNX / TensorRT / INT8
+# A3: Real compatibility of dynamic routing, Softmax, top-k and heterogeneous experts under ONNX / TensorRT / INT8
 
-分支 `dev/a3-smoke`，基于 `dev/project03`。本 README 只覆盖 **8.24 准入检查** 的范围：
-最小 `yolo.export` smoke、环境矩阵与后端版本、一份失败日志 + 一份成功日志、以及下方准入表格。
-完整的边缘推理运行时文档见文末 "现有能力"。
-
-This branch covers the **8.24 entry check only**: the minimal `yolo.export` smoke, the
-environment matrix and backend versions, one failure and one success log, and the entry
-table below. The existing runtime documentation is summarized at the end.
+Branch `dev/a3-smoke`, based on `dev/project03`. This README covers the **8.24 entry check only**:
+the minimal `yolo.export` smoke, the environment matrix and backend versions, one failure log and one
+success log, and the entry table below. The existing edge runtime is summarized in section 10.
 
 ---
 
-## 1. 课题定位 / Scope
+## 1. Scope
 
-**已有（不是本课题新建）/ Already shipped, not claimed here:** 本仓库已提供 ONNX Runtime /
-NCNN / MNN / TensorRT / CoreML 多后端运行时（v1.1.0）、Jetson Orin 原生 TensorRT 部署、
-以及 project03 阶段在 **剪枝后** v0.1-N 上完成的 INT8 研究（TensorRT 隐式 PTQ 与显式 Q/DQ
-阶梯、校准覆盖率定律、敏感层集合、QAT 负结果）。`ultralytics` 的导出器本身对 MoE 毫无感知。
+**Already shipped (not claimed by this topic):** this repository provides the multi-backend runtime
+(ONNX Runtime / NCNN / MNN / TensorRT / CoreML, v1.1.0), native TensorRT deployment on Jetson Orin, and
+the project03 INT8 study on the **pruned** v0.1-N (TensorRT implicit PTQ vs explicit Q/DQ ladders, the
+calibration coverage law, the sensitive-layer set, a negative QAT result). The `ultralytics` exporter
+itself has no MoE awareness at all.
 
-**本课题补齐的缺口 / Gaps this topic closes (补齐闭环、严谨复测、工具化):**
+**Gaps this topic closes (closing the loop, rigorous re-measurement, tooling):**
 
-| 缺口 | 本分支做法 |
+| Gap | What this branch does |
 |---|---|
-| 导出器对动态路由无策略：稀疏/稠密切换只靠模块内部的 `is_in_onnx_export()` 分支，静默发生 | `scripts/a3/smoke_export.py`：显式 preserve / declared dense / reject 策略，导出前决策并写日志，`--dynamic` 直接拒绝（失败日志） |
-| 发布权重（未剪枝）的 PyTorch 对后端精度差没有基线 | 同一协议下 PyTorch / ORT / TensorRT fp32 / fp16 的 mAP 差（`backend_val.py` + `quantize_trt.py`） |
-| INT8 结论只在剪枝模型上 | 在 **发布的未剪枝** v0.1-N 与 EsMoE-N (COCO) 上重跑隐式 INT8 与显式 Q/DQ |
-| 代码引用用旧行号 | 所有策略依据在运行时按锁定 commit 重新 grep，写入 `a3/results/smoke_*.json` |
+| The exporter has no routing policy: the sparse/dense switch happens silently inside each MoE module's `is_in_onnx_export()` branch | `scripts/a3/smoke_export.py`: an explicit preserve / declared-dense / reject policy, decided and logged BEFORE export; `--dynamic` is rejected outright (the failure log) |
+| No PyTorch-vs-backend accuracy baseline on the released (unpruned) weights | PyTorch / ONNX Runtime / TensorRT fp32 / fp16 mAP deltas under one protocol (`backend_val.py` + `quantize_trt.py`) |
+| INT8 conclusions existed only on pruned models | Implicit INT8 and explicit Q/DQ re-run on the **released, unpruned** v0.1-N and EsMoE-N (COCO) |
+| Code references cited with stale line numbers | Every policy reference is re-grepped at run time against the locked commit and written into `a3/results/smoke_*.json` |
 
-锁定 commit / Locked commits: YOLO-Master `3ea98305a8449d8d9f4a00845e26ff9d8bf3b66e`
-(2026-08-01); 本仓库见 `a3/env/matrix.md`。
+Locked commits: YOLO-Master `3ea98305a8449d8d9f4a00845e26ff9d8bf3b66e` (2026-08-01); this repository per
+`a3/env/matrix.md`.
 
 ---
 
-## 2. 8.24 准入检查 / Entry check
+## 2. 8.24 entry check
 
-| 序号 | 姓名 | 第一志愿 | 环境安装 | 基线/最小任务 | 复现命令 | 配置文件 | 完整日志 | 结果证据 | 设计说明 | 风险与降级 |
+| 序号 (No.) | 姓名 (Name) | 第一志愿 (First choice) | 环境安装 (Environment) | 基线/最小任务 (Baseline / minimal task) | 复现命令 (Reproduction) | 配置文件 (Config) | 完整日志 (Full logs) | 结果证据 (Evidence) | 设计说明 (Design) | 风险与降级 (Risks / fallbacks) |
 |---|---|---|---|---|---|---|---|---|---|---|
-|  | Thomas | A3: 动态路由、Softmax、top-k 和异构专家在 ONNX/TensorRT/INT8 下的真实兼容性、精度差和路由决策漂移 | `scripts/a3/setup_l4.sh` -> `a3/env/matrix.md`, `a3/env/pip-freeze.txt`, 日志 `a3/logs/setup_l4.log` | P0: `yolo.export` ONNX smoke (v0.1-N, EsMoE-N) + ORT 对齐；PyTorch vs ORT / TRT fp32 / fp16 精度差；附 INT8 (隐式 + 显式 Q/DQ) 阶梯 | 第 4 节 (`scripts/a3/run_all_l4.sh`) | `a3/config/coco-a3.yaml`, `a3/config/sensitive_sets.md` | 成功: `a3/logs/v01n_smoke.log`, `a3/logs/esmoen_smoke.log`；失败(策略拒绝): `a3/logs/v01n_smoke_dynamic_reject.log`；阶梯: `a3/logs/*_trt_ladder.log`, `*_int8_qdq.log`, `*_backend_val.log` | `a3/results/*.json`, `a3/results/ladder_*.csv`，第 6 节表格 | 第 7 节 | 第 8 节 |
+|  | Thomas | A3: real compatibility, precision deltas and routing-decision drift of dynamic routing / Softmax / top-k / heterogeneous experts under ONNX / TensorRT / INT8 | `scripts/a3/setup_l4.sh` -> `a3/env/matrix.md`, `a3/env/pip-freeze.txt`, log `a3/logs/setup_l4.log` | P0: `yolo.export` ONNX smoke (v0.1-N, EsMoE-N) with ORT parity; PyTorch vs ORT / TRT fp32 / fp16 deltas; plus the INT8 ladder (implicit + explicit Q/DQ) | Section 4 (`scripts/a3/run_all_l4.sh`) | `a3/config/coco-a3.yaml`, `a3/config/sensitive_sets.md` | success: `a3/logs/v01n_smoke.log`, `a3/logs/esmoen_smoke.log`; failure (policy rejection): `a3/logs/v01n_smoke_dynamic_reject.log`; ladders: `a3/logs/*_trt_ladder.log`, `*_trt_stempair.log`, `*_int8_qdq.log`, `*_backend_val.log` | `a3/results/*.json`, `a3/results/ladder_*.csv`, section 6 | Section 7 | Section 8 |
 
 ---
 
-## 3. 环境矩阵 / Environment matrix
+## 3. Environment matrix
 
-L4 机器从裸 `torch 2.4.1+cu124` 容器起步，`scripts/a3/setup_l4.sh` 固定安装全部后端
-（TensorRT `tensorrt-cu12==10.13.3.9`，与 project03 在 A100 上的结论同版本；ORT 1.20.2；
-modelopt 0.27.1；`ultralytics` 为锁定 commit 的可编辑安装）。脚本在每一步后断言 torch 未被替换。
-`pip freeze` 在跑完整个链路后再次采集并 diff，证明导出过程没有触发 ultralytics 的自动安装
-（`YOLO_AUTOINSTALL=False`）。
+The L4 box starts as a bare `torch 2.4.1+cu124` container; `scripts/a3/setup_l4.sh` installs every
+backend at pinned versions (TensorRT `tensorrt-cu12==10.13.3.9`, the same version behind the project03
+A100 conclusions; ONNX Runtime 1.20.2; modelopt 0.27.1; `ultralytics` as an editable install of the
+locked YOLO-Master commit) and asserts after every step that torch was not replaced. `pip freeze` is
+captured again after the whole chain and diffed, proving the export never triggered ultralytics'
+auto-install (`YOLO_AUTOINSTALL=False`).
 
 | item | value |
 |---|---|
@@ -78,49 +75,21 @@ modelopt 0.27.1；`ultralytics` 为锁定 commit 的可编辑安装）。脚本�
 | yolo_master_repo | `3ea98305a844` (2026-08-01, littlemod-moa, dirty: scripts/reproduce/bench_coco_latency.py) |
 | edge_repo | `fdf7894549aa` (2026-08-23, dev/a3-smoke) |
 
----|---|
-| captured_utc | 2026-08-23T00:33:11+00:00 |
-| host | fea95d9954c8 |
-| os | Ubuntu 22.04.5 LTS |
-| kernel | 6.8.0-50-generic |
-| cpu | AMD EPYC 7702 64-Core Processor |
-| ram_gb | 503 |
-| gpu | NVIDIA L4, 23034 MiB, 580.126.20 |
-| cuda_driver_max | CUDA Version: 13.0 |
-| cuda_toolkit_nvcc | Build cuda_12.4.r12.4/compiler.34097967_0 |
-| python | 3.11.10 |
-| torch | 2.4.1+cu124 |
-| torch_cuda | 12.4 |
-| cudnn | 90100 |
-| torchvision | 0.19.1+cu124 |
-| numpy | 2.4.6 |
-| onnx | 1.17.0 |
-| onnxslim | 0.1.96 |
-| onnxruntime | 1.20.2 |
-| onnxruntime_providers | TensorrtExecutionProvider,CUDAExecutionProvider,CPUExecutionProvider |
-| tensorrt | 10.13.3.9 |
-| modelopt | 0.27.1 |
-| pycocotools | ? |
-| opencv | 5.0.0 |
-| ultralytics | 8.3.240 |
-| ultralytics_file | /data/YOLO-Master/ultralytics/__init__.py |
-| yolo_master_repo | `3ea98305a844` (2026-08-01, littlemod-moa, dirty: cripts/reproduce/bench_coco_latency.py) |
-| edge_repo | `cc613153281b` (2026-08-23, dev/a3-smoke, dirty: EADME.md) |
-
 ---
 
-## 4. 复现命令 / Reproduction
+## 4. Reproduction
 
 ```bash
-# on the L4 (or any CUDA box with /data mounted)
+# on the L4 (any CUDA box with /data mounted)
 cd /data/yolo-master-edge && git switch dev/a3-smoke
-bash scripts/a3/setup_l4.sh                       # 1. environment (idempotent)
+bash scripts/a3/setup_l4.sh                                        # 1. environment (idempotent)
 . /root/a3venv/bin/activate
 nohup bash scripts/a3/run_all_l4.sh > a3/logs/run_all.log 2>&1 &   # 2. the whole chain
-# STAGES=env,smoke,ladder,qdq,backend  (subset with STAGES=smoke etc.)
+# STAGES=env,smoke,ladder,qdq,backend  (subset with e.g. STAGES=smoke)
+bash scripts/a3/run_followup_l4.sh                                 # 3. stem-pair rungs, re-runs
 ```
 
-链路内每一步的独立命令 / Each stage on its own:
+Each stage on its own:
 
 ```bash
 python scripts/a3/env_matrix.py --out a3/env
@@ -135,6 +104,7 @@ python scripts/a3/smoke_export.py --model /data/YOLO-Master/YOLO-Master-v0.1-N.p
 python scripts/a3/quantize_trt.py --model <pt> --data a3/config/coco-a3.yaml --out runs/a3/<m>/trt \
     --calib-images /data/datasets/coco/images/train2017 --calib-n 1024 \
     --modes fp32,fp16,int8 --max-rounds 0 --tf32-baseline off
+python scripts/a3/quantize_trt.py --model runs/a3/<m>/trt/<stem>.onnx ... --modes int8 --pin-modules 0,1
 python scripts/a3/qat_moe.py --model <pt> --data a3/config/coco-a3.yaml --out runs/a3/<m>/qdq \
     --calib-n 1024 --skip-train                         # calibrate-only explicit Q/DQ
 python scripts/a3/backend_val.py --model <pt> --onnx runs/a3/<m>/<stem>.onnx \
@@ -143,132 +113,150 @@ python scripts/a3/backend_val.py --model <pt> --onnx runs/a3/<m>/<stem>.onnx \
 
 ---
 
-## 5. 配置文件 / Config
+## 5. Config
 
-- `a3/config/coco-a3.yaml`: COCO 路径，`train: images/train2017`（仅用于校准），`val: images/val2017`（评测）。
-- `a3/config/sensitive_sets.md`: 校准策略（>=1024 张训练集图、entropy、显式 per-channel Q/DQ）与敏感层集合
-  （stem 两层 + 路由器 + DFL 保持 FP16）。
-- 评测协议统一：ultralytics `.val`，imgsz 640，batch 1，val2017 全量 5000 张；PyTorch / ONNX Runtime /
-  TensorRT engine 走同一条路径，所有精度差可直接相减。
+- `a3/config/coco-a3.yaml`: COCO paths, `train: images/train2017` (calibration only),
+  `val: images/val2017` (evaluation).
+- `a3/config/sensitive_sets.md`: calibration policy (>= 1024 train-split images, entropy for implicit,
+  explicit per-channel Q/DQ) and the sensitive set kept in FP16 (stem pair + routers + DFL).
+- One evaluation protocol everywhere: ultralytics `.val`, imgsz 640, batch 1, full val2017 (5000
+  images); PyTorch, ONNX Runtime and TensorRT engines go through the same path, so every delta is a
+  plain subtraction.
 
 ---
 
-## 6. 结果证据 / Evidence
+## 6. Evidence
 
-所有精度为 ultralytics `.val` mAP50-95（COCO val2017，5000 张，imgsz 640，batch 1）；时延为 TensorRT
-engine 纯模型 200 次中位数（L4）；PyTorch / ORT 行无时延列。所有原始数据在 `a3/results/`，逐层精度审计在对应日志。
+All accuracies are ultralytics `.val` mAP50-95 (COCO val2017, 5000 images, imgsz 640, batch 1).
+Latencies are TensorRT model-only medians of 200 executions on the L4; PyTorch / ORT rows carry no
+latency column. Raw data in `a3/results/`, per-layer precision audits in the matching logs.
 
-### 6.1 P0: yolo.export smoke + PyTorch vs 后端精度差
+### 6.1 P0: `yolo.export` smoke and PyTorch-vs-backend accuracy deltas
 
-| 模型 (发布权重, 未剪枝) | 后端 | mAP50-95 | 对 PyTorch 差 (AP) | 时延 ms | 体积 MB | 来源 |
+| Model (released, unpruned) | Backend | mAP50-95 | Delta vs PyTorch (AP) | Latency ms | Size MB | Source |
 |---|---|---|---|---|---|---|
 | v0.1-N (OptimizedMOEImproved x3, E=4/8/16, k=2) | PyTorch (repaired) | **0.4292** | 0 | - | 15.1 (.pt) | `backend_v01n.json` |
-| | ONNX Runtime CUDA EP (默认 TF32) | 0.4286 | -0.0006 | - | 30.5 (.onnx) | `backend_v01n.json` |
-| | TensorRT fp32 (TF32 关闭) | 0.4287 | -0.0005 | 3.898 | 42.6 | `ladder_v01n.csv` |
+| | ONNX Runtime CUDA EP (default TF32) | 0.4286 | -0.0006 | - | 30.5 (.onnx) | `backend_v01n.json` |
+| | TensorRT fp32 (TF32 off) | 0.4287 | -0.0005 | 3.898 | 42.6 | `ladder_v01n.csv` |
 | | TensorRT fp16 | 0.4285 | -0.0007 | 1.935 (-50.4%) | 21.3 | `ladder_v01n.csv` |
 | EsMoE-N (ES_MOE x4, E=3, k=3) | PyTorch (dense == sparse) | **0.4270** | 0 | - | 5.7 (.pt) | `backend_esmoen.json` |
-| | ONNX Runtime CUDA EP (默认 TF32) | 0.4267 | -0.0004 | - | 11.1 (.onnx) | `backend_esmoen.json` |
-| | TensorRT fp32 (TF32 关闭) | 0.4267 | -0.0004 | 2.982 | 22.0 | `ladder_esmoen.csv` |
+| | ONNX Runtime CUDA EP (default TF32) | 0.4267 | -0.0004 | - | 11.1 (.onnx) | `backend_esmoen.json` |
+| | TensorRT fp32 (TF32 off) | 0.4267 | -0.0004 | 2.982 | 22.0 | `ladder_esmoen.csv` |
 | | TensorRT fp16 | 0.4268 | -0.0003 | 1.720 (-42.3%) | 11.4 | `ladder_esmoen.csv` |
 
-smoke 验证（`smoke_*.json`）：
+Smoke verification (`smoke_*.json`):
 
-| 模型 | 策略判定 | ONNX 路由算子 | 专家 Conv 模块/图 | ORT fp32 对齐 (归一化误差 / top-100 anchor 一致率) | ORT 默认 TF32 |
+| Model | Policy decision | Routing ops in ONNX | Expert convs module / graph | ORT fp32 parity (scale-normalized error / top-100 anchor agreement) | ORT default TF32 |
 |---|---|---|---|---|---|
-| v0.1-N | 3 块 `preserve`（精确 gather） | TopK 3, GatherElements 6, Softmax 12, 无 If/Loop/NonZero | 56 / 56 | 3.9e-6 / 100% | 最大 1.38 px 偏移, 99.9% |
-| EsMoE-N | 4 块 `dense`，`semantic_change=false`（k==E，无 top-k/阈值） | TopK 0, Softmax 13, 无 If/Loop/NonZero | 24 / 24 | 5.4e-6 / 100% | 最大 2.98 px 偏移, 100% |
-| v0.1-N `--dynamic` | **导出前拒绝，exit 2**（`v01n_smoke_dynamic_reject.log`） | - | - | - | - |
+| v0.1-N | 3 blocks `preserve` (exact gather) | TopK 3, GatherElements 6, Softmax 12, no If/Loop/NonZero | 56 / 56 | 3.9e-6 / 100% | max 1.38 px shift, 99.9% |
+| EsMoE-N | 4 blocks `dense`, `semantic_change=false` (k==E, no top-k / threshold) | TopK 0, Softmax 13, no If/Loop/NonZero | 24 / 24 | 5.4e-6 / 100% | max 2.98 px shift, 100% |
+| v0.1-N `--dynamic` | **rejected before export, exit 2** (`v01n_smoke_dynamic_reject.log`) | - | - | - | - |
 
-### 6.2 INT8 阶梯（隐式 PTQ 对照 + 显式 Q/DQ 交付配方），均 1024 张 train2017 校准
+### 6.2 INT8 ladder (implicit PTQ for contrast + the explicit Q/DQ delivery recipe), 1024 train2017 calibration images
 
-| 模型 | INT8 方式 | mAP50-95 | 对 fp32 差 (AP) | 时延 ms | 体积 MB | engine 逐层精度 (Int8 / Half / Float) |
+| Model | INT8 method | mAP50-95 | Delta vs fp32 (AP) | Latency ms | Size MB | Engine layer precisions (Int8 / Half / Float) |
 |---|---|---|---|---|---|---|
-| v0.1-N | 隐式 entropy，head+routers 钉 FP16 | 0.3754 | -5.33 | 1.944 | 17.1 | 189 / 224 / 14 |
-| v0.1-N | 隐式 entropy，+ stem 两层 (model.0/1) | 0.3955 | -3.32 | 1.965 | 17.0 | (`v01n_trt_stempair.log`) |
-| v0.1-N | **显式 Q/DQ，只校准 (modelopt)** | **0.4164** | **-1.23** | 2.231 | 21.0 | 196 / 176 / 85 |
-| EsMoE-N | 隐式 entropy，head+routers 钉 FP16 | 0.3606 | -6.61 | 1.843 | 12.9 | 165 / 147 / 60 |
-| EsMoE-N | 隐式 entropy，+ stem 两层 | 0.3752 | -5.15 | 1.917 | 13.0 | (`esmoen_trt_stempair.log`) |
-| EsMoE-N | **显式 Q/DQ，只校准 (modelopt)** | **0.4121** | **-1.49** | 2.141 | 11.5 | 174 / 168 / 112 |
+| v0.1-N | implicit entropy, head + routers pinned FP16 | 0.3754 | -5.33 | 1.944 | 17.1 | 189 / 224 / 14 |
+| v0.1-N | implicit entropy, + stem pair (model.0/1) | 0.3955 | -3.32 | 1.965 | 17.0 | `v01n_trt_stempair.log` |
+| v0.1-N | **explicit Q/DQ, calibrate-only (modelopt)** | **0.4164** | **-1.23** | 2.231 | 21.0 | 196 / 176 / 85 |
+| EsMoE-N | implicit entropy, head + routers pinned FP16 | 0.3606 | -6.61 | 1.843 | 12.9 | 165 / 147 / 60 |
+| EsMoE-N | implicit entropy, + stem pair | 0.3752 | -5.15 | 1.917 | 13.0 | `esmoen_trt_stempair.log` |
+| EsMoE-N | **explicit Q/DQ, calibrate-only (modelopt)** | **0.4121** | **-1.49** | 2.141 | 11.5 | 174 / 168 / 112 |
 
-读法：
-- 两族在 N 尺度上 INT8 都 **不比 fp16 快**（v0.1-N 1.94 vs 1.94 ms，EsMoE-N 1.84 vs 1.72 ms）：与 project03 在剪枝模型上的
-  "TRT GPU N 尺度用 fp16" 结论一致，部署精度选 fp16。
-- 隐式 PTQ 的精度损失排序与剪枝研究相同：surgical < stem-pair < 显式 Q/DQ；显式 Q/DQ 是唯一把损失压进 2 AP 以内的路径
-  （剪枝 v0.1-N 为 -0.80，未剪枝为 -1.23：4/8/16 个专家全部进入 INT8 面）。
-- **路由专属的新发现**（剪枝模型 k==E 时不可能出现）：未剪枝 v0.1-N 在 eager 稀疏路径下做校准时，从未被路由到的专家
-  没有任何激活统计，而导出图会计算全部专家，modelopt 在导出时断言 "Quantizer has not been calibrated"。修复：校准时使用与
-  导出等价的 dense 路径（同一个 `is_in_onnx_export` mock），并显式审计未校准量化器（本次 360 个全部校准，0 个禁用）。
-  这就是课题问的"动态路由与 INT8 校准的真实兼容性"的一个具体样本：**校准覆盖必须按导出图而不是按 eager 语义来做**。
-- ORT CUDA EP 默认对卷积启用 TF32：框坐标最大偏移 1.4 / 3.0 px，但 mAP 只差 -0.0006 / -0.0004；smoke 的对齐门限用
-  `use_tf32=0` 做 fp32 对 fp32 比较，TF32 结果单独记录。
+How to read it:
+- At N scale INT8 is **not faster than fp16** for either family (v0.1-N 1.94 vs 1.94 ms, EsMoE-N 1.84 vs
+  1.72 ms), matching the project03 verdict on the pruned models: on a TensorRT GPU at this width the
+  deployment precision is fp16.
+- The implicit-PTQ loss ordering is the same as in the pruned study: surgical < stem pair < explicit Q/DQ;
+  explicit Q/DQ is the only path that keeps the loss under 2 AP (pruned v0.1-N -0.80, unpruned -1.23:
+  all 4/8/16 experts now enter the INT8 surface).
+- **A routing-specific finding the pruned study could not expose** (it had k == E): calibrating the
+  unpruned v0.1-N on the eager sparse path leaves experts that were never routed to with no activation
+  statistics, while the exported graph computes every expert; modelopt then asserts at export,
+  "Quantizer has not been calibrated". Fix: calibrate on the export-equivalent dense path (the same
+  `is_in_onnx_export` mock the exporters use) and audit uncalibrated quantizers explicitly (this run:
+  360 calibrated, 0 disabled). This is a concrete instance of the topic's question: **calibration
+  coverage has to follow the exported graph, not the eager routing semantics.**
+- ONNX Runtime's CUDA EP enables TF32 convolutions by default: box coordinates shift by up to
+  1.4 / 3.0 px, yet mAP moves only -0.0006 / -0.0004. The smoke's parity gate therefore compares
+  fp32 to fp32 (`use_tf32=0`) and records the TF32 result separately.
 
 ---
 
-## 7. 设计说明 / Design notes
+## 7. Design notes
 
-### 7.1 动态路由导出策略（显式，不允许静默改变语义）
+### 7.1 Dynamic-routing export policy (explicit; no silent semantic change)
 
-导出器（`ultralytics/engine/exporter.py`）不含任何 MoE 逻辑；每个 MoE 族在自身 `forward` 里用
-`torch.onnx.is_in_onnx_export()` 选择导出分支。`smoke_export.py` 在调用同一个 `YOLO.export`
-之前把这件事变成显式决策，并把依据（文件、运行时重新 grep 出的行号、commit）写进结果 JSON：
+The exporter (`ultralytics/engine/exporter.py`) contains no MoE logic; each MoE family chooses its
+export branch inside its own `forward` via `torch.onnx.is_in_onnx_export()`. `smoke_export.py` turns
+that into an explicit decision before calling the very same `YOLO.export`, and stores the evidence
+(file, line numbers re-grepped at run time, commit) in the result JSON:
 
-| MoE 族 | 导出分支行为（锁定 commit 下） | 策略 | 语义变化 |
+| MoE family | Export-branch behaviour at the locked commit | Policy | Semantic change |
 |---|---|---|---|
-| `OptimizedMOEImproved`（v0.1 系列） | 计算全部专家后 `torch.gather` 取 top-k（`selected = torch.gather(all_outs, ...)`） | `preserve` | 无（精确 top-k） |
-| `ES_MOE`（EsMoE 系列） | 强制走 `_dense_forward`：softmax 加权求和全部专家，跳过 `_sparse_forward` 的 top-k / `dynamic_threshold` | `dense`，仅当 `k == E` 且未启用 top-k / 阈值时视为无语义变化（发布的 COCO 权重满足：E=3, k=3, `use_top_k=False`, 无 `dynamic_threshold`） | 否则必须用 `--routing dense` 显式声明，并报告 eager-sparse vs eager-dense 的 AP 差 |
-| 其它族 | 无经过验证的导出分支 | `reject` | - |
-| 任何族 + `--dynamic` | gather 分支把 B/H/W 以 Python int 写死在 `view/expand` 里 | **导出前拒绝**（exit 2） | 动态轴图在其它形状下会静默出错 |
+| `OptimizedMOEImproved` (v0.1 family) | computes all experts, then `torch.gather` on the top-k (`selected = torch.gather(all_outs, ...)`) | `preserve` | none (exact top-k) |
+| `ES_MOE` (EsMoE family) | forced through `_dense_forward`: softmax-weighted sum over all experts, skipping `_sparse_forward`'s top-k / `dynamic_threshold` | `dense`; no semantic change only when `k == E` and no top-k / threshold is active (true for the released COCO weights: E=3, k=3, `use_top_k=False`, no `dynamic_threshold`) | otherwise it must be declared with `--routing dense`, and the eager-sparse vs eager-dense AP delta is reported |
+| other families | no verified export branch | `reject` | - |
+| any family + `--dynamic` | the gather branch bakes B/H/W as Python ints into `view/expand` | **rejected before export** (exit 2) | a dynamic-axes graph is silently wrong at other shapes |
 
-前置条件：torch < 2.9（`ultralytics/utils/export/engine.py` 对 torch>=2.4 强制 `dynamo=False`；
-dynamo 导出器不经过上述 guard，会静默丢专家）。
+Precondition: torch < 2.9 (`ultralytics/utils/export/engine.py` forces `dynamo=False` for torch >= 2.4;
+the dynamo exporter bypasses the guards above and silently drops experts).
 
-### 7.2 导出后验证（三层）
-1. ONNX 算子直方图：记录 TopK / Gather / GatherElements / Softmax 数量；出现 `If / Loop / NonZero`
-   即判失败（说明 guard 没生效）。
-2. 专家卷积计数：图中 `/experts` 前缀的 Conv 数对比模块中 `*.experts.*` 下的 `nn.Conv2d` 数。
-3. ORT 对齐：真实 val 图上 ONNX Runtime 输出 vs **eager PyTorch（保留其原生稀疏语义）**，
-   报告 max-abs / max-rel / top-100 anchor 一致率。
+### 7.2 Post-export verification (three layers)
+1. ONNX op histogram: TopK / Gather / GatherElements / Softmax counts; any `If / Loop / NonZero` fails
+   the run (it means a guard did not take effect).
+2. Expert-conv count: `Conv` nodes under `/experts` in the graph vs `nn.Conv2d` under `*.experts.*` in
+   the module.
+3. ORT parity on real val images: ONNX Runtime (fp32, `use_tf32=0`) vs **eager PyTorch keeping its native
+   sparse semantics**, reporting max-abs, scale-normalized error and top-100 anchor agreement.
 
-### 7.3 发布权重的两个修复（不修复则结论全错）
-- v0.1-N：checkpoint 早于 `add_residual` 属性，兼容 shim 默认 `True`，分类置信度坍缩到 ~0.04，
-  mAP50-95 从 0.43 变成 0.007。所有脚本加载后对缺失该属性的块强制 `False`（复用
-  `scripts/project03/diagnose_moe._fix_add_residual`）。
-- EsMoE-N：评测与导出统一走 dense 路径（`use_sparse_inference=False`），与 7.1 的判定一致。
+### 7.3 Two repairs the released weights need (or every conclusion is wrong)
+- v0.1-N: the checkpoint predates the `add_residual` attribute; the compat shim defaults it to True,
+  class confidence collapses to ~0.04 and mAP50-95 drops from 0.43 to 0.007. Every script forces it to
+  False where the attribute is absent (reusing `scripts/project03/diagnose_moe._fix_add_residual`).
+  The same pickles also carry instance attributes that are read-only properties on today's class
+  (`aux_loss`), stripped at load (`_strip_property_shadows`).
+- EsMoE-N: evaluation and export both use the dense path (`use_sparse_inference=False`), consistent
+  with the decision in 7.1.
 
-### 7.4 INT8 方法为什么是"只校准的显式 Q/DQ"
-project03 在剪枝 v0.1-N (COCO, A100, TRT 10.13.3.9) 上的结论：隐式 PTQ 无法把 MoE 块量化
-（路由 gather/expand 打断 INT8 链，TensorRT 静默回退 FP16）；显式 per-channel Q/DQ 达到 -0.80 AP；
-3 轮 QAT 反而退化到 -3.2 AP。因此本分支只做校准（`qat_moe.py --skip-train`），并把隐式 INT8
-作为"失败算子"对照档保留在阶梯里（engine inspector 审计会给出每层精度）。
+### 7.4 Why the INT8 method is "calibrate-only explicit Q/DQ"
+The project03 results on the pruned v0.1-N (COCO, A100, TensorRT 10.13.3.9): implicit PTQ cannot
+quantize the MoE blocks (the routing gather/expand breaks the INT8 chain and TensorRT silently falls
+back to FP16); explicit per-channel Q/DQ reaches -0.80 AP; three QAT epochs regress to -3.2 AP. This
+branch therefore only calibrates (`qat_moe.py --skip-train`) and keeps implicit INT8 in the ladder as
+the "failing operators" contrast rung (the engine-inspector audit lists every layer's precision).
 
 ---
 
-## 8. 风险与降级 / Risks and fallbacks
+## 8. Risks and fallbacks
 
-| 风险 | 处理 |
+| Risk | Handling |
 |---|---|
-| 动态轴导出 | 策略拒绝；只导出静态 1x3x640x640。需要多分辨率时按分辨率分别导出。 |
-| TensorRT 隐式 INT8 静默把 MoE 块留在 FP16 | 用 engine inspector 审计逐层精度并写入日志；需要真正 INT8 的 MoE 块时只走显式 Q/DQ。 |
-| 其它 ES_MOE 权重启用 top-k / 阈值 | 默认拒绝；`--routing dense` 可声明回退，但必须附 eager-sparse vs eager-dense 的 AP 差。 |
-| torch >= 2.9 / dynamo 导出器 | 脚本前置断言拒绝运行。 |
-| modelopt / TensorRT / ORT 版本 | `setup_l4.sh` 固定版本，`pip-freeze` 前后 diff；L4 与 A100 (project03) 数字不可直接比较，只比较同机阶梯内的差。 |
-| MoT 族（P1 要求）没有训练权重 | 本阶段不做；MoT 在 TorchScript/CoreML trace 下会丢专家（仅 ONNX guard 生效），P1 需先解决权重来源。 |
-| `/data` 为网络卷，5000 张评测 + 1024 张校准 I/O 慢 | 可 rsync 到本地盘后改 yaml；校准列表由确定性等距采样生成，可复现。 |
+| Dynamic-axes export | rejected by policy; export is static 1x3x640x640 only. Export per resolution when several are needed. |
+| TensorRT implicit INT8 silently leaves MoE blocks in FP16 | per-layer precision audit via the engine inspector, written to the logs; MoE blocks that must be INT8 go through explicit Q/DQ only. |
+| Other ES_MOE weights with top-k / threshold enabled | rejected by default; `--routing dense` declares the fallback and must ship the eager-sparse vs eager-dense AP delta. |
+| Calibration coverage under sparse routing | calibrate on the export-equivalent dense path; uncalibrated quantizers are audited and reported (never a silent export assert). |
+| torch >= 2.9 / dynamo exporter | asserted against before running. |
+| ONNX Runtime CUDA EP "available" but not loadable | cuDNN/cuBLAS from torch's wheels on `LD_LIBRARY_PATH`; `backend_val.py` proves the EP loaded before the GPU-bound val. |
+| modelopt / TensorRT / ORT versions | pinned by `setup_l4.sh`, `pip freeze` diffed before/after; L4 and A100 (project03) numbers are not directly comparable, only deltas within one machine's ladder are. |
+| MoT family (P1) has no trained weights | not run here; MoT drops experts under TorchScript/CoreML tracing (only the ONNX guard holds), so P1 needs a weight source first. |
+| `/data` is a network volume (5000-image val + 1024-image calibration I/O) | rsync to local disk and point the yaml there; the calibration list is deterministic even-spread sampling, so it is reproducible. |
 
 ---
 
-## 9. 后续 P1 / P2 / Next
+## 9. Next (P1 / P2)
 
-- P1: 在同一链路上加入 MoT（需训练权重）；记录失败算子与体积/时延。
-- P2: 路由一致率工具：把 TopK 索引张量作为额外图输出导出，逐图对比 FP32 ORT 与 INT8 engine 的
-  专家选择一致率（v0.1 系列有真实 top-k；EsMoE 的 k==E 没有"选择"可比，改比路由权重漂移）；
-  五族对比；混合精度敏感层回退已有 `quantize_trt.py --bisect/--ablate` 工具链。
+- P1: add MoT on the same chain (needs trained weights); record failing operators, size and latency.
+- P2: routing-agreement tool: export the TopK index tensors as extra graph outputs and compare expert
+  selection per image between FP32 ORT and the INT8 engine (the v0.1 family has real top-k; EsMoE at
+  k == E has no selection to compare, so compare routing-weight drift instead); five-family comparison;
+  mixed-precision sensitive-layer fallback already has the `quantize_trt.py --bisect/--ablate` tooling.
 
 ---
 
-## 10. 现有能力 / Existing runtime (unchanged on this branch)
+## 10. Existing runtime (unchanged on this branch)
 
-跨平台推理运行时（C++17，ONNX Runtime / NCNN / MNN / TensorRT / CoreML；Linux、Windows、Jetson、
-macOS；CPU / CUDA / Metal），Windows GUI，Jetson Orin 原生 TensorRT 部署脚本（`jetson/`），
-CoreML 导出与 macOS 应用（`mac/`），VisDrone / SKU-110K / AI-TOD-v2 的基准结果。
-详见 `TECHNICAL_REPORT.md`、`jetson/README.md`、`mac/README.md` 以及 `main` 分支 README。
+Cross-platform inference runtime (C++17; ONNX Runtime / NCNN / MNN / TensorRT / CoreML; Linux, Windows,
+Jetson, macOS; CPU / CUDA / Metal), Windows GUI, native TensorRT deployment scripts for Jetson Orin
+(`jetson/`), CoreML export and the macOS app (`mac/`), benchmark results on VisDrone / SKU-110K /
+AI-TOD-v2. See `TECHNICAL_REPORT.md`, `jetson/README.md`, `mac/README.md` and the `main` branch README.
