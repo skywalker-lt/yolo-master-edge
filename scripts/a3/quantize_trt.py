@@ -393,8 +393,8 @@ def main():
 
     # resolve dataset + calibration images
     import sys
-    # reuse the committed project03 helpers (dataset resolver + legacy repairs)
-    sys.path.insert(0, str(Path(__file__).parent.parent / "project03"))
+    # diagnose_moe.py (dataset resolver + legacy repairs) ships alongside in scripts/a3
+    sys.path.insert(0, str(Path(__file__).parent))
     from diagnose_moe import (_resolve_dataset, _fix_add_residual, _force_dense_esmoe,
                               _strip_property_shadows)
     yaml_path, root, cfg = _resolve_dataset(args.data)

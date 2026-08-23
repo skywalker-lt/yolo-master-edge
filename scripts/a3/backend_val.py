@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 os.environ.setdefault("YOLO_AUTOINSTALL", "False")
-sys.path.insert(0, str(Path(__file__).parent.parent / "project03"))
+sys.path.insert(0, str(Path(__file__).parent))
 from diagnose_moe import _fix_add_residual, _force_dense_esmoe  # noqa: E402
 
 
