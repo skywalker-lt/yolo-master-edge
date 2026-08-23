@@ -13,8 +13,8 @@ export YOLO_AUTOINSTALL=False
 assert_torch() { python -c "import torch; v=torch.__version__; assert v.startswith('2.4.1'), v; print('[torch]', v, 'cuda', torch.version.cuda)"; }
 assert_torch
 pip install -q -U pip wheel setuptools
-pip install -q tensorrt==10.13.3.9
-pip install -q onnx==1.17.0 "onnxslim>=0.1.48" onnxruntime-gpu==1.20.1 pycocotools \
+pip install -q tensorrt-cu12==10.13.3.9
+pip install -q onnx==1.17.0 "onnxslim>=0.1.48" onnxruntime-gpu==1.20.2 pycocotools \
     opencv-python-headless pyyaml matplotlib pandas tqdm psutil scipy ultralytics-thop \
     py-cpuinfo requests pillow seaborn polars
 assert_torch
