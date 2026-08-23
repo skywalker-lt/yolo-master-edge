@@ -175,12 +175,15 @@ def letterbox(img_bgr, imgsz: int):
     return np.ascontiguousarray(x[None])
 
 
-def parity(yolo, onnx_path: Path, images: list[Path], imgsz: int) -> dict:
+def parity(yolo, onnx_path: Path, images: list[Path], imgsz: int, tf32: bool = False) -> dict:
+    """ORT vs eager PyTorch (CPU fp32). The gated run pins use_tf32=0 so the comparison is
+    fp32 vs fp32 graph fidelity; the CUDA EP's DEFAULT is TF32 convolutions on Ampere+,
+    which is a backend precision choice (reported separately), not an export error."""
     import cv2
     import onnxruntime as ort
     providers = ort.get_available_providers()
-    prov = ["CUDAExecutionProvider", "CPUExecutionProvider"] if "CUDAExecutionProvider" in providers \
-        else ["CPUExecutionProvider"]
+    prov = [("CUDAExecutionProvider", {"use_tf32": 1 if tf32 else 0}), "CPUExecutionProvider"] \
+        if "CUDAExecutionProvider" in providers else ["CPUExecutionProvider"]
     sess = ort.InferenceSession(str(onnx_path), providers=prov)
     prov = sess.get_providers()   # the providers ACTUALLY in use (CUDA can silently fall back)
     in_name = sess.get_inputs()[0].name
@@ -208,7 +211,7 @@ def parity(yolo, onnx_path: Path, images: list[Path], imgsz: int) -> dict:
             sc_r = y_ref[0, 4:].max(0); sc_o = y_ort[0, 4:].max(0)
             top_r = set(np.argsort(-sc_r)[:100]); top_o = set(np.argsort(-sc_o)[:100])
             box_agree.append(len(top_r & top_o) / 100.0)
-    return {"providers": prov[0], "n_images": len(images),
+    return {"providers": prov[0], "tf32": tf32, "n_images": len(images),
             "max_abs": max(abs_max), "mean_abs": float(np.mean(abs_mean)),
             "max_rel_elementwise": max(rel_max), "max_norm_rel": max(norm_rel),
             "top100_anchor_agreement": float(np.mean(box_agree))}
@@ -304,8 +307,11 @@ def main():
     files = sorted(p for p in val_dir.iterdir() if p.suffix.lower() in (".jpg", ".png"))
     step = max(1, len(files) // args.parity_n)
     imgs = files[::step][:args.parity_n]
-    rep["parity"] = parity(yolo, dst, imgs, args.imgsz)
+    rep["parity"] = parity(yolo, dst, imgs, args.imgsz, tf32=False)      # the gate: fp32 vs fp32
     print(f"[parity] {rep['parity']}")
+    if rep["parity"]["providers"] == "CUDAExecutionProvider":
+        rep["parity_tf32_default"] = parity(yolo, dst, imgs, args.imgsz, tf32=True)  # informational
+        print(f"[parity tf32 default] {rep['parity_tf32_default']}")
 
     fails = []
     if bad:
