@@ -48,7 +48,35 @@ modelopt 0.27.1；`ultralytics` 为锁定 commit 的可编辑安装）。脚本�
 `pip freeze` 在跑完整个链路后再次采集并 diff，证明导出过程没有触发 ultralytics 的自动安装
 （`YOLO_AUTOINSTALL=False`）。
 
-ENV_MATRIX_PLACEHOLDER
+| item | value |
+|---|---|
+| captured_utc | 2026-08-23T00:33:11+00:00 |
+| host | fea95d9954c8 |
+| os | Ubuntu 22.04.5 LTS |
+| kernel | 6.8.0-50-generic |
+| cpu | AMD EPYC 7702 64-Core Processor |
+| ram_gb | 503 |
+| gpu | NVIDIA L4, 23034 MiB, 580.126.20 |
+| cuda_driver_max | CUDA Version: 13.0 |
+| cuda_toolkit_nvcc | Build cuda_12.4.r12.4/compiler.34097967_0 |
+| python | 3.11.10 |
+| torch | 2.4.1+cu124 |
+| torch_cuda | 12.4 |
+| cudnn | 90100 |
+| torchvision | 0.19.1+cu124 |
+| numpy | 2.4.6 |
+| onnx | 1.17.0 |
+| onnxslim | 0.1.96 |
+| onnxruntime | 1.20.2 |
+| onnxruntime_providers | TensorrtExecutionProvider,CUDAExecutionProvider,CPUExecutionProvider |
+| tensorrt | 10.13.3.9 |
+| modelopt | 0.27.1 |
+| pycocotools | ? |
+| opencv | 5.0.0 |
+| ultralytics | 8.3.240 |
+| ultralytics_file | /data/YOLO-Master/ultralytics/__init__.py |
+| yolo_master_repo | `3ea98305a844` (2026-08-01, littlemod-moa, dirty: cripts/reproduce/bench_coco_latency.py) |
+| edge_repo | `cc613153281b` (2026-08-23, dev/a3-smoke, dirty: EADME.md) |
 
 ---
 
