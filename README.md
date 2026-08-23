@@ -3,6 +3,7 @@
 Branch `dev/a3-smoke`, based on `dev/project03`. This README covers the **8.24 entry check only**:
 the minimal `yolo.export` smoke, the environment matrix and backend versions, one failure log and one
 success log, and the entry table below. The existing edge runtime is summarized in section 10.
+Chinese version: `README_CN.md`.
 
 ---
 
