@@ -50,8 +50,16 @@ def main():
     out["pytorch"] = val(yolo, args.data, args.imgsz, args.workers)
     print(f"[pytorch] {out['pytorch']}")
 
-    out["onnxruntime"] = {"version": ort.__version__, "providers": ort.get_available_providers()}
-    assert "CUDAExecutionProvider" in ort.get_available_providers(), "ORT CUDA EP missing"
+    # "available" only means the provider library exists; it can still fail to dlopen
+    # (missing cuDNN on LD_LIBRARY_PATH) and silently fall back to CPU, after which
+    # ultralytics' GPU io-binding crashes. Prove the EP really loads on this ONNX.
+    probe = ort.InferenceSession(args.onnx, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+    loaded = probe.get_providers()
+    out["onnxruntime"] = {"version": ort.__version__, "providers_available": ort.get_available_providers(),
+                          "providers_loaded": loaded}
+    assert loaded[0] == "CUDAExecutionProvider", \
+        f"ORT CUDA EP did not load (got {loaded}); set LD_LIBRARY_PATH to torch's nvidia/cudnn/lib"
+    del probe
     out["ort"] = val(YOLO(args.onnx, task="detect"), args.data, args.imgsz, args.workers)
     out["ort"]["delta_mAP50_95"] = round(out["ort"]["mAP50_95"] - out["pytorch"]["mAP50_95"], 5)
     print(f"[ort] {out['ort']}")
