@@ -43,7 +43,7 @@ def git_info(repo: str) -> dict:
     branch = sh(f"git -C {repo} rev-parse --abbrev-ref HEAD")
     dirty = sh(f"git -C {repo} status --porcelain --untracked-files=no")
     return {"path": repo, "commit": head, "date": date, "branch": branch,
-            "dirty_tracked_files": [l[3:] for l in dirty.splitlines() if l.strip()]}
+            "dirty_tracked_files": [l.split(maxsplit=1)[-1] for l in dirty.splitlines() if l.strip()]}
 
 
 def main():
@@ -85,7 +85,7 @@ def main():
         "onnxruntime_providers": providers,
         "tensorrt": ver("tensorrt"),
         "modelopt": ver("modelopt"),
-        "pycocotools": ver("pycocotools"),
+        "pycocotools": ver("pycocotools") if "MISSING" in ver("pycocotools") else "installed (no __version__)",
         "opencv": ver("cv2"),
         "ultralytics": ver("ultralytics"),
         "ultralytics_file": ver("ultralytics", "__file__"),
