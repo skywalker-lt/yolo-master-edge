@@ -6,6 +6,9 @@ set -uo pipefail
 cd "${EDGE:-/data/yolo-master-edge}"
 . "${VENV:-/root/a3venv}/bin/activate"
 export PYTHONPATH=/data/YOLO-Master YOLO_AUTOINSTALL=False PATH=/usr/local/cuda-12.4/bin:$PATH
+# ORT 1.20 dlopens libcudnn_adv.so.9 etc. - they ship inside torch's nvidia wheels; without
+# this the CUDA EP is "available" but fails to load and ORT silently runs on CPU
+export LD_LIBRARY_PATH=$(python -c "import nvidia.cudnn, nvidia.cublas, os; print(os.path.dirname(nvidia.cudnn.__file__)+'/lib:'+os.path.dirname(nvidia.cublas.__file__)+'/lib')"):${LD_LIBRARY_PATH:-}
 V01=/data/YOLO-Master/YOLO-Master-v0.1-N.pt
 ES=/data/YOLO-Master/YOLO-Master-EsMoE-N.pt
 DATA=a3/config/coco-a3.yaml
@@ -69,5 +72,8 @@ if has backend; then
 fi
 
 pip freeze > a3/env/pip-freeze.after.txt
-diff -q a3/env/pip-freeze.txt a3/env/pip-freeze.after.txt && say "env unchanged (no auto-install)" || say "WARNING env changed during the run"
+# the editable YOLO-Master install renders either as a VCS URL or as ultralytics==8.3.240
+# depending on pip's cwd; the matrix records its file path + commit, so ignore that line
+diff -q <(grep -v ultralytics a3/env/pip-freeze.txt) <(grep -v ultralytics a3/env/pip-freeze.after.txt) \
+  && say "env unchanged (no auto-install)" || say "WARNING env changed during the run"
 say done
