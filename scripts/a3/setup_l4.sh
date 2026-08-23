@@ -20,7 +20,10 @@ pip install -q onnx==1.17.0 "onnxslim>=0.1.48" onnxruntime-gpu==1.20.2 pycocotoo
 assert_torch
 pip install -q "nvidia-modelopt[torch]==0.27.1" || pip install -q "nvidia-modelopt[torch]==0.29.0"
 assert_torch
-pip install -q -e "$YM" --no-deps
+# editable install of the locked YOLO-Master with its declared deps resolved, but torch
+# pinned to the preinstalled wheel via a constraints file (never re-downloaded)
+echo "torch==$(python -c 'import torch; print(torch.__version__)')" > /tmp/a3-constraints.txt
+pip install -q -c /tmp/a3-constraints.txt -e "$YM"
 git config --global --add safe.directory "$YM" >/dev/null 2>&1 || true
 git config --global --add safe.directory "$EDGE" >/dev/null 2>&1 || true
 python - <<'PY'
