@@ -1,4 +1,4 @@
-⚠️因使用了错误的Upstream基线而非指定的`acce839c7e89`统一公共基线，本README中的smoke test结果及作废。正在基于统一公共基线重跑smoke test/准入测试
+⚠️因使用了错误的Upstream基线而非指定的`acce839c7e89`统一公共基线，本README中的smoke test结果及相关结论作废。目前正在基于统一公共基线重跑smoke test/准入测试
 
 # A3: Real compatibility of dynamic routing, Softmax, top-k and heterogeneous experts under ONNX / TensorRT / INT8
 
