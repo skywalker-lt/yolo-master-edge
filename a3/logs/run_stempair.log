@@ -1,0 +1,7 @@
+[stem] v01n (pins head + model.0/1)
+[calib] 1024 images from /data/datasets/coco/images/train2017
+[onnx] runs/a3/v01n/trt/YOLO-Master-v0.1-N.onnx
+[head] pinned subgraph prefix: /model.25/ (mixed-semantics concat lives here)
+[router] always-pinned router subgraphs: ['/model.12/routing/', '/model.12/routing/router/', '/model.6/routing/', '/model.6/routing/router/', '/model.9/routing/', '/model.9/routing/router/']
+[pins] --pins head: ['/model.25/']
+[scan] per-layer sensitivity (ORT fp32 activation statistics)...
