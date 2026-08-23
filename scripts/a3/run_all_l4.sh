@@ -5,7 +5,7 @@
 set -uo pipefail
 cd "${EDGE:-/data/yolo-master-edge}"
 . "${VENV:-/root/a3venv}/bin/activate"
-export PYTHONPATH=/data/YOLO-Master YOLO_AUTOINSTALL=False PATH=/usr/local/cuda-12.4/bin:$PATH
+export PYTHONUNBUFFERED=1 PYTHONPATH=/data/YOLO-Master YOLO_AUTOINSTALL=False PATH=/usr/local/cuda-12.4/bin:$PATH
 # ORT 1.20 dlopens libcudnn_adv.so.9 etc. - they ship inside torch's nvidia wheels; without
 # this the CUDA EP is "available" but fails to load and ORT silently runs on CPU
 export LD_LIBRARY_PATH=$(python -c "import nvidia.cudnn, nvidia.cublas, os; print(os.path.dirname(nvidia.cudnn.__file__)+'/lib:'+os.path.dirname(nvidia.cublas.__file__)+'/lib')"):${LD_LIBRARY_PATH:-}
