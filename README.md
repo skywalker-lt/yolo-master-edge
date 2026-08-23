@@ -50,6 +50,35 @@ modelopt 0.27.1；`ultralytics` 为锁定 commit 的可编辑安装）。脚本�
 
 | item | value |
 |---|---|
+| captured_utc | 2026-08-23T02:24:49+00:00 |
+| host | fea95d9954c8 |
+| os | Ubuntu 22.04.5 LTS |
+| kernel | 6.8.0-50-generic |
+| cpu | AMD EPYC 7702 64-Core Processor |
+| ram_gb | 503 |
+| gpu | NVIDIA L4, 23034 MiB, 580.126.20 |
+| cuda_driver_max | CUDA Version: 13.0 |
+| cuda_toolkit_nvcc | Build cuda_12.4.r12.4/compiler.34097967_0 |
+| python | 3.11.10 |
+| torch | 2.4.1+cu124 |
+| torch_cuda | 12.4 |
+| cudnn | 90100 |
+| torchvision | 0.19.1+cu124 |
+| numpy | 2.4.6 |
+| onnx | 1.17.0 |
+| onnxslim | 0.1.96 |
+| onnxruntime | 1.20.2 |
+| onnxruntime_providers | TensorrtExecutionProvider,CUDAExecutionProvider,CPUExecutionProvider |
+| tensorrt | 10.13.3.9 |
+| modelopt | 0.27.1 |
+| pycocotools | installed (no __version__) |
+| opencv | 5.0.0 |
+| ultralytics | 8.3.240 |
+| ultralytics_file | /data/YOLO-Master/ultralytics/__init__.py |
+| yolo_master_repo | `3ea98305a844` (2026-08-01, littlemod-moa, dirty: scripts/reproduce/bench_coco_latency.py) |
+| edge_repo | `fdf7894549aa` (2026-08-23, dev/a3-smoke) |
+
+---|---|
 | captured_utc | 2026-08-23T00:33:11+00:00 |
 | host | fea95d9954c8 |
 | os | Ubuntu 22.04.5 LTS |
@@ -126,7 +155,52 @@ python scripts/a3/backend_val.py --model <pt> --onnx runs/a3/<m>/<stem>.onnx \
 
 ## 6. 结果证据 / Evidence
 
-RESULTS_PLACEHOLDER
+所有精度为 ultralytics `.val` mAP50-95（COCO val2017，5000 张，imgsz 640，batch 1）；时延为 TensorRT
+engine 纯模型 200 次中位数（L4）；PyTorch / ORT 行无时延列。所有原始数据在 `a3/results/`，逐层精度审计在对应日志。
+
+### 6.1 P0: yolo.export smoke + PyTorch vs 后端精度差
+
+| 模型 (发布权重, 未剪枝) | 后端 | mAP50-95 | 对 PyTorch 差 (AP) | 时延 ms | 体积 MB | 来源 |
+|---|---|---|---|---|---|---|
+| v0.1-N (OptimizedMOEImproved x3, E=4/8/16, k=2) | PyTorch (repaired) | **0.4292** | 0 | - | 15.1 (.pt) | `backend_v01n.json` |
+| | ONNX Runtime CUDA EP (默认 TF32) | 0.4286 | -0.0006 | - | 30.5 (.onnx) | `backend_v01n.json` |
+| | TensorRT fp32 (TF32 关闭) | 0.4287 | -0.0005 | 3.898 | 42.6 | `ladder_v01n.csv` |
+| | TensorRT fp16 | 0.4285 | -0.0007 | 1.935 (-50.4%) | 21.3 | `ladder_v01n.csv` |
+| EsMoE-N (ES_MOE x4, E=3, k=3) | PyTorch (dense == sparse) | **0.4270** | 0 | - | 5.7 (.pt) | `backend_esmoen.json` |
+| | ONNX Runtime CUDA EP (默认 TF32) | 0.4267 | -0.0004 | - | 11.1 (.onnx) | `backend_esmoen.json` |
+| | TensorRT fp32 (TF32 关闭) | 0.4267 | -0.0004 | 2.982 | 22.0 | `ladder_esmoen.csv` |
+| | TensorRT fp16 | 0.4268 | -0.0003 | 1.720 (-42.3%) | 11.4 | `ladder_esmoen.csv` |
+
+smoke 验证（`smoke_*.json`）：
+
+| 模型 | 策略判定 | ONNX 路由算子 | 专家 Conv 模块/图 | ORT fp32 对齐 (归一化误差 / top-100 anchor 一致率) | ORT 默认 TF32 |
+|---|---|---|---|---|---|
+| v0.1-N | 3 块 `preserve`（精确 gather） | TopK 3, GatherElements 6, Softmax 12, 无 If/Loop/NonZero | 56 / 56 | 3.9e-6 / 100% | 最大 1.38 px 偏移, 99.9% |
+| EsMoE-N | 4 块 `dense`，`semantic_change=false`（k==E，无 top-k/阈值） | TopK 0, Softmax 13, 无 If/Loop/NonZero | 24 / 24 | 5.4e-6 / 100% | 最大 2.98 px 偏移, 100% |
+| v0.1-N `--dynamic` | **导出前拒绝，exit 2**（`v01n_smoke_dynamic_reject.log`） | - | - | - | - |
+
+### 6.2 INT8 阶梯（隐式 PTQ 对照 + 显式 Q/DQ 交付配方），均 1024 张 train2017 校准
+
+| 模型 | INT8 方式 | mAP50-95 | 对 fp32 差 (AP) | 时延 ms | 体积 MB | engine 逐层精度 (Int8 / Half / Float) |
+|---|---|---|---|---|---|---|
+| v0.1-N | 隐式 entropy，head+routers 钉 FP16 | 0.3754 | -5.33 | 1.944 | 17.1 | 189 / 224 / 14 |
+| v0.1-N | 隐式 entropy，+ stem 两层 (model.0/1) | 0.3955 | -3.32 | 1.965 | 17.0 | (`v01n_trt_stempair.log`) |
+| v0.1-N | **显式 Q/DQ，只校准 (modelopt)** | **0.4164** | **-1.23** | 2.231 | 21.0 | 196 / 176 / 85 |
+| EsMoE-N | 隐式 entropy，head+routers 钉 FP16 | 0.3606 | -6.61 | 1.843 | 12.9 | 165 / 147 / 60 |
+| EsMoE-N | 隐式 entropy，+ stem 两层 | 0.3752 | -5.15 | 1.917 | 13.0 | (`esmoen_trt_stempair.log`) |
+| EsMoE-N | **显式 Q/DQ，只校准 (modelopt)** | **0.4121** | **-1.49** | 2.141 | 11.5 | 174 / 168 / 112 |
+
+读法：
+- 两族在 N 尺度上 INT8 都 **不比 fp16 快**（v0.1-N 1.94 vs 1.94 ms，EsMoE-N 1.84 vs 1.72 ms）：与 project03 在剪枝模型上的
+  "TRT GPU N 尺度用 fp16" 结论一致，部署精度选 fp16。
+- 隐式 PTQ 的精度损失排序与剪枝研究相同：surgical < stem-pair < 显式 Q/DQ；显式 Q/DQ 是唯一把损失压进 2 AP 以内的路径
+  （剪枝 v0.1-N 为 -0.80，未剪枝为 -1.23：4/8/16 个专家全部进入 INT8 面）。
+- **路由专属的新发现**（剪枝模型 k==E 时不可能出现）：未剪枝 v0.1-N 在 eager 稀疏路径下做校准时，从未被路由到的专家
+  没有任何激活统计，而导出图会计算全部专家，modelopt 在导出时断言 "Quantizer has not been calibrated"。修复：校准时使用与
+  导出等价的 dense 路径（同一个 `is_in_onnx_export` mock），并显式审计未校准量化器（本次 360 个全部校准，0 个禁用）。
+  这就是课题问的"动态路由与 INT8 校准的真实兼容性"的一个具体样本：**校准覆盖必须按导出图而不是按 eager 语义来做**。
+- ORT CUDA EP 默认对卷积启用 TF32：框坐标最大偏移 1.4 / 3.0 px，但 mAP 只差 -0.0006 / -0.0004；smoke 的对齐门限用
+  `use_tf32=0` 做 fp32 对 fp32 比较，TF32 结果单独记录。
 
 ---
 
