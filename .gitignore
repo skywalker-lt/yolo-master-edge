@@ -44,3 +44,5 @@ gui/sdk-paths.cmd
 tests/ncnn_rawdump
 PROJECT03_FEASIBILITY.md
 runs/project03/
+# A3 smoke artifacts (onnx/engines/calib caches); logs+results live in a3/
+runs/a3/
