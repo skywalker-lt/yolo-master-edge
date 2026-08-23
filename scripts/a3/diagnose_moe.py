@@ -111,6 +111,41 @@ def _strip_property_shadows(model) -> int:
     return n
 
 
+# attributes today's MoE / router classes read in eval forward that pre-date the
+# released Feb-2026 pickles (upstream 8.4.x dropped the in-class compat shims).
+# Absence is the signal: defaults = what the checkpoints were trained with.
+_LEGACY_MOE_DEFAULTS = {
+    "progressive_sparsity": False, "_training_step": 0, "warmup_steps": 5000,
+    "expert_dropout_rate": 0.15, "dropout_interval": 100, "detach_routing": False,
+    "last_routing_snapshot": None, "_moe_nonfinite_events": 0,
+}
+_LEGACY_ROUTER_DEFAULTS = {"capacity_factor": None, "noise_std": 0.0}
+
+
+def _fix_legacy_attrs(model) -> dict:
+    """Fill attributes missing from old pickles on MoE blocks and their routers.
+
+    Returns {attr: count} of what was filled, so the log shows exactly which
+    compat gaps the running ultralytics lineage has against the released weights.
+    """
+    filled: dict = {}
+    for mod in model.model.modules():
+        if hasattr(mod, "experts") and hasattr(mod, "routing"):
+            for k, v in _LEGACY_MOE_DEFAULTS.items():
+                if not hasattr(mod, k):
+                    setattr(mod, k, {} if v is None and k == "last_routing_snapshot" else v)
+                    filled[k] = filled.get(k, 0) + 1
+            if not hasattr(mod, "_current_top_k"):
+                mod._current_top_k = getattr(mod, "top_k", len(mod.experts))
+                filled["_current_top_k"] = filled.get("_current_top_k", 0) + 1
+            r = mod.routing
+            for k, v in _LEGACY_ROUTER_DEFAULTS.items():
+                if not hasattr(r, k):
+                    setattr(r, k, v)
+                    filled[f"routing.{k}"] = filled.get(f"routing.{k}", 0) + 1
+    return filled
+
+
 def _fix_add_residual(model) -> int:
     """Repair add_residual on OptimizedMOEImproved blocks restored from old checkpoints.
 
@@ -120,6 +155,9 @@ def _fix_add_residual(model) -> int:
     while boxes stay sane. Absence of the attribute is the signal it must be False.
     Returns the number of blocks forced to False.
     """
+    filled = _fix_legacy_attrs(model)
+    if filled:
+        print(f"[repair] legacy attrs filled: {filled}")
     n_false = 0
     for mod in model.model.modules():
         if type(mod).__name__ != "OptimizedMOEImproved":
