@@ -45,3 +45,5 @@ tests/ncnn_rawdump
 
 # A3 smoke artifacts (onnx/engines/calib caches); logs+results live in a3/
 runs/a3/
+!a3/results/
+!a3/results-*/
