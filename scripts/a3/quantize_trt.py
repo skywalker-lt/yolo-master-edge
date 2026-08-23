@@ -395,7 +395,8 @@ def main():
     import sys
     # reuse the committed project03 helpers (dataset resolver + legacy repairs)
     sys.path.insert(0, str(Path(__file__).parent.parent / "project03"))
-    from diagnose_moe import _resolve_dataset, _fix_add_residual, _force_dense_esmoe
+    from diagnose_moe import (_resolve_dataset, _fix_add_residual, _force_dense_esmoe,
+                              _strip_property_shadows)
     yaml_path, root, cfg = _resolve_dataset(args.data)
     calib_dir = args.calib_images or str(root / cfg["val"])
     calib_imgs = calib_image_list(calib_dir, args.calib_n)
@@ -410,6 +411,7 @@ def main():
         # predates add_residual (compat shim defaults it True -> AP 0.7); ES_MOE must
         # run the same dense path the exporter traces. Same repairs as diagnose_moe.
         print(f"[repair] add_residual forced False on {_fix_add_residual(m)} blocks; "
+              f"property shadows stripped {_strip_property_shadows(m)}; "
               f"ES_MOE dense={_force_dense_esmoe(m)}")
         onnx_path = m.export(format="onnx", imgsz=args.imgsz, device=0, simplify=True,
                              dynamic=False, batch=1)
