@@ -47,6 +47,7 @@ struct BenchRun: Identifiable, Codable {
     let mode: String                 // "Cold Sweep" | "Sustained"
     let results: [BenchResult]
     var sparkline: [Double]? = nil    // sustained: the throttle trend
+    var thermalTimeline: [Int]? = nil // sustained: thermal level sampled over the run
     var thermalStart: Int? = nil      // sustained: thermal level at start
     var thermalEnd: Int? = nil        // thermal level at the captured moment / run end
     var thermalPeak: Int? = nil       // sustained: worst level reached
@@ -118,6 +119,7 @@ struct BenchView: View {
     // live readouts
     @State private var liveMs = 0.0
     @State private var sparkSamples: [Double] = []
+    @State private var sparkThermal: [Int] = []
     @State private var sparkBaseline: Double? = nil
     @State private var thermal = ProcessInfo.processInfo.thermalState
     // export toast
@@ -142,6 +144,7 @@ struct BenchView: View {
                 ScrollView {
                     VStack(spacing: 10) {
                         if running { progressCard }
+                        if mode == .sustained, sparkSamples.count > 1 { sustainedGraphCard }
                         if mode == .sweep, let hero = fastest { heroCard(hero) }
                         ForEach(modelsWithResults, id: \.self) { modelCard($0) }
                     }
@@ -180,6 +183,7 @@ struct BenchView: View {
             // preserve each mode's results: stash the current, restore the other
             let tmp = results; results = stashedResults; stashedResults = tmp
             expandedCards = []
+            sparkSamples = []; sparkThermal = []
         }
         .sheet(isPresented: $showHistory) { HistoryView(history: history) }
     }
@@ -315,16 +319,30 @@ struct BenchView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 ThermalTach(level: thermalLevel, color: thermalColor, size: 46)
             }
-            if mode == .sustained, sparkSamples.count > 1 {
-                SparklineView(samples: sparkSamples, baseline: sparkBaseline, color: .blue)
-                    .frame(height: 58)
-                HStack(spacing: 6) {
-                    if let b = sparkBaseline {
-                        Text("cold \(fmt(b))").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Text("→ live \(fmt(liveMs)) ms").font(.caption2.monospacedDigit())
-                    Spacer()
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// Sustained throttle graph: a rolling 1-minute window while running that
+    /// smoothly transitions to the full-run trend when it finishes, plus a
+    /// colored thermal timeline bar. Persists after the run until the next start.
+    private var sustainedGraphCard: some View {
+        VStack(spacing: 6) {
+            SparklineView(samples: sparkSamples, baseline: sparkBaseline, color: .blue)
+                .frame(height: 64)
+            if !sparkThermal.isEmpty {
+                ThermalBar(levels: sparkThermal).frame(height: 8)
+            }
+            HStack(spacing: 6) {
+                if let b = sparkBaseline {
+                    Text("cold \(fmt(b))").font(.caption2).foregroundStyle(.secondary)
                 }
+                Text("→ \(running ? "live" : "final") \(fmt(liveMs)) ms")
+                    .font(.caption2.monospacedDigit())
+                Spacer()
+                Text(running ? "1 min window" : "full run")
+                    .font(.caption2).foregroundStyle(.tertiary)
             }
         }
         .padding(12)
@@ -435,6 +453,23 @@ struct BenchView: View {
         models.map(\.id).filter { id in results.contains { $0.modelId == id } }
     }
     private func fmt(_ v: Double) -> String { String(format: "%.1f", v) }
+    /// Average `arr` into up to `n` buckets to smooth per-inference jitter.
+    private func bucketed(_ arr: [Double], _ n: Int) -> [Double] {
+        guard !arr.isEmpty else { return [] }
+        let bs = max(1, arr.count / n)
+        var out: [Double] = []; var i = 0
+        while i < arr.count {
+            let end = min(i + bs, arr.count)
+            out.append(arr[i..<end].reduce(0, +) / Double(end - i)); i = end
+        }
+        return out
+    }
+    private func thermalLevelNow() -> Int {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return 0; case .fair: return 1; case .serious: return 2; case .critical: return 3
+        @unknown default: return 0
+        }
+    }
     private func unitIcon(_ c: ComputeChoice) -> String {
         switch c {
         case .ane: return "bolt.fill"
@@ -469,7 +504,7 @@ struct BenchView: View {
         running = true; paused = false
         runThermalStart = thermalLevel; runThermalPeak = thermalLevel
         medHaptic.impactOccurred(); medHaptic.prepare()
-        sparkSamples = []; sparkBaseline = nil; liveMs = 0
+        sparkSamples = []; sparkThermal = []; sparkBaseline = nil; liveMs = 0
         if mode == .sweep {
             results = []; expandedCards = []
             runSweep()
@@ -500,7 +535,7 @@ struct BenchView: View {
     }
 
     /// Called on SUCCESSFUL completion (not on cancel): saves the run to history.
-    private func finishRun(sustained: Bool) {
+    private func finishRun(sustained: Bool, thermalTimeline: [Int]? = nil) {
         if !results.isEmpty {
             let name = sustained
                 ? "\(results.first?.shortID ?? "run") · \(selectedCompute.rawValue) · \(Int(sustainedMinutes))min"
@@ -510,6 +545,7 @@ struct BenchView: View {
                 mode: sustained ? "Sustained" : "Cold Sweep",
                 results: results,
                 sparkline: sustained ? sparkSamples : nil,
+                thermalTimeline: sustained ? thermalTimeline : nil,
                 thermalStart: sustained ? runThermalStart : nil,
                 thermalEnd: thermalLevel,
                 thermalPeak: sustained ? runThermalPeak : nil))
@@ -604,11 +640,14 @@ struct BenchView: View {
             for _ in 0..<iterN { autoreleasepool { if let t = try? det.inferOnly(img) { cold.append(t) } } }
             cold.sort()
             let coldMed = cold.isEmpty ? 0 : cold[cold.count / 2]
-            await MainActor.run { sparkBaseline = coldMed; sparkSamples = [] }
-            // sustained loop
+            await MainActor.run { sparkBaseline = coldMed; sparkSamples = []; sparkThermal = [] }
+            // sustained loop with a rolling 1-minute display window
             var t0 = CFAbsoluteTimeGetCurrent()
-            var all: [Double] = []
+            var all: [Double] = []          // every inference ms
+            var atimes: [Double] = []       // its elapsed time
+            var therm: [(t: Double, lvl: Int)] = []   // thermal sampled per publish
             var lastPub = 0.0
+            var winStart = 0
             while CFAbsoluteTimeGetCurrent() - t0 < Double(totalS) {
                 if control.cancelled { return }
                 if control.paused {
@@ -616,43 +655,46 @@ struct BenchView: View {
                     if !(await pauseGate()) { return }
                     t0 += CFAbsoluteTimeGetCurrent() - ps   // exclude paused time from elapsed
                 }
-                autoreleasepool { if let t = try? det.inferOnly(img) { all.append(t) } }
+                let st = CFAbsoluteTimeGetCurrent() - t0
+                autoreleasepool { if let t = try? det.inferOnly(img) { all.append(t); atimes.append(st) } }
                 let now = CFAbsoluteTimeGetCurrent()
                 if now - lastPub >= 0.1 {
                     lastPub = now
-                    let elapsed = Int(now - t0)
-                    // smooth trend: bucket the whole run into ~100 time-windows and
-                    // average each, so per-inference jitter cancels out
-                    let buckets = 100
-                    let bsize = max(1, all.count / buckets)
-                    var pts: [Double] = []
-                    var bi = 0
-                    while bi < all.count {
-                        let end = min(bi + bsize, all.count)
-                        pts.append(all[bi..<end].reduce(0, +) / Double(end - bi))
-                        bi = end
-                    }
-                    let live = all.suffix(30).sorted()
-                    let liveMed = live.isEmpty ? 0 : live[live.count / 2]
+                    let elapsed = now - t0
+                    therm.append((elapsed, thermalLevelNow()))
+                    // rolling 1-minute window
+                    let cutoff = elapsed - 60
+                    while winStart < atimes.count && atimes[winStart] < cutoff { winStart += 1 }
+                    let winMs = Array(all[winStart...])
+                    let winTherm = therm.filter { $0.t >= cutoff }.map { $0.lvl }
+                    let pts = bucketed(winMs, 100)
+                    let liveWin = all.suffix(30).sorted()
+                    let liveMed = liveWin.isEmpty ? 0 : liveWin[liveWin.count / 2]
                     await MainActor.run {
-                        sparkSamples = pts; liveMs = liveMed
-                        phase = .sustained(m.fullName, c.rawValue, elapsed, totalS)
+                        sparkSamples = pts; sparkThermal = winTherm; liveMs = liveMed
+                        phase = .sustained(m.fullName, c.rawValue, Int(elapsed), totalS)
                     }
                 }
             }
-            all.sort()
-            let tail = Array(all.suffix(max(all.count / 4, 1))).sorted()
+            let sortedMs = all.sorted()
+            let tail = Array(sortedMs.suffix(max(sortedMs.count / 4, 1)))
             let sust = tail.isEmpty ? coldMed : tail[tail.count / 2]
-            let p90 = all.isEmpty ? 0 : all[min(Int(Double(all.count) * 0.9), all.count - 1)]
+            let p90 = sortedMs.isEmpty ? 0 : sortedMs[min(Int(Double(sortedMs.count) * 0.9), sortedMs.count - 1)]
             let (pre, inf, dec) = stageBreakdown(det, img)
+            let fullSpark = bucketed(all, 120)      // smooth full-run trend
+            let fullTherm = therm.map { $0.lvl }
             let r = BenchResult(modelId: m.id, shortID: m.shortID, fullName: m.fullName, compute: c,
-                coldMedian: coldMed, coldP90: p90, coldMin: all.first ?? 0,
+                coldMedian: coldMed, coldP90: p90, coldMin: sortedMs.first ?? 0,
                 pre: pre, inf: inf, dec: dec,
                 sustainedMedian: sust, throttlePct: coldMed > 0 ? (sust - coldMed) / coldMed * 100 : 0)
             await MainActor.run {
+                // smooth transition from the rolling window to the full-run graph
+                withAnimation(.easeInOut(duration: 0.5)) {
+                    sparkSamples = fullSpark; sparkThermal = fullTherm; liveMs = sust
+                }
                 results.removeAll { $0.modelId == m.id && $0.compute == c }
                 withAnimation(.spring(duration: 0.3)) { results.append(r) }
-                finishRun(sustained: true)
+                finishRun(sustained: true, thermalTimeline: fullTherm)
             }
         }
     }
@@ -701,9 +743,38 @@ struct BenchView: View {
     }
 }
 
-/// Permanent, searchable, sortable, renameable benchmark history. Each row shows
-/// the run's fastest result, and for sustained runs the saved throttle sparkline
-/// plus the thermal change over the run (start -> end, and the peak reached).
+
+/// Horizontal thermal-timeline bar: run-length segments coloured by the thermal
+/// level sampled over a run, so the temperature CHANGE reads as parallel zones.
+struct ThermalBar: View {
+    let levels: [Int]
+    var body: some View {
+        GeometryReader { g in
+            HStack(spacing: 0) {
+                ForEach(Array(segments.enumerated()), id: \.offset) { _, seg in
+                    thermalLevelColor(seg.level)
+                        .frame(width: max(1, g.size.width * seg.frac))
+                }
+            }
+        }
+        .clipShape(Capsule())
+        .animation(.easeInOut(duration: 0.4), value: levels)
+    }
+    private var segments: [(level: Int, frac: Double)] {
+        guard !levels.isEmpty else { return [] }
+        var segs: [(Int, Int)] = []
+        for l in levels {
+            if let last = segs.last, last.0 == l { segs[segs.count - 1].1 += 1 }
+            else { segs.append((l, 1)) }
+        }
+        let total = Double(levels.count)
+        return segs.map { (level: $0.0, frac: Double($0.1) / total) }
+    }
+}
+
+/// Permanent benchmark history: searchable, sortable, renameable, exportable.
+/// Rows are simplified by default and EXPAND on tap to reveal the sustained
+/// throttle sparkline + thermal-timeline bar.
 struct HistoryView: View {
     @ObservedObject var history: BenchHistory
     @Environment(\.dismiss) private var dismiss
@@ -711,6 +782,12 @@ struct HistoryView: View {
     @State private var sort: SortKey = .time
     @State private var renaming: BenchRun?
     @State private var newName = ""
+    @State private var expanded: Set<UUID> = []
+    @State private var selection: Set<UUID> = []
+    @State private var editMode: EditMode = .inactive
+    @State private var exportMsg: String?
+    @State private var exportOK = false
+    @State private var exportGen = 0
 
     enum SortKey: String, CaseIterable, Identifiable { case time = "Time", name = "Name"; var id: String { rawValue } }
 
@@ -730,21 +807,26 @@ struct HistoryView: View {
         }
         return r
     }
-
     private func fmt(_ v: Double) -> String { String(format: "%.1f", v) }
 
     var body: some View {
         NavigationStack {
-            Group {
+            ZStack {
                 if history.runs.isEmpty {
                     ContentUnavailableView("No saved runs", systemImage: "clock.arrow.circlepath",
                         description: Text("Completed cold sweeps and sustained runs are saved here."))
                 } else {
-                    List {
+                    List(selection: $selection) {
                         ForEach(shown) { run in row(run) }
                             .onDelete { idx in history.delete(Set(idx.map { shown[$0].id })) }
                     }
                     .searchable(text: $query, prompt: "Search runs or models")
+                    .environment(\.editMode, $editMode)
+                }
+                if let msg = exportMsg {
+                    ExportToast(success: exportOK, message: msg)
+                        .transition(.scale(scale: 0.82).combined(with: .opacity))
+                        .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { exportMsg = nil } }
                 }
             }
             .navigationTitle("History")
@@ -752,12 +834,19 @@ struct HistoryView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Picker("Sort", selection: $sort) {
-                        ForEach(SortKey.allCases) { Label($0.rawValue, systemImage:
-                            $0 == .time ? "clock" : "textformat").tag($0) }
+                        ForEach(SortKey.allCases) {
+                            Label($0.rawValue, systemImage: $0 == .time ? "clock" : "textformat").tag($0)
+                        }
                     }
                     .pickerStyle(.menu)
                 }
-                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if !history.runs.isEmpty {
+                        Button { exportRuns() } label: { Image(systemName: "square.and.arrow.up") }
+                        EditButton()
+                    }
+                    Button("Done") { dismiss() }
+                }
             }
             .alert("Rename run", isPresented: Binding(
                 get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
@@ -772,7 +861,8 @@ struct HistoryView: View {
     }
 
     private func row(_ run: BenchRun) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let isOpen = expanded.contains(run.id)
+        return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(run.name).font(.subheadline.bold()).lineLimit(1)
                 Spacer()
@@ -780,6 +870,8 @@ struct HistoryView: View {
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background((run.mode == "Sustained" ? Color.orange : Color.blue).opacity(0.2),
                                 in: Capsule())
+                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+                    .font(.caption2).foregroundStyle(.tertiary)
             }
             Text(run.date.formatted(date: .abbreviated, time: .shortened))
                 .font(.caption2).foregroundStyle(.secondary)
@@ -787,24 +879,40 @@ struct HistoryView: View {
                 Text("fastest \(f.shortID) @ \(f.compute.rawValue) · \(fmt(f.coldMedian)) ms · \(Int(f.fpsEquiv)) FPS")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
-            if run.mode == "Sustained" {
-                if let spark = run.sparkline, spark.count > 1 {
-                    SparklineView(samples: spark, color: .blue).frame(height: 40)
+            if isOpen {
+                if run.mode == "Sustained", let spark = run.sparkline, spark.count > 1 {
+                    SparklineView(samples: spark, color: .blue).frame(height: 44)
                 }
-                HStack(spacing: 8) {
-                    thermalChip("start", run.thermalStart)
-                    Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
-                    thermalChip("end", run.thermalEnd)
-                    thermalChip("peak", run.thermalPeak)
-                    if let tp = run.fastest?.throttlePct {
-                        Text("+\(Int(tp))%").font(.caption2.monospacedDigit()).foregroundStyle(.orange)
+                if run.mode == "Sustained", let tl = run.thermalTimeline, !tl.isEmpty {
+                    ThermalBar(levels: tl).frame(height: 8)
+                    HStack(spacing: 8) {
+                        thermalChip("start", run.thermalStart)
+                        Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                        thermalChip("end", run.thermalEnd)
+                        thermalChip("peak", run.thermalPeak)
+                        if let tp = run.fastest?.throttlePct {
+                            Text("+\(Int(tp))%").font(.caption2.monospacedDigit()).foregroundStyle(.orange)
+                        }
                     }
+                }
+                ForEach(run.results.sorted { $0.coldMedian < $1.coldMedian }) { r in
+                    Text("\(r.compute.rawValue): \(fmt(r.coldMedian)) ms · \(Int(r.fpsEquiv)) FPS")
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
         }
         .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if editMode == .inactive {
+                withAnimation(.spring(duration: 0.3)) {
+                    if isOpen { expanded.remove(run.id) } else { expanded.insert(run.id) }
+                }
+            }
+        }
         .contextMenu {
             Button { renaming = run; newName = run.name } label: { Label("Rename", systemImage: "pencil") }
+            Button { exportRuns([run]) } label: { Label("Export", systemImage: "square.and.arrow.up") }
             Button(role: .destructive) { history.delete([run.id]) } label: { Label("Delete", systemImage: "trash") }
         }
     }
@@ -815,5 +923,53 @@ struct HistoryView: View {
                 .foregroundStyle(thermalLevelColor(level ?? 0))
             Text(label).font(.caption2).foregroundStyle(.secondary)
         }
+    }
+
+    private func exportRuns(_ explicit: [BenchRun]? = nil) {
+        let runs = explicit ?? (selection.isEmpty ? shown : history.runs.filter { selection.contains($0.id) })
+        guard !runs.isEmpty else { return }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("bench_history.csv")
+        let ok = (try? runsCSV(runs).data(using: .utf8)?.write(to: url)) != nil
+        exportGen += 1
+        let gen = exportGen
+        withAnimation(.spring(duration: 0.3)) {
+            exportOK = ok
+            exportMsg = ok ? "\(runs.count) run\(runs.count == 1 ? "" : "s") exported" : "Export failed"
+        }
+        if ok { share(url) }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            if exportGen == gen { withAnimation(.easeOut(duration: 0.25)) { exportMsg = nil } }
+        }
+    }
+
+    private func runsCSV(_ runs: [BenchRun]) -> String {
+        var lines = ["run,date,mode,model,compute,cold_median_ms,cold_p90_ms,fps_equiv,sustained_ms,throttle_pct,thermal_start,thermal_end,thermal_peak"]
+        for run in runs {
+            for r in run.results {
+                lines.append([
+                    "\"\(run.name)\"", run.date.ISO8601Format(), run.mode, r.modelId, r.compute.rawValue,
+                    String(format: "%.2f", r.coldMedian), String(format: "%.2f", r.coldP90),
+                    String(format: "%.1f", r.fpsEquiv),
+                    r.sustainedMedian.map { String(format: "%.2f", $0) } ?? "",
+                    r.throttlePct.map { String(format: "%.1f", $0) } ?? "",
+                    run.thermalStart.map(String.init) ?? "",
+                    run.thermalEnd.map(String.init) ?? "",
+                    run.thermalPeak.map(String.init) ?? ""
+                ].joined(separator: ","))
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func share(_ url: URL) {
+        guard let scene = UIApplication.shared.connectedScenes
+                .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
+              let root = scene.keyWindow?.rootViewController else { return }
+        let av = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        av.popoverPresentationController?.sourceView = root.view
+        av.popoverPresentationController?.sourceRect = CGRect(
+            x: root.view.bounds.midX, y: root.view.bounds.midY, width: 0, height: 0)
+        root.present(av, animated: true)
     }
 }
