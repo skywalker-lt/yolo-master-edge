@@ -938,7 +938,11 @@ struct HistoryView: View {
                     }
                     let scale = max(run.results.map(\.coldMedian).max() ?? 50, 1)
                     let asFPS = fpsRuns.contains(run.id)
-                    ForEach(run.results.sorted { $0.coldMedian < $1.coldMedian }) { r in
+                    ForEach(run.results.sorted {
+                        $0.modelId == $1.modelId
+                            ? $0.coldMedian < $1.coldMedian    // within a model, fastest unit first
+                            : $0.modelId < $1.modelId          // group by model, not by global rank
+                    }) { r in
                         DetailBar(icon: benchUnitIcon(r.compute),
                                   name: "\(r.shortID) \(r.compute.rawValue)",
                                   ms: r.coldMedian, fullScale: scale,
