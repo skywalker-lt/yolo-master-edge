@@ -70,6 +70,9 @@ def main():
                     help="train-set fraction (smoke tests)")
     ap.add_argument("--skip-train", action="store_true",
                     help="calibrate-only (PTQ-with-QDQ baseline)")
+    ap.add_argument("--smoothquant", action="store_true",
+                    help="use INT8_SMOOTHQUANT_CFG: migrate activation outliers into weights "
+                         "(fixes systemic activation-outlier collapse at M/L scale)")
     ap.add_argument("--sensitive", choices=list(SENSITIVE_SETS), default="default",
                     help="base exclusion set (see SENSITIVE_SETS)")
     ap.add_argument("--disable", default="",
@@ -115,7 +118,9 @@ def main():
                     setattr(_m, _attr, _dflt)
 
     # ---- fake-quant insertion with the sensitive set disabled ----------------
-    qcfg = copy.deepcopy(mtq.INT8_DEFAULT_CFG)
+    base_cfg = mtq.INT8_SMOOTHQUANT_CFG if args.smoothquant else mtq.INT8_DEFAULT_CFG
+    print(f"[mtq] base config: {'INT8_SMOOTHQUANT' if args.smoothquant else 'INT8_DEFAULT'}")
+    qcfg = copy.deepcopy(base_cfg)
     extra = tuple(p.strip() for p in args.disable.split(",") if p.strip())
     base = SENSITIVE_SETS[args.sensitive]
     print(f"[mtq] sensitive set '{args.sensitive}': {base}")
