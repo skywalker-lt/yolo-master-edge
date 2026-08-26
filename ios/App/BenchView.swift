@@ -257,6 +257,7 @@ struct BenchView: View {
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, 10)
+        .onChange(of: mode) { _, _ in lightHaptic.impactOccurred(); lightHaptic.prepare() }
     }
 
     private var sustainedConfig: some View {
@@ -296,8 +297,10 @@ struct BenchView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         .disabled(running)
         .onChange(of: selectedCompute) { _, _ in
+            lightHaptic.impactOccurred(); lightHaptic.prepare()
             if sustainedMinutes > Double(maxSustained) { sustainedMinutes = Double(maxSustained) }
         }
+        .onChange(of: sustainedMinutes) { _, _ in lightHaptic.impactOccurred(); lightHaptic.prepare() }
     }
 
     // CPU inference is slow and hot - cap sustained CPU stress at 3 minutes.
@@ -991,6 +994,8 @@ struct HistoryView: View {
         let ok = (try? runsCSV(runs).data(using: .utf8)?.write(to: url)) != nil
         exportGen += 1
         let gen = exportGen
+        let tap = UIImpactFeedbackGenerator(style: .light); tap.impactOccurred()
+        UINotificationFeedbackGenerator().notificationOccurred(ok ? .success : .error)
         withAnimation(.spring(duration: 0.3)) {
             exportOK = ok
             exportMsg = ok ? "\(runs.count) run\(runs.count == 1 ? "" : "s") exported" : "Export failed"
