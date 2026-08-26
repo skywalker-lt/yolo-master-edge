@@ -13,7 +13,7 @@ import SwiftUI
 import UIKit
 import YOLOMasterKit
 
-struct BenchResult: Identifiable {
+struct BenchResult: Identifiable, Codable {
     var id: String { "\(modelId)|\(compute.rawValue)" }
     let modelId: String
     let shortID: String
@@ -39,6 +39,48 @@ final class BenchControl: @unchecked Sendable {
     var cancelled = false
 }
 
+/// A saved benchmark run in the permanent history (JSON-persisted).
+struct BenchRun: Identifiable, Codable {
+    var id = UUID()
+    var name: String
+    let date: Date
+    let mode: String                 // "Cold Sweep" | "Sustained"
+    let results: [BenchResult]
+    var sparkline: [Double]? = nil    // sustained: the throttle trend
+    var thermalStart: Int? = nil      // sustained: thermal level at start
+    var thermalEnd: Int? = nil        // thermal level at the captured moment / run end
+    var thermalPeak: Int? = nil       // sustained: worst level reached
+    var fastest: BenchResult? { results.min { $0.coldMedian < $1.coldMedian } }
+}
+
+/// Persistent, JSON-backed store for saved benchmark runs (newest first).
+final class BenchHistory: ObservableObject {
+    @Published var runs: [BenchRun] = []
+    private let fileURL: URL = {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return dir.appendingPathComponent("bench_history.json")
+    }()
+    init() {
+        if let data = try? Data(contentsOf: fileURL),
+           let decoded = try? JSONDecoder().decode([BenchRun].self, from: data) { runs = decoded }
+    }
+    private func save() {
+        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(runs) { try? data.write(to: fileURL) }
+    }
+    func add(_ run: BenchRun) { runs.insert(run, at: 0); save() }
+    func rename(_ id: UUID, _ name: String) {
+        if let i = runs.firstIndex(where: { $0.id == id }) { runs[i].name = name; save() }
+    }
+    func delete(_ ids: Set<UUID>) { runs.removeAll { ids.contains($0.id) }; save() }
+}
+
+/// Thermal-state colour shared by the tach and the history rows.
+func thermalLevelColor(_ level: Int) -> Color {
+    switch level { case 0: return .blue; case 1: return .green; case 2: return .orange; default: return .red }
+}
+
 struct BenchView: View {
     enum Mode: String, CaseIterable, Identifiable {
         case sweep = "Cold Sweep", sustained = "Sustained"
@@ -53,12 +95,17 @@ struct BenchView: View {
     }
 
     @State private var models: [BundledModel] = []
-    @State private var results: [BenchResult] = []
+    @State private var results: [BenchResult] = []            // active mode's results (shown)
+    @State private var stashedResults: [BenchResult] = []     // the OTHER mode's, kept hidden
     @State private var mode: Mode = .sweep
     @State private var phase: Phase = .idle
     @State private var running = false
     @State private var paused = false
     @State private var control = BenchControl()
+    @StateObject private var history = BenchHistory()
+    @State private var showHistory = false
+    @State private var runThermalStart = 0
+    @State private var runThermalPeak = 0
     @Environment(\.scenePhase) private var scenePhase
     @State private var showSettings = false
     @State private var expandedCards: Set<String> = []
@@ -123,11 +170,18 @@ struct BenchView: View {
         .onReceive(NotificationCenter.default.publisher(
             for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
             thermal = ProcessInfo.processInfo.thermalState
+            if running { runThermalPeak = max(runThermalPeak, thermalLevel) }
         }
         // leaving the tab (or backgrounding) auto-pauses the run so it never
         // competes with Live/Photo inference; the user resumes with play
         .onDisappear { autoPause() }
         .onChange(of: scenePhase) { _, ph in if ph != .active { autoPause() } }
+        .onChange(of: mode) { _, _ in
+            // preserve each mode's results: stash the current, restore the other
+            let tmp = results; results = stashedResults; stashedResults = tmp
+            expandedCards = []
+        }
+        .sheet(isPresented: $showHistory) { HistoryView(history: history) }
     }
 
     private func autoPause() {
@@ -146,6 +200,10 @@ struct BenchView: View {
                 .disabled(running)
                 Button { withAnimation { showSettings.toggle() } } label: {
                     Image(systemName: "slider.horizontal.3")
+                }
+                .buttonStyle(.bordered)
+                Button { showHistory = true } label: {
+                    Image(systemName: "clock.arrow.circlepath")
                 }
                 .buttonStyle(.bordered)
                 if !results.isEmpty {
@@ -316,7 +374,6 @@ struct BenchView: View {
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
-            ThermalTach(level: thermalLevel, color: thermalColor, size: 46)
         }
         .padding(14)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
@@ -410,6 +467,7 @@ struct BenchView: View {
         guard !running else { return }
         control.paused = false; control.cancelled = false
         running = true; paused = false
+        runThermalStart = thermalLevel; runThermalPeak = thermalLevel
         medHaptic.impactOccurred(); medHaptic.prepare()
         sparkSamples = []; sparkBaseline = nil; liveMs = 0
         if mode == .sweep {
@@ -439,6 +497,25 @@ struct BenchView: View {
             try? await Task.sleep(nanoseconds: 120_000_000)
         }
         return !control.cancelled
+    }
+
+    /// Called on SUCCESSFUL completion (not on cancel): saves the run to history.
+    private func finishRun(sustained: Bool) {
+        if !results.isEmpty {
+            let name = sustained
+                ? "\(results.first?.shortID ?? "run") · \(selectedCompute.rawValue) · \(Int(sustainedMinutes))min"
+                : "Sweep · \(modelsWithResults.count) models"
+            history.add(BenchRun(
+                name: name, date: Date(),
+                mode: sustained ? "Sustained" : "Cold Sweep",
+                results: results,
+                sparkline: sustained ? sparkSamples : nil,
+                thermalStart: sustained ? runThermalStart : nil,
+                thermalEnd: thermalLevel,
+                thermalPeak: sustained ? runThermalPeak : nil))
+        }
+        running = false; paused = false; phase = .done
+        notifyHaptic.notificationOccurred(.success); notifyHaptic.prepare()
     }
 
     /// 640x640 mid-gray test image; inferOnly measures predict() wall time.
@@ -506,10 +583,7 @@ struct BenchView: View {
                     }
                 }
             }
-            await MainActor.run {
-                running = false; phase = .done
-                notifyHaptic.notificationOccurred(.success); notifyHaptic.prepare()
-            }
+            await MainActor.run { finishRun(sustained: false) }
         }
     }
 
@@ -578,8 +652,7 @@ struct BenchView: View {
             await MainActor.run {
                 results.removeAll { $0.modelId == m.id && $0.compute == c }
                 withAnimation(.spring(duration: 0.3)) { results.append(r) }
-                running = false; phase = .done
-                notifyHaptic.notificationOccurred(.success); notifyHaptic.prepare()
+                finishRun(sustained: true)
             }
         }
     }
@@ -625,5 +698,122 @@ struct BenchView: View {
         av.popoverPresentationController?.sourceRect = CGRect(
             x: root.view.bounds.midX, y: root.view.bounds.midY, width: 0, height: 0)
         root.present(av, animated: true)
+    }
+}
+
+/// Permanent, searchable, sortable, renameable benchmark history. Each row shows
+/// the run's fastest result, and for sustained runs the saved throttle sparkline
+/// plus the thermal change over the run (start -> end, and the peak reached).
+struct HistoryView: View {
+    @ObservedObject var history: BenchHistory
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var sort: SortKey = .time
+    @State private var renaming: BenchRun?
+    @State private var newName = ""
+
+    enum SortKey: String, CaseIterable, Identifiable { case time = "Time", name = "Name"; var id: String { rawValue } }
+
+    private var shown: [BenchRun] {
+        var r = history.runs
+        if !query.isEmpty {
+            let q = query
+            r = r.filter { run in
+                run.name.localizedCaseInsensitiveContains(q)
+                || run.mode.localizedCaseInsensitiveContains(q)
+                || run.results.contains { $0.fullName.localizedCaseInsensitiveContains(q) }
+            }
+        }
+        switch sort {
+        case .time: r.sort { $0.date > $1.date }
+        case .name: r.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+        return r
+    }
+
+    private func fmt(_ v: Double) -> String { String(format: "%.1f", v) }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if history.runs.isEmpty {
+                    ContentUnavailableView("No saved runs", systemImage: "clock.arrow.circlepath",
+                        description: Text("Completed cold sweeps and sustained runs are saved here."))
+                } else {
+                    List {
+                        ForEach(shown) { run in row(run) }
+                            .onDelete { idx in history.delete(Set(idx.map { shown[$0].id })) }
+                    }
+                    .searchable(text: $query, prompt: "Search runs or models")
+                }
+            }
+            .navigationTitle("History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Picker("Sort", selection: $sort) {
+                        ForEach(SortKey.allCases) { Label($0.rawValue, systemImage:
+                            $0 == .time ? "clock" : "textformat").tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                }
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
+            .alert("Rename run", isPresented: Binding(
+                get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+                TextField("Name", text: $newName)
+                Button("Cancel", role: .cancel) { renaming = nil }
+                Button("Save") {
+                    if let r = renaming, !newName.isEmpty { history.rename(r.id, newName) }
+                    renaming = nil
+                }
+            }
+        }
+    }
+
+    private func row(_ run: BenchRun) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(run.name).font(.subheadline.bold()).lineLimit(1)
+                Spacer()
+                Text(run.mode).font(.caption2)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background((run.mode == "Sustained" ? Color.orange : Color.blue).opacity(0.2),
+                                in: Capsule())
+            }
+            Text(run.date.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption2).foregroundStyle(.secondary)
+            if let f = run.fastest {
+                Text("fastest \(f.shortID) @ \(f.compute.rawValue) · \(fmt(f.coldMedian)) ms · \(Int(f.fpsEquiv)) FPS")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            if run.mode == "Sustained" {
+                if let spark = run.sparkline, spark.count > 1 {
+                    SparklineView(samples: spark, color: .blue).frame(height: 40)
+                }
+                HStack(spacing: 8) {
+                    thermalChip("start", run.thermalStart)
+                    Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                    thermalChip("end", run.thermalEnd)
+                    thermalChip("peak", run.thermalPeak)
+                    if let tp = run.fastest?.throttlePct {
+                        Text("+\(Int(tp))%").font(.caption2.monospacedDigit()).foregroundStyle(.orange)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 2)
+        .contextMenu {
+            Button { renaming = run; newName = run.name } label: { Label("Rename", systemImage: "pencil") }
+            Button(role: .destructive) { history.delete([run.id]) } label: { Label("Delete", systemImage: "trash") }
+        }
+    }
+
+    private func thermalChip(_ label: String, _ level: Int?) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: "thermometer.medium").font(.caption2)
+                .foregroundStyle(thermalLevelColor(level ?? 0))
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
     }
 }
