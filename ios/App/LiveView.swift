@@ -47,6 +47,7 @@ struct LiveView: View {
     @State private var initializing = true    // first-launch discovery/compile in flight
     @State private var selectedModel: BundledModel?
     @State private var compute: ComputeChoice = ComputeChoice.deviceDefault
+    @AppStorage("allowCPU") private var allowCPU = false
     @State private var detections: [Detection] = []
     @State private var frameSize = CGSize(width: 720, height: 1280)
     @State private var statPre: Double = 0
@@ -200,7 +201,9 @@ struct LiveView: View {
                 }
             }
         }
+        .onChange(of: allowCPU) { _, on in if !on && compute == .cpu { compute = ComputeChoice.deviceDefault } }
         .onAppear {
+            if !allowCPU && compute == .cpu { compute = ComputeChoice.deviceDefault }
             camera.start()
             haptic.prepare()
             lightHaptic.prepare()
@@ -322,7 +325,9 @@ struct LiveView: View {
             .fixedSize()
             .disabled(wantRun)          // pause inference before switching (mac GUI rule)
             Picker("Compute", selection: $compute) {
-                ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).lineLimit(1).fixedSize().tag(c) }
+                ForEach(ComputeChoice.available(allowCPU: allowCPU)) { c in
+                    Text(c.rawValue).lineLimit(1).fixedSize().tag(c)
+                }
             }
             .fixedSize()
             .disabled(wantRun)

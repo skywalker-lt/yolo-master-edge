@@ -15,6 +15,7 @@ struct PhotoTestView: View {
     @State private var models: [BundledModel] = []
     @State private var selectedModel: BundledModel?
     @State private var compute: ComputeChoice = ComputeChoice.deviceDefault
+    @AppStorage("allowCPU") private var allowCPU = false
     @State private var style: BoxStyle = .chip
     @State private var picks: [PhotosPickerItem] = []
     @State private var images: [CGImage] = []
@@ -97,6 +98,7 @@ struct PhotoTestView: View {
             .onChange(of: picks) { _, items in load(items) }
             .onChange(of: selectedModel) { _, _ in run() }
             .onChange(of: compute) { _, _ in run() }
+            .onChange(of: allowCPU) { _, on in if !on && compute == .cpu { compute = ComputeChoice.deviceDefault } }
             .onChange(of: conf) { _, _ in retune() }
             .onChange(of: iou) { _, _ in retune() }
             .overlay {
@@ -259,7 +261,7 @@ struct PhotoTestView: View {
             .fixedSize()
             .disabled(isRunning)
             Picker("Compute", selection: $compute) {
-                ForEach(ComputeChoice.allCases) { c in
+                ForEach(ComputeChoice.available(allowCPU: allowCPU)) { c in
                     Text(c.rawValue).lineLimit(1).fixedSize().tag(c)
                 }
             }

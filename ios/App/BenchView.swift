@@ -57,6 +57,7 @@ struct BenchRun: Identifiable, Codable {
 
 /// Persistent, JSON-backed store for saved benchmark runs (newest first).
 final class BenchHistory: ObservableObject {
+    static let shared = BenchHistory()   // one store shared by Bench + Settings
     @Published var runs: [BenchRun] = []
     private let fileURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -76,6 +77,7 @@ final class BenchHistory: ObservableObject {
         if let i = runs.firstIndex(where: { $0.id == id }) { runs[i].name = name; save() }
     }
     func delete(_ ids: Set<UUID>) { runs.removeAll { ids.contains($0.id) }; save() }
+    func clear() { runs.removeAll(); try? FileManager.default.removeItem(at: fileURL) }
 }
 
 /// Thermal-state colour shared by the tach and the history rows.
@@ -119,7 +121,7 @@ struct BenchView: View {
     @State private var running = false
     @State private var paused = false
     @State private var control = BenchControl()
-    @StateObject private var history = BenchHistory()
+    @ObservedObject private var history = BenchHistory.shared
     @State private var showHistory = false
     @State private var runThermalStart = 0
     @State private var runThermalPeak = 0
