@@ -46,7 +46,7 @@ struct LiveView: View {
     @State private var models: [BundledModel] = []
     @State private var initializing = true    // first-launch discovery/compile in flight
     @State private var selectedModel: BundledModel?
-    @State private var compute: ComputeChoice = .ane
+    @State private var compute: ComputeChoice = .gpu
     @State private var detections: [Detection] = []
     @State private var frameSize = CGSize(width: 720, height: 1280)
     @State private var statPre: Double = 0

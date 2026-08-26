@@ -14,7 +14,7 @@ struct PhotoTestView: View {
 
     @State private var models: [BundledModel] = []
     @State private var selectedModel: BundledModel?
-    @State private var compute: ComputeChoice = .ane
+    @State private var compute: ComputeChoice = .gpu
     @State private var style: BoxStyle = .chip
     @State private var picks: [PhotosPickerItem] = []
     @State private var images: [CGImage] = []
