@@ -271,6 +271,8 @@ struct DetailBar: View {
     var greenUntil = 20.0   // whole-pipeline rows warn later than single stages
     var color: Color? = nil // override the ramp (bench latency uses msColor bands)
     var value: String? = nil // override the trailing readout text (default: ms)
+    var barWidth: CGFloat? = nil // cap the bar length (history comparison uses a short bar); nil = flexible
+    var valueWidth: CGFloat = 40 // width of the trailing readout column
 
     var body: some View {
         HStack(spacing: 6) {
@@ -288,11 +290,12 @@ struct DetailBar: View {
                         .frame(width: max(3, min(ms / fullScale, 1) * g.size.width))
                 }
             }
-            .frame(height: 6)
+            .frame(width: barWidth, height: 6)
             .animation(.easeOut(duration: 0.15), value: ms)
+            if barWidth != nil { Spacer(minLength: 6) }
             Text(value ?? String(format: "%5.1f", ms))
                 .font(.caption2.monospacedDigit())
-                .frame(width: 40, alignment: .trailing)
+                .frame(width: valueWidth, alignment: .trailing)
         }
     }
 }
