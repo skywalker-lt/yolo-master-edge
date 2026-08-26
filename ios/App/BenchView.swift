@@ -842,9 +842,12 @@ struct HistoryView: View {
                     ContentUnavailableView("No saved runs", systemImage: "clock.arrow.circlepath",
                         description: Text("Completed cold sweeps and sustained runs are saved here."))
                 } else {
-                    List(selection: $selection) {
-                        ForEach(shown) { run in row(run) }
-                            .onDelete { idx in history.delete(Set(idx.map { shown[$0].id })) }
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(shown) { run in card(run) }
+                        }
+                        .padding(.horizontal)
+                        .padding(.vertical, 8)
                     }
                     .searchable(text: $query, prompt: "Search runs or models")
                 }
@@ -886,18 +889,29 @@ struct HistoryView: View {
         }
     }
 
-    private func row(_ run: BenchRun) -> some View {
+    private func card(_ run: BenchRun) -> some View {
         let isOpen = expanded.contains(run.id)
+        let editing = editMode?.wrappedValue == .active
+        let selected = selection.contains(run.id)
+        // The header + summary are FIXED; only the detail block below them grows in,
+        // pushing the rest of the scroll content down (same feel as the bench cards).
         return VStack(alignment: .leading, spacing: 6) {
-            HStack {
+            HStack(spacing: 8) {
+                if editing {
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                }
                 Text(run.name).font(.subheadline.bold()).lineLimit(1)
                 Spacer()
                 Text(run.mode).font(.caption2)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background((run.mode == "Sustained" ? Color.orange : Color.blue).opacity(0.2),
                                 in: Capsule())
-                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
-                    .font(.caption2).foregroundStyle(.tertiary)
+                if !editing {
+                    Image(systemName: "chevron.down")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isOpen ? 180 : 0))
+                }
             }
             HStack(spacing: 6) {
                 Text(run.date.formatted(date: .abbreviated, time: .shortened))
@@ -911,39 +925,50 @@ struct HistoryView: View {
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             if isOpen {
-                if run.mode == "Sustained", let spark = run.sparkline, spark.count > 1 {
-                    SparklineView(samples: spark, color: .blue).frame(height: 44)
-                }
-                if run.mode == "Sustained", let tl = run.thermalTimeline, !tl.isEmpty {
-                    ThermalBar(levels: tl).frame(height: 8).padding(.top, 8)
-                    if let tp = run.fastest?.throttlePct {
-                        Text("throttle +\(Int(tp))%").font(.caption2.monospacedDigit())
-                            .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 6) {
+                    if run.mode == "Sustained", let spark = run.sparkline, spark.count > 1 {
+                        SparklineView(samples: spark, color: .blue).frame(height: 44)
+                    }
+                    if run.mode == "Sustained", let tl = run.thermalTimeline, !tl.isEmpty {
+                        ThermalBar(levels: tl).frame(height: 8).padding(.top, 8)
+                        if let tp = run.fastest?.throttlePct {
+                            Text("throttle +\(Int(tp))%").font(.caption2.monospacedDigit())
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    let scale = max(run.results.map(\.coldMedian).max() ?? 50, 1)
+                    let asFPS = fpsRuns.contains(run.id)
+                    ForEach(run.results.sorted { $0.coldMedian < $1.coldMedian }) { r in
+                        DetailBar(icon: benchUnitIcon(r.compute),
+                                  name: "\(r.shortID) \(r.compute.rawValue)",
+                                  ms: r.coldMedian, fullScale: scale,
+                                  color: msColor(r.coldMedian),
+                                  value: asFPS ? "\(Int(r.fpsEquiv)) fps" : "\(fmt(r.coldMedian)) ms",
+                                  barWidth: 88, valueWidth: 58)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    if asFPS { fpsRuns.remove(run.id) } else { fpsRuns.insert(run.id) }
+                                }
+                            }
                     }
                 }
-                let scale = max(run.results.map(\.coldMedian).max() ?? 50, 1)
-                let asFPS = fpsRuns.contains(run.id)
-                ForEach(run.results.sorted { $0.coldMedian < $1.coldMedian }) { r in
-                    DetailBar(icon: benchUnitIcon(r.compute),
-                              name: "\(r.shortID) \(r.compute.rawValue)",
-                              ms: r.coldMedian, fullScale: scale,
-                              color: msColor(r.coldMedian),
-                              value: asFPS ? "\(Int(r.fpsEquiv)) fps" : "\(fmt(r.coldMedian)) ms",
-                              barWidth: 88, valueWidth: 58)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                if asFPS { fpsRuns.remove(run.id) } else { fpsRuns.insert(run.id) }
-                            }
-                        }
-                }
+                .padding(.top, 2)
+                .transition(.opacity)
             }
         }
-        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(selected ? Color.accentColor : Color.clear, lineWidth: 2))
         .contentShape(Rectangle())
         .onTapGesture {
-            if editMode?.wrappedValue != .active {
-                withAnimation(.easeInOut(duration: 0.22)) {
+            if editing {
+                if selected { selection.remove(run.id) } else { selection.insert(run.id) }
+            } else {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
                     if isOpen { expanded.remove(run.id) } else { expanded.insert(run.id) }
                 }
             }
