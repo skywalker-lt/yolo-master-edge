@@ -26,6 +26,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
+        CFBundleDisplayName: YOLO-Master
+        CFBundleName: YOLO-Master
         UILaunchScreen: {}
         NSCameraUsageDescription: "Live object detection uses the camera."
         NSPhotoLibraryUsageDescription: "Reads photo names for the batch detection gallery."
