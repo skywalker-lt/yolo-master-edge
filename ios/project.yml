@@ -25,6 +25,12 @@ targets:
       - path: AppIcon.icon
         buildPhase: resources
         optional: true
+      # About-page logos (folder reference -> bundled as "ack/" subdirectory,
+      # loaded via Bundle.main.url(forResource:withExtension:subdirectory:"ack")).
+      - path: Resources/ack
+        type: folder
+        buildPhase: resources
+        optional: true
     dependencies:
       - package: YOLOMaster
         product: YOLOMasterKit
