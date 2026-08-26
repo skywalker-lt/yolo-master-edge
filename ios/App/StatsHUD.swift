@@ -295,6 +295,7 @@ struct DetailBar: View {
             if barWidth != nil { Spacer(minLength: 6) }
             Text(value ?? String(format: "%5.1f", ms))
                 .font(.caption2.monospacedDigit())
+                .lineLimit(1)
                 .frame(width: valueWidth, alignment: .trailing)
         }
     }

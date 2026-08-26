@@ -944,7 +944,7 @@ struct HistoryView: View {
                                   ms: r.coldMedian, fullScale: scale,
                                   color: msColor(r.coldMedian),
                                   value: asFPS ? "\(Int(r.fpsEquiv)) fps" : "\(fmt(r.coldMedian)) ms",
-                                  barWidth: 88, valueWidth: 58)
+                                  valueWidth: 56)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 withAnimation(.easeInOut(duration: 0.15)) {
