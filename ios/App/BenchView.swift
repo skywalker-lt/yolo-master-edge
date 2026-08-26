@@ -51,6 +51,7 @@ struct BenchRun: Identifiable, Codable {
     var thermalStart: Int? = nil      // sustained: thermal level at start
     var thermalEnd: Int? = nil        // thermal level at the captured moment / run end
     var thermalPeak: Int? = nil       // sustained: worst level reached
+    var durationSec: Int? = nil       // sustained: actual elapsed run time (seconds)
     var fastest: BenchResult? { results.min { $0.coldMedian < $1.coldMedian } }
 }
 
@@ -78,6 +79,21 @@ final class BenchHistory: ObservableObject {
 }
 
 /// Thermal-state colour shared by the tach and the history rows.
+func benchUnitIcon(_ c: ComputeChoice) -> String {
+    switch c {
+    case .ane: return "bolt.fill"
+    case .gpu: return "square.stack.3d.up.fill"
+    case .cpu: return "cpu"
+    }
+}
+
+/// Compact run length, e.g. "45s", "3m 12s", "30m".
+func durationText(_ sec: Int) -> String {
+    if sec < 60 { return "\(sec)s" }
+    let m = sec / 60, s = sec % 60
+    return s == 0 ? "\(m)m" : "\(m)m \(s)s"
+}
+
 func thermalLevelColor(_ level: Int) -> Color {
     switch level { case 0: return .blue; case 1: return .green; case 2: return .orange; default: return .red }
 }
@@ -118,6 +134,7 @@ struct BenchView: View {
     @State private var warmup = 10
     // live readouts
     @State private var liveMs = 0.0
+    @State private var runDuration = 0   // sustained: elapsed seconds (live, then final)
     @State private var sparkSamples: [Double] = []
     @State private var sparkThermal: [Int] = []
     @State private var sparkBaseline: Double? = nil
@@ -341,8 +358,10 @@ struct BenchView: View {
                 Text("→ \(running ? "live" : "final") \(fmt(liveMs)) ms")
                     .font(.caption2.monospacedDigit())
                 Spacer()
-                Text(running ? "1 min window" : "full run")
-                    .font(.caption2).foregroundStyle(.tertiary)
+                if runDuration > 0 {
+                    Text(durationText(runDuration))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
             }
         }
         .padding(12)
@@ -535,7 +554,7 @@ struct BenchView: View {
     }
 
     /// Called on SUCCESSFUL completion (not on cancel): saves the run to history.
-    private func finishRun(sustained: Bool, thermalTimeline: [Int]? = nil) {
+    private func finishRun(sustained: Bool, thermalTimeline: [Int]? = nil, durationSec: Int? = nil) {
         if !results.isEmpty {
             let name = sustained
                 ? "\(results.first?.shortID ?? "run") · \(selectedCompute.rawValue) · \(Int(sustainedMinutes))min"
@@ -548,7 +567,8 @@ struct BenchView: View {
                 thermalTimeline: sustained ? thermalTimeline : nil,
                 thermalStart: sustained ? runThermalStart : nil,
                 thermalEnd: thermalLevel,
-                thermalPeak: sustained ? runThermalPeak : nil))
+                thermalPeak: sustained ? runThermalPeak : nil,
+                durationSec: sustained ? durationSec : nil))
         }
         running = false; paused = false; phase = .done
         notifyHaptic.notificationOccurred(.success); notifyHaptic.prepare()
@@ -640,7 +660,7 @@ struct BenchView: View {
             for _ in 0..<iterN { autoreleasepool { if let t = try? det.inferOnly(img) { cold.append(t) } } }
             cold.sort()
             let coldMed = cold.isEmpty ? 0 : cold[cold.count / 2]
-            await MainActor.run { sparkBaseline = coldMed; sparkSamples = []; sparkThermal = [] }
+            await MainActor.run { sparkBaseline = coldMed; sparkSamples = []; sparkThermal = []; runDuration = 0 }
             // sustained loop with a rolling 1-minute display window
             var t0 = CFAbsoluteTimeGetCurrent()
             var all: [Double] = []          // every inference ms
@@ -672,10 +692,12 @@ struct BenchView: View {
                     let liveMed = liveWin.isEmpty ? 0 : liveWin[liveWin.count / 2]
                     await MainActor.run {
                         sparkSamples = pts; sparkThermal = winTherm; liveMs = liveMed
+                        runDuration = Int(elapsed)
                         phase = .sustained(m.fullName, c.rawValue, Int(elapsed), totalS)
                     }
                 }
             }
+            let durationSec = Int(CFAbsoluteTimeGetCurrent() - t0)
             let sortedMs = all.sorted()
             let tail = Array(sortedMs.suffix(max(sortedMs.count / 4, 1)))
             let sust = tail.isEmpty ? coldMed : tail[tail.count / 2]
@@ -692,9 +714,10 @@ struct BenchView: View {
                 withAnimation(.easeInOut(duration: 0.5)) {
                     sparkSamples = fullSpark; sparkThermal = fullTherm; liveMs = sust
                 }
+                runDuration = durationSec
                 results.removeAll { $0.modelId == m.id && $0.compute == c }
                 withAnimation(.spring(duration: 0.3)) { results.append(r) }
-                finishRun(sustained: true, thermalTimeline: fullTherm)
+                finishRun(sustained: true, thermalTimeline: fullTherm, durationSec: durationSec)
             }
         }
     }
@@ -875,8 +898,13 @@ struct HistoryView: View {
                 Image(systemName: isOpen ? "chevron.up" : "chevron.down")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
-            Text(run.date.formatted(date: .abbreviated, time: .shortened))
-                .font(.caption2).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(run.date.formatted(date: .abbreviated, time: .shortened))
+                if run.mode == "Sustained", let d = run.durationSec {
+                    Text("· \(durationText(d))").monospacedDigit()
+                }
+            }
+            .font(.caption2).foregroundStyle(.secondary)
             if let f = run.fastest {
                 Text("fastest \(f.shortID) @ \(f.compute.rawValue) · \(fmt(f.coldMedian)) ms · \(Int(f.fpsEquiv)) FPS")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -892,9 +920,13 @@ struct HistoryView: View {
                             .foregroundStyle(.orange)
                     }
                 }
+                let scale = max(run.results.map(\.coldMedian).max() ?? 50, 1)
                 ForEach(run.results.sorted { $0.coldMedian < $1.coldMedian }) { r in
-                    Text("\(r.compute.rawValue): \(fmt(r.coldMedian)) ms · \(Int(r.fpsEquiv)) FPS")
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    DetailBar(icon: benchUnitIcon(r.compute),
+                              name: "\(r.shortID) \(r.compute.rawValue)",
+                              ms: r.coldMedian, fullScale: scale,
+                              color: msColor(r.coldMedian),
+                              value: "\(fmt(r.coldMedian)) · \(Int(r.fpsEquiv)) FPS")
                 }
             }
         }
@@ -902,7 +934,7 @@ struct HistoryView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             if editMode?.wrappedValue != .active {
-                withAnimation(.spring(duration: 0.3)) {
+                withAnimation(.easeInOut(duration: 0.22)) {
                     if isOpen { expanded.remove(run.id) } else { expanded.insert(run.id) }
                 }
             }
