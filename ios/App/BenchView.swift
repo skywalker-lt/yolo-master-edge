@@ -808,6 +808,7 @@ struct HistoryView: View {
     @State private var renaming: BenchRun?
     @State private var newName = ""
     @State private var expanded: Set<UUID> = []
+    @State private var fpsRuns: Set<UUID> = []   // cold-sweep cards showing FPS instead of latency
     @Environment(\.editMode) private var editMode
     @State private var selection: Set<UUID> = []
     @State private var exportMsg: String?
@@ -921,12 +922,20 @@ struct HistoryView: View {
                     }
                 }
                 let scale = max(run.results.map(\.coldMedian).max() ?? 50, 1)
+                let asFPS = fpsRuns.contains(run.id)
                 ForEach(run.results.sorted { $0.coldMedian < $1.coldMedian }) { r in
                     DetailBar(icon: benchUnitIcon(r.compute),
                               name: "\(r.shortID) \(r.compute.rawValue)",
                               ms: r.coldMedian, fullScale: scale,
                               color: msColor(r.coldMedian),
-                              value: "\(fmt(r.coldMedian)) · \(Int(r.fpsEquiv)) FPS")
+                              value: asFPS ? "\(Int(r.fpsEquiv)) fps" : "\(fmt(r.coldMedian)) ms",
+                              barWidth: 88, valueWidth: 58)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                if asFPS { fpsRuns.remove(run.id) } else { fpsRuns.insert(run.id) }
+                            }
+                        }
                 }
             }
         }
