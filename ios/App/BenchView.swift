@@ -64,7 +64,7 @@ struct BenchView: View {
     @State private var expandedCards: Set<String> = []
     // sustained target + settings
     @State private var selectedModel: BundledModel?
-    @State private var selectedCompute: ComputeChoice = .gpu
+    @State private var selectedCompute: ComputeChoice = ComputeChoice.deviceDefault
     @State private var sustainedMinutes = 3.0
     @State private var iters = 50
     @State private var warmup = 10

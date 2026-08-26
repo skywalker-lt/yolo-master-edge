@@ -93,4 +93,21 @@ enum ComputeChoice: String, CaseIterable, Identifiable {
         case .cpu: return ComputeMode("cpu")
         }
     }
+
+    /// Per-device default. The first-time ANE compile of these fragmented
+    /// MoE+attention models is painfully slow on A17-and-earlier silicon
+    /// (<= iPhone 15 Pro, hardware id "iPhoneN,M" with N <= 16), so those devices
+    /// default to GPU (fast Metal compile); iPhone 16 and newer default to ANE.
+    /// Everything non-iPhone (iPad, simulator) also defaults to ANE.
+    static var deviceDefault: ComputeChoice {
+        var sys = utsname(); uname(&sys)
+        let id = Mirror(reflecting: sys.machine).children.compactMap { c -> String? in
+            guard let v = c.value as? Int8, v != 0 else { return nil }
+            return String(UnicodeScalar(UInt8(v)))
+        }.joined()                                   // e.g. "iPhone16,1"
+        guard id.hasPrefix("iPhone"),
+              let major = Int(id.dropFirst(6).prefix { $0.isNumber })
+        else { return .ane }
+        return major <= 16 ? .gpu : .ane
+    }
 }
