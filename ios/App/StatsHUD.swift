@@ -233,6 +233,7 @@ struct StageBar: View {
 struct ThermalTach: View {
     let level: Int     // 0 nominal ... 3 critical
     let color: Color
+    var size: CGFloat = 56   // overall diameter; scales the ring, stroke, and glyph
 
     private let span = 0.75          // 270 degrees, same as the accessory gauges
     // round line caps extend half the line width past each trim end, so the
@@ -247,16 +248,16 @@ struct ThermalTach: View {
                     .trim(from: Double(i) * (segLen + gap),
                           to: Double(i) * (segLen + gap) + segLen)
                     .stroke(i <= level ? AnyShapeStyle(color) : AnyShapeStyle(.quaternary),
-                            style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                            style: StrokeStyle(lineWidth: size * 0.107, lineCap: .round))
                     .rotationEffect(.degrees(135))   // start bottom-left, like the FPS dial
-                    .frame(width: 54, height: 54)    // matches the accessory dial's ring
+                    .frame(width: size - 2, height: size - 2)
             }
             Image(systemName: "thermometer.medium")
-                .font(.system(size: 24, weight: .medium))
+                .font(.system(size: size * 0.43, weight: .medium))
                 .foregroundStyle(color)
-                .offset(y: 3)
+                .offset(y: size * 0.054)
         }
-        .frame(width: 56, height: 56)
+        .frame(width: size, height: size)
         .animation(.easeOut(duration: 0.3), value: level)
     }
 }
@@ -310,8 +311,12 @@ struct SparklineView: View {
             let lo = min(samples.min() ?? 0, baseline ?? .greatestFiniteMagnitude)
             let hi = max(samples.max() ?? 1, baseline ?? 0)
             let span = max(hi - lo, 1e-6)
+            // inset vertically so the peak/trough (and the 2pt stroke) never clip
+            // against the canvas edges
+            let pad: CGFloat = 4
             func y(_ v: Double) -> CGFloat {
-                size.height - CGFloat((v - lo) / span) * size.height
+                let h = max(size.height - 2 * pad, 1)
+                return size.height - pad - CGFloat((v - lo) / span) * h
             }
             let dx = size.width / CGFloat(samples.count - 1)
             if let b = baseline {

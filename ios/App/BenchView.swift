@@ -255,7 +255,7 @@ struct BenchView: View {
                 // so it can never run under the thermal dial on the right
                 phaseContent
                     .frame(maxWidth: .infinity, alignment: .leading)
-                ThermalTach(level: thermalLevel, color: thermalColor)
+                ThermalTach(level: thermalLevel, color: thermalColor, size: 46)
             }
             if mode == .sustained, sparkSamples.count > 1 {
                 SparklineView(samples: sparkSamples, baseline: sparkBaseline, color: .blue)
@@ -316,7 +316,7 @@ struct BenchView: View {
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
-            ThermalTach(level: thermalLevel, color: thermalColor)
+            ThermalTach(level: thermalLevel, color: thermalColor, size: 46)
         }
         .padding(14)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
