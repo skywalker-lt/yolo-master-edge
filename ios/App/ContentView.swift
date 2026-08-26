@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ContentView: View {
@@ -16,6 +17,82 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Acknowledgements
+
+/// An acknowledged upstream project (logo + blurb + repo link).
+struct Ack: Identifiable {
+    var id: String { repo }
+    let name: String
+    let logo: String     // resource base name under Resources/ack
+    let ext: String
+    let blurb: String
+    let repo: String
+}
+
+let acknowledgements: [Ack] = [
+    Ack(name: "YOLO-Master @ Tencent", logo: "tencent", ext: "png",
+        blurb: "The YOLO-Master detector family this app packages. Copyright 2026 Tencent, AGPL-3.0.",
+        repo: "https://github.com/Tencent/YOLO-Master"),
+    Ack(name: "Ultralytics", logo: "ultralytics", ext: "png",
+        blurb: "The YOLO training and inference framework YOLO-Master builds on. Copyright 2025 Ultralytics, AGPL-3.0.",
+        repo: "https://github.com/ultralytics/ultralytics"),
+    Ack(name: "Core ML @ Apple", logo: "apple", ext: "jpeg",
+        blurb: "Model conversion and the on-device inference runtime. Copyright 2020 to 2023 Apple Inc., BSD-3-Clause.",
+        repo: "https://github.com/apple/coremltools"),
+    Ack(name: "YOLO-Master Edge (this project)", logo: "skywalker-lt", ext: "png",
+        blurb: "This app and its Core ML export toolchain. Copyright 2026 Thomas (Ruiheng Li), HKUST, AGPL-3.0.",
+        repo: "https://github.com/skywalker-lt/yolo-master-edge"),
+]
+
+/// Load an About-page logo from the bundled "ack" folder; nil until it is bundled
+/// (xcodegen picks up Resources/ack), in which case the caller shows a placeholder.
+func ackLogo(_ name: String, _ ext: String) -> UIImage? {
+    let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "ack")
+        ?? Bundle.main.url(forResource: name, withExtension: ext)
+    return url.flatMap { UIImage(contentsOfFile: $0.path) }
+}
+
+let iosLicenseNotice = """
+================================================================
+YOLO-Master for iOS
+Copyright (C) 2026 (Thomas) RUIHENG LI
+(Author affiliated with The Hong Kong University of Science and
+Technology)
+
+YOLO-Master for iOS runs YOLO-Master models on-device using
+Apple's Core ML. It shares the YOLOMasterKit inference path with
+the macOS tools.
+
+This project is licensed under the GNU Affero General Public
+License, version 3 (AGPL-3.0). See
+<https://www.gnu.org/licenses/> for the full terms.
+
+It builds upon and incorporates the following third-party
+software:
+
+  * YOLO-Master - Copyright (C) 2026 Tencent. Licensed under the
+    AGPL-3.0. Based on ultralytics.
+
+  * ultralytics - Copyright (c) 2025 Ultralytics. Licensed under
+    the AGPL-3.0.
+
+  * coremltools - Copyright (c) 2020-2023, Apple Inc. Licensed
+    under the BSD-3-Clause License.
+
+Core ML model weights exported and bundled with this app are
+licensed under the AGPL-3.0.
+
+USE RESTRICTION: This app is provided for research and personal
+experience only. Commercial use is not permitted.
+
+NO WARRANTY: This program is distributed in the hope that it will
+be useful, but WITHOUT ANY WARRANTY; without even the implied
+warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+================================================================
+"""
+
+// MARK: - Settings
+
 /// App info, compute safety, history reset, and custom model import.
 struct SettingsView: View {
     @AppStorage("allowCPU") private var allowCPU = false
@@ -24,7 +101,12 @@ struct SettingsView: View {
     @State private var importing = false
     @State private var confirmErase = false
     @State private var importError: String?
+    @State private var licensesOpen = false
+    @State private var privacyOpen = false
 
+    private var version: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0"
+    }
     private var modelTypes: [UTType] {
         ["mlpackage", "mlmodelc", "mlmodel"].compactMap { UTType(filenameExtension: $0) }
     }
@@ -32,72 +114,12 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("About") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("YOLO-Master").font(.headline)
-                        Text("On-device object detection powered by Core ML and YOLOMasterKit \u{2014} the same inference path as the macOS tools.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        Text("Live camera, photo-batch, and an on-device benchmark all run locally on the Neural Engine or GPU. Nothing you capture leaves the device.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 2)
-                }
-
-                Section("Licensing") {
-                    Text("This app bundles YOLOMasterKit and YOLO-Master detection models. YOLO-Master builds on Ultralytics YOLO, licensed under AGPL-3.0. Core ML model weights are distributed under their respective model licenses. Full license texts are in the project repository.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-
-                Section {
-                    Toggle("Allow CPU inference", isOn: $allowCPU)
-                } header: {
-                    Text("Compute")
-                } footer: {
-                    Text("CPU-only inference can crash Live and Photo on some models, so it is off by default. Enable to expose the CPU option in the Live and Photo compute pickers. The Bench tab always measures CPU.")
-                }
-
-                Section {
-                    Button {
-                        importing = true
-                    } label: {
-                        Label("Load custom Core ML model", systemImage: "plus.circle")
-                    }
-                    ForEach(customModels) { m in
-                        HStack {
-                            Image(systemName: "cube.box").foregroundStyle(.secondary)
-                            Text(m.fullName).lineLimit(1)
-                            Spacer()
-                            Button(role: .destructive) {
-                                BundledModel.deleteCustom(m)
-                                customModels = BundledModel.customModels()
-                            } label: {
-                                Image(systemName: "trash").foregroundStyle(.red)
-                            }
-                            .buttonStyle(.borderless)
-                        }
-                    }
-                } header: {
-                    HStack(spacing: 6) {
-                        Text("Custom models")
-                        Text("BETA").font(.caption2.bold())
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Color.orange.opacity(0.25), in: Capsule())
-                            .foregroundStyle(.orange)
-                    }
-                } footer: {
-                    Text("Import a .mlpackage, .mlmodelc, or .mlmodel. Imported models appear in the Live, Photo, and Bench pickers the next time you open that tab. Compilation happens on first load and may take a moment.")
-                }
-
-                Section {
-                    Button(role: .destructive) {
-                        confirmErase = true
-                    } label: {
-                        Label("Erase all benchmark history", systemImage: "trash")
-                    }
-                    .disabled(history.runs.isEmpty)
-                } footer: {
-                    Text("\(history.runs.count) saved run\(history.runs.count == 1 ? "" : "s").")
-                }
+                aboutSection
+                licensesSection
+                privacySection
+                computeSection
+                customModelsSection
+                eraseSection
             }
             .navigationTitle("Settings")
             .fileImporter(isPresented: $importing, allowedContentTypes: modelTypes,
@@ -117,6 +139,194 @@ struct SettingsView: View {
             .onAppear { customModels = BundledModel.customModels() }
         }
     }
+
+    // MARK: About
+
+    private var aboutSection: some View {
+        Section {
+            HStack(spacing: 14) {
+                appMark
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("YOLO-Master for iOS").font(.title3.bold())
+                    Text("Version \(version)").font(.caption).foregroundStyle(.secondary)
+                    Text("On-device object detection with Core ML.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var appMark: some View {
+        Group {
+            if let img = ackLogo("appmark", "png") {
+                Image(uiImage: img).resizable().scaledToFit()
+            } else {
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.quaternary)
+                    .overlay(Image(systemName: "cube.transparent").font(.title).foregroundStyle(.secondary))
+            }
+        }
+        .frame(width: 56, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1))
+    }
+
+    // MARK: Licenses & Acknowledgements
+
+    private var licensesSection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $licensesOpen) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("This app complies with the licenses of the projects it builds on. YOLO-Master and Ultralytics are licensed under AGPL-3.0; coremltools under BSD-3-Clause. Core ML weights exported and bundled with this app are licensed under AGPL-3.0.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("This app is provided for research and personal experience only. Commercial use is not permitted.")
+                        .font(.footnote.bold())
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    ForEach(acknowledgements) { a in ackRow(a) }
+
+                    Text(iosLicenseNotice)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(.secondarySystemBackground)))
+                }
+                .padding(.top, 6)
+            } label: {
+                Label("Licenses & Acknowledgements", systemImage: "doc.text")
+            }
+        }
+    }
+
+    private func ackRow(_ a: Ack) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Group {
+                if let img = ackLogo(a.logo, a.ext) {
+                    Image(uiImage: img).resizable().scaledToFit()
+                } else {
+                    RoundedRectangle(cornerRadius: 8).fill(.quaternary)
+                        .overlay(Text(String(a.name.prefix(1))).font(.headline).foregroundStyle(.secondary))
+                }
+            }
+            .frame(width: 40, height: 40)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(a.name).font(.callout.weight(.semibold))
+                Text(a.blurb).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let url = URL(string: a.repo) {
+                    Link(destination: url) {
+                        Label(a.repo.replacingOccurrences(of: "https://", with: ""),
+                              systemImage: "link").font(.caption)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: Privacy & Security
+
+    private var privacySection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $privacyOpen) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("YOLO-Master for iOS runs entirely on your device.")
+                        .font(.footnote.weight(.semibold))
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        accessRow("camera", "Camera",
+                                  "Live on-device detection. Frames are processed in memory and never stored or transmitted.")
+                        accessRow("photo.on.rectangle", "Photo Library",
+                                  "Reads only the images you pick for the Photo tab, and saves detection frames you explicitly export.")
+                    }
+
+                    Text("All inference runs locally on the Neural Engine, GPU, or CPU. No images, results, or usage data ever leave your phone. We do not collect, store, or transmit any personal data. The only time we receive anything from you is if you choose to contact us or report an issue yourself.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 6)
+            } label: {
+                Label("Privacy & Security", systemImage: "lock.shield")
+            }
+        }
+    }
+
+    private func accessRow(_ icon: String, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.caption.weight(.semibold))
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: Compute / Custom models / Erase
+
+    private var computeSection: some View {
+        Section {
+            Toggle("Allow CPU inference", isOn: $allowCPU)
+        } header: {
+            Text("Compute")
+        } footer: {
+            Text("CPU-only inference can crash Live and Photo on some models, so it is off by default. Enable to expose the CPU option in the Live and Photo compute pickers. The Bench tab always measures CPU.")
+        }
+    }
+
+    private var customModelsSection: some View {
+        Section {
+            Button {
+                importing = true
+            } label: {
+                Label("Load custom Core ML model", systemImage: "plus.circle")
+            }
+            ForEach(customModels) { m in
+                HStack {
+                    Image(systemName: "cube.box").foregroundStyle(.secondary)
+                    Text(m.fullName).lineLimit(1)
+                    Spacer()
+                    Button(role: .destructive) {
+                        BundledModel.deleteCustom(m)
+                        customModels = BundledModel.customModels()
+                    } label: {
+                        Image(systemName: "trash").foregroundStyle(.red)
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+        } header: {
+            HStack(spacing: 6) {
+                Text("Custom models")
+                Text("BETA").font(.caption2.bold())
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Color.orange.opacity(0.25), in: Capsule())
+                    .foregroundStyle(.orange)
+            }
+        } footer: {
+            Text("Import a .mlpackage, .mlmodelc, or .mlmodel. Imported models appear in the Live, Photo, and Bench pickers the next time you open that tab. Compilation happens on first load and may take a moment.")
+        }
+    }
+
+    private var eraseSection: some View {
+        Section {
+            Button(role: .destructive) {
+                confirmErase = true
+            } label: {
+                Label("Erase all benchmark history", systemImage: "trash")
+            }
+            .disabled(history.runs.isEmpty)
+        } footer: {
+            Text("\(history.runs.count) saved run\(history.runs.count == 1 ? "" : "s").")
+        }
+    }
+
+    // MARK: Import
 
     private func importModels(_ result: Result<[URL], Error>) {
         switch result {
