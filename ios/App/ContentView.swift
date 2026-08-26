@@ -17,9 +17,9 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Acknowledgements
+// MARK: - Projects
 
-/// An acknowledged upstream project (logo + blurb + repo link).
+/// A credited project (logo + blurb + repo link).
 struct Ack: Identifiable {
     var id: String { repo }
     let name: String
@@ -29,19 +29,24 @@ struct Ack: Identifiable {
     let repo: String
 }
 
-let acknowledgements: [Ack] = [
+/// The two projects this app is built ON (the base) - kept apart from the
+/// upstream libraries it merely acknowledges.
+let baseProjects: [Ack] = [
     Ack(name: "YOLO-Master @ Tencent", logo: "tencent", ext: "png",
-        blurb: "The YOLO-Master detector family this app packages. Copyright 2026 Tencent, AGPL-3.0.",
+        blurb: "The MoE YOLO detector family this app packages. Copyright 2026 Tencent, AGPL-3.0.",
         repo: "https://github.com/Tencent/YOLO-Master"),
+    Ack(name: "YOLO-Master Edge (this app)", logo: "skywalker-lt", ext: "png",
+        blurb: "The iOS app and the Core ML export toolchain. Copyright 2026 Thomas (Ruiheng Li), HKUST, AGPL-3.0.",
+        repo: "https://github.com/skywalker-lt/yolo-master-edge"),
+]
+
+let acknowledgements: [Ack] = [
     Ack(name: "Ultralytics", logo: "ultralytics", ext: "png",
         blurb: "The YOLO training and inference framework YOLO-Master builds on. Copyright 2025 Ultralytics, AGPL-3.0.",
         repo: "https://github.com/ultralytics/ultralytics"),
     Ack(name: "Core ML @ Apple", logo: "apple", ext: "jpeg",
         blurb: "Model conversion and the on-device inference runtime. Copyright 2020 to 2023 Apple Inc., BSD-3-Clause.",
         repo: "https://github.com/apple/coremltools"),
-    Ack(name: "YOLO-Master Edge (this project)", logo: "skywalker-lt", ext: "png",
-        blurb: "This app and its Core ML export toolchain. Copyright 2026 Thomas (Ruiheng Li), HKUST, AGPL-3.0.",
-        repo: "https://github.com/skywalker-lt/yolo-master-edge"),
 ]
 
 /// Load an About-page logo from the bundled "ack" folder; nil until it is bundled
@@ -95,18 +100,22 @@ warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
 /// App info, compute safety, history reset, and custom model import.
 struct SettingsView: View {
+    // Links surfaced in the About card. Paper is a placeholder until the real
+    // publication URL is set.
+    static let paperURL = "https://github.com/Tencent/YOLO-Master"
+    static let modelRepoURL = "https://github.com/Tencent/YOLO-Master"
+    static let appRepoURL = "https://github.com/skywalker-lt/yolo-master-edge"
+
     @AppStorage("allowCPU") private var allowCPU = false
     @ObservedObject private var history = BenchHistory.shared
     @State private var customModels: [BundledModel] = []
     @State private var importing = false
     @State private var confirmErase = false
     @State private var importError: String?
+    @State private var aboutOpen = false
     @State private var licensesOpen = false
     @State private var privacyOpen = false
 
-    private var version: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0"
-    }
     private var modelTypes: [UTType] {
         ["mlpackage", "mlmodelc", "mlmodel"].compactMap { UTType(filenameExtension: $0) }
     }
@@ -140,21 +149,64 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: About
+    // MARK: About (expandable)
 
     private var aboutSection: some View {
         Section {
-            HStack(spacing: 14) {
-                appMark
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("YOLO-Master for iOS").font(.title3.bold())
-                    Text("Version \(version)").font(.caption).foregroundStyle(.secondary)
-                    Text("On-device object detection with Core ML.")
-                        .font(.caption).foregroundStyle(.secondary)
+            DisclosureGroup(isExpanded: $aboutOpen) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("YOLO-Master extends the real-time YOLO detector with Mixture-of-Experts (MoE) routing. Instead of one dense network, lightweight expert branches specialize on different feature patterns, and a learned router activates only the most relevant experts for each image.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("That adds capacity where it matters, with clear gains on small and crowded objects, while keeping inference light enough to run in real time. On iPhone the model is compiled to Core ML and runs on the Neural Engine, GPU, or CPU.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) { links }
+                        VStack(alignment: .leading, spacing: 8) { links }
+                    }
+                    .padding(.top, 2)
                 }
+                .padding(.top, 8)
+            } label: {
+                header
             }
-            .padding(.vertical, 4)
         }
+    }
+
+    @ViewBuilder private var links: some View {
+        linkChip("Paper", "doc.richtext", Self.paperURL)
+        linkChip("Model Repo", "shippingbox", Self.modelRepoURL)
+        linkChip("App Repo", "chevron.left.forwardslash.chevron.right", Self.appRepoURL)
+    }
+
+    private func linkChip(_ title: String, _ icon: String, _ urlString: String) -> some View {
+        Group {
+            if let url = URL(string: urlString) {
+                Link(destination: url) {
+                    Label(title, systemImage: icon)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Color.accentColor.opacity(0.14), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            appMark
+            VStack(alignment: .leading, spacing: 3) {
+                Text("YOLO-Master for iOS").font(.title3.bold())
+                Text("Version 1.1.0 Beta").font(.caption).foregroundStyle(.secondary)
+                Text("On-device MoE object detection with Core ML.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private var appMark: some View {
@@ -186,6 +238,10 @@ struct SettingsView: View {
                         .font(.footnote.bold())
                         .fixedSize(horizontal: false, vertical: true)
 
+                    groupLabel("Built on")
+                    ForEach(baseProjects) { a in ackRow(a) }
+
+                    groupLabel("Acknowledgements")
                     ForEach(acknowledgements) { a in ackRow(a) }
 
                     Text(iosLicenseNotice)
@@ -200,6 +256,13 @@ struct SettingsView: View {
                 Label("Licenses & Acknowledgements", systemImage: "doc.text")
             }
         }
+    }
+
+    private func groupLabel(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(.tertiary)
+            .padding(.top, 2)
     }
 
     private func ackRow(_ a: Ack) -> some View {
