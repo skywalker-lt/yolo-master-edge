@@ -27,7 +27,7 @@ distro==1.7.0
 entrypoints==0.4
 executing==2.1.0
 fastjsonschema==2.20.0
-filelock==3.32.3
+filelock==3.32.4
 flatbuffers==25.12.19
 fonttools==4.63.0
 fqdn==1.5.1
@@ -120,8 +120,8 @@ parso==0.8.4
 pexpect==4.9.0
 pillow==10.2.0
 platformdirs==4.3.6
-polars==1.43.2
-polars-runtime-32==1.43.2
+polars==1.44.0
+polars-runtime-32==1.44.0
 prometheus_client==0.21.0
 prompt_toolkit==3.0.47
 protobuf==7.36.0
