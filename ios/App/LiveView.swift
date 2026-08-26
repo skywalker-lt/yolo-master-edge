@@ -406,7 +406,8 @@ struct LiveView: View {
         let tuningRef = tuning      // plain class ref: detached-safe, no wrapper
         let cameraRef = camera
         loopTask = Task.detached(priority: .userInitiated) {
-            guard let det = try? Detector(modelURL: model.url, compute: mode) else {
+            guard let url = try? model.compiledURL(),
+                  let det = try? Detector(modelURL: url, compute: mode) else {
                 await MainActor.run { running = false; loadingModel = false }
                 return
             }
