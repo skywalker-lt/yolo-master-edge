@@ -201,6 +201,7 @@ struct StatsHUD: View {
 struct StageBar: View {
     let icon: String   // SF Symbol naming the stage
     let ms: Double
+    var color: Color? = nil   // override the stage-color ramp (bench uses msColor bands)
     private let fullScale = 50.0   // bar saturates at 50ms
 
     var body: some View {
@@ -212,7 +213,7 @@ struct StageBar: View {
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.quaternary)
-                    Capsule().fill(stageColor(ms))
+                    Capsule().fill(color ?? stageColor(ms))
                         .frame(width: max(3, min(ms / fullScale, 1) * g.size.width))
                 }
             }
@@ -267,6 +268,8 @@ struct DetailBar: View {
     let ms: Double
     var fullScale = 50.0
     var greenUntil = 20.0   // whole-pipeline rows warn later than single stages
+    var color: Color? = nil // override the ramp (bench latency uses msColor bands)
+    var value: String? = nil // override the trailing readout text (default: ms)
 
     var body: some View {
         HStack(spacing: 6) {
@@ -280,16 +283,116 @@ struct DetailBar: View {
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.quaternary)
-                    Capsule().fill(stageColor(ms, greenUntil: greenUntil))
+                    Capsule().fill(color ?? stageColor(ms, greenUntil: greenUntil))
                         .frame(width: max(3, min(ms / fullScale, 1) * g.size.width))
                 }
             }
             .frame(height: 6)
             .animation(.easeOut(duration: 0.15), value: ms)
-            Text(String(format: "%5.1f", ms))
+            Text(value ?? String(format: "%5.1f", ms))
                 .font(.caption2.monospacedDigit())
                 .frame(width: 40, alignment: .trailing)
         }
+    }
+}
+
+/// Reusable Canvas line-plot for the bench sustained/throttle view: draws
+/// `samples` normalized to the view bounds, with an optional dashed `baseline`
+/// (the cold median) so you can see how far the phone has throttled.
+struct SparklineView: View {
+    let samples: [Double]
+    var baseline: Double? = nil
+    var color: Color = .orange
+
+    var body: some View {
+        Canvas { ctx, size in
+            guard samples.count > 1 else { return }
+            let lo = min(samples.min() ?? 0, baseline ?? .greatestFiniteMagnitude)
+            let hi = max(samples.max() ?? 1, baseline ?? 0)
+            let span = max(hi - lo, 1e-6)
+            func y(_ v: Double) -> CGFloat {
+                size.height - CGFloat((v - lo) / span) * size.height
+            }
+            let dx = size.width / CGFloat(samples.count - 1)
+            if let b = baseline {
+                var base = Path()
+                base.move(to: CGPoint(x: 0, y: y(b)))
+                base.addLine(to: CGPoint(x: size.width, y: y(b)))
+                ctx.stroke(base, with: .color(.secondary.opacity(0.5)),
+                           style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
+            var line = Path()
+            for (i, v) in samples.enumerated() {
+                let p = CGPoint(x: CGFloat(i) * dx, y: y(v))
+                if i == 0 { line.move(to: p) } else { line.addLine(to: p) }
+            }
+            ctx.stroke(line, with: .color(color),
+                       style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+        }
+        .animation(.easeOut(duration: 0.2), value: samples.count)
+    }
+}
+
+/// Export-result popup: a stroke-animated tick (or cross) drawing itself in,
+/// then the card auto-dismisses. Tap dismisses early. Shared by Photo + Bench.
+struct ExportToast: View {
+    let success: Bool
+    let message: String
+    @State private var drawn = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .trim(from: 0, to: drawn ? 1 : 0)
+                    .stroke(success ? Color.green : Color.red,
+                            style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 46, height: 46)
+                Group {
+                    if success {
+                        TickShape()
+                            .trim(from: 0, to: drawn ? 1 : 0)
+                            .stroke(Color.green,
+                                    style: StrokeStyle(lineWidth: 3.5, lineCap: .round,
+                                                       lineJoin: .round))
+                    } else {
+                        CrossShape()
+                            .trim(from: 0, to: drawn ? 1 : 0)
+                            .stroke(Color.red,
+                                    style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+                    }
+                }
+                .frame(width: 20, height: 20)
+            }
+            Text(message).font(.caption)
+        }
+        .padding(20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.45).delay(0.05)) { drawn = true }
+        }
+    }
+}
+
+struct TickShape: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.midY + r.height * 0.08))
+        p.addLine(to: CGPoint(x: r.minX + r.width * 0.36, y: r.maxY - r.height * 0.08))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.minY + r.height * 0.1))
+        return p
+    }
+}
+
+struct CrossShape: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
+        p.move(to: CGPoint(x: r.maxX, y: r.minY))
+        p.addLine(to: CGPoint(x: r.minX, y: r.maxY))
+        return p
     }
 }
 
