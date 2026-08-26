@@ -87,8 +87,10 @@ software:
 Core ML model weights exported and bundled with this app are
 licensed under the AGPL-3.0.
 
-USE RESTRICTION: This app is provided for research and personal
-experience only. Commercial use is not permitted.
+USE NOTICE (not a license term): The authors release this app for
+research and personal experience only, and neither intend nor
+support commercial use. This is a statement of intent and does not
+impose additional restrictions beyond the AGPL-3.0.
 
 NO WARRANTY: This program is distributed in the hope that it will
 be useful, but WITHOUT ANY WARRANTY; without even the implied
@@ -161,9 +163,12 @@ struct SettingsView: View {
                     Text("That adds capacity where it matters, with clear gains on small and crowded objects, while keeping inference light enough to run in real time. On iPhone the model is compiled to Core ML and runs on the Neural Engine, GPU, or CPU.")
                         .font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    Divider()
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 8) { links }
-                        VStack(alignment: .leading, spacing: 8) { links }
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        VStack(spacing: 8) { links }
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
                     .padding(.top, 2)
                 }
@@ -184,11 +189,13 @@ struct SettingsView: View {
         Group {
             if let url = URL(string: urlString) {
                 Link(destination: url) {
-                    Label(title, systemImage: icon)
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(Color.accentColor.opacity(0.14), in: Capsule())
+                    HStack(spacing: 5) {
+                        Image(systemName: icon).font(.caption2)
+                        Text(title).font(.caption.weight(.semibold)).lineLimit(1)
+                    }
+                    .fixedSize()
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(Color.accentColor.opacity(0.14), in: Capsule())
                 }
                 .buttonStyle(.plain)
             }
@@ -230,12 +237,16 @@ struct SettingsView: View {
         Section {
             DisclosureGroup(isExpanded: $licensesOpen) {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("This app complies with the licenses of the projects it builds on. YOLO-Master and Ultralytics are licensed under AGPL-3.0; coremltools under BSD-3-Clause. Core ML weights exported and bundled with this app are licensed under AGPL-3.0.")
+                    Text("YOLO-Master and Ultralytics are licensed under AGPL-3.0; coremltools under BSD-3-Clause. This app and the Core ML weights it bundles are distributed under AGPL-3.0, and this app complies with those terms.")
                         .font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("This app is provided for research and personal experience only. Commercial use is not permitted.")
+                    Text("This is a research beta. The authors release it for research and personal experience only, and neither intend nor support any commercial use.")
                         .font(.footnote.bold())
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("This is a statement of the authors' intent. It does not add restrictions to, or otherwise limit, the rights granted under the AGPL-3.0.")
+                        .font(.caption2).foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
 
                     groupLabel("Built on")
