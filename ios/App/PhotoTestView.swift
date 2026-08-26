@@ -413,7 +413,7 @@ struct PhotoTestView: View {
         maskImages = Array(repeating: nil, count: imgs.count)
         Task.detached {
             do {
-                let det = try Detector(modelURL: m.url, compute: mode)
+                let det = try Detector(modelURL: m.compiledURL(), compute: mode)
                 await MainActor.run { phase = .inferring }
                 var raws: [Detector.RawOutput] = []
                 var allDets: [[Detection]] = []

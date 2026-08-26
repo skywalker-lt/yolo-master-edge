@@ -7,7 +7,7 @@ import YOLOMasterKit
 
 struct BundledModel: Identifiable, Hashable {
     let id: String       // bundle stem, e.g. "p03_v01n_coco_fp16"
-    let url: URL         // compiled .mlmodelc inside the app bundle
+    let url: URL         // load source: a ready .mlmodelc, or a .mlpackage to compile on first use
     /// Distinctive part of the name (the canonical YOLO-Master prefix stripped).
     private var stem: String {
         for p in ["yolo-master-", "yolo-master_", "yolo_master_", "yolomaster-"]
@@ -23,34 +23,49 @@ struct BundledModel: Identifiable, Hashable {
     /// (the stem - the shared YOLO-Master prefix carries no information there).
     var shortID: String { stem.count > 6 ? String(stem.prefix(6)) + "..." : stem }
 
+    private static var cacheDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    }
+
+    /// A ready-to-load .mlmodelc. If this model is a .mlpackage, it is compiled
+    /// and cached in Application Support on FIRST use (kept out of `discover` so
+    /// launch stays instant); later launches reuse the cache. Compile is the
+    /// slow, one-time CoreML source pass - do it lazily, only for the model the
+    /// user actually loads, never for the whole bundle at startup.
+    func compiledURL() throws -> URL {
+        if url.pathExtension.lowercased() == "mlmodelc" { return url }
+        let cached = BundledModel.cacheDir.appendingPathComponent(id + ".mlmodelc")
+        if FileManager.default.fileExists(atPath: cached.path) { return cached }
+        let tmp = try MLModel.compileModel(at: url)
+        try? FileManager.default.createDirectory(at: BundledModel.cacheDir,
+                                                 withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: cached)
+        try FileManager.default.moveItem(at: tmp, to: cached)
+        return cached
+    }
+
+    /// Enumeration only - NO compilation (that would block launch on every
+    /// bundled model). Ready .mlmodelc are returned directly; .mlpackage are
+    /// returned pointing at their cached compile if present, else at the package
+    /// (compiled lazily by `compiledURL()` on first load).
     static func discover() -> [BundledModel] {
         var found: [BundledModel] = []
-        // compiled models, bundle root or Models/ subdir
+        var seen = Set<String>()
         for sub in [nil, "Models"] as [String?] {
             for url in Bundle.main.urls(forResourcesWithExtension: "mlmodelc",
                                         subdirectory: sub) ?? [] {
-                found.append(BundledModel(id: url.deletingPathExtension().lastPathComponent,
-                                          url: url))
+                let name = url.deletingPathExtension().lastPathComponent
+                if seen.insert(name).inserted { found.append(BundledModel(id: name, url: url)) }
             }
         }
-        // uncompiled .mlpackage (folder-reference bundles): compile on first
-        // launch, cache in Application Support
         for sub in [nil, "Models"] as [String?] {
             for pkg in Bundle.main.urls(forResourcesWithExtension: "mlpackage",
                                         subdirectory: sub) ?? [] {
                 let name = pkg.deletingPathExtension().lastPathComponent
-                if found.contains(where: { $0.id == name }) { continue }
-                let cacheDir = FileManager.default.urls(for: .applicationSupportDirectory,
-                                                        in: .userDomainMask)[0]
+                if !seen.insert(name).inserted { continue }
                 let cached = cacheDir.appendingPathComponent(name + ".mlmodelc")
-                if FileManager.default.fileExists(atPath: cached.path) {
-                    found.append(BundledModel(id: name, url: cached))
-                } else if let tmp = try? MLModel.compileModel(at: pkg) {
-                    try? FileManager.default.createDirectory(at: cacheDir,
-                                                             withIntermediateDirectories: true)
-                    try? FileManager.default.moveItem(at: tmp, to: cached)
-                    found.append(BundledModel(id: name, url: cached))
-                }
+                let ready = FileManager.default.fileExists(atPath: cached.path)
+                found.append(BundledModel(id: name, url: ready ? cached : pkg))
             }
         }
         return found.sorted { $0.id < $1.id }
