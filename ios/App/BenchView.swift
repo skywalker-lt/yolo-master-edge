@@ -946,17 +946,20 @@ struct HistoryView: View {
     private func runsCSV(_ runs: [BenchRun]) -> String {
         var lines = ["run,date,mode,model,compute,cold_median_ms,cold_p90_ms,fps_equiv,sustained_ms,throttle_pct,thermal_start,thermal_end,thermal_peak"]
         for run in runs {
+            let name = "\"" + run.name + "\""
+            let date = run.date.ISO8601Format()
+            let ts = run.thermalStart.map(String.init) ?? ""
+            let te = run.thermalEnd.map(String.init) ?? ""
+            let tp = run.thermalPeak.map(String.init) ?? ""
             for r in run.results {
-                lines.append([
-                    "\"\(run.name)\"", run.date.ISO8601Format(), run.mode, r.modelId, r.compute.rawValue,
-                    String(format: "%.2f", r.coldMedian), String(format: "%.2f", r.coldP90),
-                    String(format: "%.1f", r.fpsEquiv),
-                    r.sustainedMedian.map { String(format: "%.2f", $0) } ?? "",
-                    r.throttlePct.map { String(format: "%.1f", $0) } ?? "",
-                    run.thermalStart.map(String.init) ?? "",
-                    run.thermalEnd.map(String.init) ?? "",
-                    run.thermalPeak.map(String.init) ?? ""
-                ].joined(separator: ","))
+                let cm = String(format: "%.2f", r.coldMedian)
+                let cp = String(format: "%.2f", r.coldP90)
+                let fps = String(format: "%.1f", r.fpsEquiv)
+                let sm = r.sustainedMedian.map { String(format: "%.2f", $0) } ?? ""
+                let th = r.throttlePct.map { String(format: "%.1f", $0) } ?? ""
+                var cols: [String] = [name, date, run.mode, r.modelId, r.compute.rawValue]
+                cols.append(contentsOf: [cm, cp, fps, sm, th, ts, te, tp])
+                lines.append(cols.joined(separator: ","))
             }
         }
         return lines.joined(separator: "\n")
