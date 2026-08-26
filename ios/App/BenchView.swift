@@ -287,8 +287,8 @@ struct BenchView: View {
                     Text("Duration: \(Int(sustainedMinutes)) min")
                         .font(.caption.monospacedDigit())
                 }
-                ForEach([3, 5, 10, 20].filter { $0 <= maxSustained }, id: \.self) { p in
-                    Button("\(p)m") { sustainedMinutes = Double(p) }
+                ForEach([3, 5, 10, 20].filter { $0 < maxSustained }, id: \.self) { p in
+                    Button("\(p)") { sustainedMinutes = Double(p) }
                         .font(.caption2)
                         .buttonStyle(.bordered)
                         .tint(Int(sustainedMinutes) == p ? .accentColor : .secondary)
@@ -316,6 +316,12 @@ struct BenchView: View {
             Stepper(value: $warmup, in: 0...50, step: 5) {
                 Text("Warmup: \(warmup)").font(.caption)
             }
+            Text(mode == .sustained
+                 ? "In Sustained mode these set the cold baseline the throttle is measured against."
+                 : "Per model x unit cell in the cold sweep.")
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
