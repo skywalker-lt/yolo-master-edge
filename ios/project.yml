@@ -39,6 +39,9 @@ targets:
       properties:
         CFBundleDisplayName: YOLO-Master
         CFBundleName: YOLO-Master
+        CFBundleShortVersionString: "1.1.0"   # marketing version (matches the About card)
+        CFBundleVersion: "1"                    # build number - MUST increment every upload
+        ITSAppUsesNonExemptEncryption: false    # only HTTPS/system crypto -> skips the export-compliance prompt
         UILaunchScreen: {}
         NSCameraUsageDescription: "Live object detection uses the camera."
         NSPhotoLibraryUsageDescription: "Reads photo names for the batch detection gallery."
