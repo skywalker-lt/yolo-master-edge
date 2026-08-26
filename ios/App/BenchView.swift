@@ -64,7 +64,7 @@ struct BenchView: View {
     @State private var expandedCards: Set<String> = []
     // sustained target + settings
     @State private var selectedModel: BundledModel?
-    @State private var selectedCompute: ComputeChoice = .ane
+    @State private var selectedCompute: ComputeChoice = .gpu
     @State private var sustainedMinutes = 3.0
     @State private var iters = 50
     @State private var warmup = 10
@@ -85,20 +85,22 @@ struct BenchView: View {
 
     var body: some View {
         ZStack {
-            ScrollView {
-                VStack(spacing: 10) {
-                    if running { progressCard }
-                    if mode == .sweep, let hero = fastest { heroCard(hero) }
-                    ForEach(modelsWithResults, id: \.self) { modelCard($0) }
-                    if results.isEmpty && !running {
-                        ContentUnavailableView("No benchmarks yet",
-                            systemImage: "speedometer",
-                            description: Text("Run a cold sweep across every model and compute unit."))
-                            .padding(.top, 60)
+            if results.isEmpty && !running {
+                // vertically centered, matching the Photo tab's "No photos" empty state
+                ContentUnavailableView("No benchmarks yet",
+                    systemImage: "speedometer",
+                    description: Text("Run a cold sweep across every model and compute unit."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: 10) {
+                        if running { progressCard }
+                        if mode == .sweep, let hero = fastest { heroCard(hero) }
+                        ForEach(modelsWithResults, id: \.self) { modelCard($0) }
                     }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 24)
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 24)
             }
             if let msg = exportMsg {
                 ExportToast(success: exportOK, message: msg)
@@ -545,9 +547,17 @@ struct BenchView: View {
                 if now - lastPub >= 0.1 {
                     lastPub = now
                     let elapsed = Int(now - t0)
-                    let recent = Array(all.suffix(2400))
-                    let step = max(1, recent.count / 120)
-                    let pts = stride(from: 0, to: recent.count, by: step).map { recent[$0] }
+                    // smooth trend: bucket the whole run into ~100 time-windows and
+                    // average each, so per-inference jitter cancels out
+                    let buckets = 100
+                    let bsize = max(1, all.count / buckets)
+                    var pts: [Double] = []
+                    var bi = 0
+                    while bi < all.count {
+                        let end = min(bi + bsize, all.count)
+                        pts.append(all[bi..<end].reduce(0, +) / Double(end - bi))
+                        bi = end
+                    }
                     let live = all.suffix(30).sorted()
                     let liveMed = live.isEmpty ? 0 : live[live.count / 2]
                     await MainActor.run {
