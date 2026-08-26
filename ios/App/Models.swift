@@ -81,7 +81,7 @@ struct BundledModel: Identifiable, Hashable {
 /// UI wrapper over the Kit's ComputeMode. `.all` routes to the ANE - on A-series
 /// silicon that is the expected winner (near-desktop ANE, small GPU); the
 /// per-unit bench exists to verify exactly that on-device.
-enum ComputeChoice: String, CaseIterable, Identifiable {
+enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
     case ane = "ANE"        // CPU + GPU + Neural Engine (.all)
     case gpu = "GPU"        // CPU + GPU
     case cpu = "CPU"        // CPU only
