@@ -20,6 +20,11 @@ targets:
       # coremlc compiles each .mlpackage into a bundle-root .mlmodelc
       - path: Models
         optional: true
+      # Icon Composer output (Xcode 26). Kept OUTSIDE App so the App group scan
+      # never recurses into this file-package; declared explicitly as a resource.
+      - path: AppIcon.icon
+        buildPhase: resources
+        optional: true
     dependencies:
       - package: YOLOMaster
         product: YOLOMasterKit
@@ -38,4 +43,5 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.9"
         CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # set your team for device deploys:  DEVELOPMENT_TEAM: XXXXXXXXXX
