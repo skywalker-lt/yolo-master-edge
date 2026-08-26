@@ -104,7 +104,7 @@ warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 struct SettingsView: View {
     // Links surfaced in the About card. Paper is a placeholder until the real
     // publication URL is set.
-    static let paperURL = "https://github.com/Tencent/YOLO-Master"
+    static let paperURL = "https://arxiv.org/pdf/2512.23273"
     static let modelRepoURL = "https://github.com/Tencent/YOLO-Master"
     static let appRepoURL = "https://github.com/skywalker-lt/yolo-master-edge"
 
