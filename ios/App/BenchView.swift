@@ -735,11 +735,13 @@ struct BenchView: View {
         guard let scene = UIApplication.shared.connectedScenes
                 .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
               let root = scene.keyWindow?.rootViewController else { return }
+        var top = root
+        while let presented = top.presentedViewController { top = presented }
         let av = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        av.popoverPresentationController?.sourceView = root.view
+        av.popoverPresentationController?.sourceView = top.view
         av.popoverPresentationController?.sourceRect = CGRect(
-            x: root.view.bounds.midX, y: root.view.bounds.midY, width: 0, height: 0)
-        root.present(av, animated: true)
+            x: top.view.bounds.midX, y: top.view.bounds.midY, width: 0, height: 0)
+        top.present(av, animated: true)
     }
 }
 
@@ -783,8 +785,8 @@ struct HistoryView: View {
     @State private var renaming: BenchRun?
     @State private var newName = ""
     @State private var expanded: Set<UUID> = []
+    @Environment(\.editMode) private var editMode
     @State private var selection: Set<UUID> = []
-    @State private var editMode: EditMode = .inactive
     @State private var exportMsg: String?
     @State private var exportOK = false
     @State private var exportGen = 0
@@ -821,7 +823,6 @@ struct HistoryView: View {
                             .onDelete { idx in history.delete(Set(idx.map { shown[$0].id })) }
                     }
                     .searchable(text: $query, prompt: "Search runs or models")
-                    .environment(\.editMode, $editMode)
                 }
                 if let msg = exportMsg {
                     ExportToast(success: exportOK, message: msg)
@@ -833,12 +834,13 @@ struct HistoryView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Picker("Sort", selection: $sort) {
-                        ForEach(SortKey.allCases) {
-                            Label($0.rawValue, systemImage: $0 == .time ? "clock" : "textformat").tag($0)
+                    Menu {
+                        Picker("Sort", selection: $sort) {
+                            ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) }
                         }
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down")
                     }
-                    .pickerStyle(.menu)
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if !history.runs.isEmpty {
@@ -884,15 +886,10 @@ struct HistoryView: View {
                     SparklineView(samples: spark, color: .blue).frame(height: 44)
                 }
                 if run.mode == "Sustained", let tl = run.thermalTimeline, !tl.isEmpty {
-                    ThermalBar(levels: tl).frame(height: 8)
-                    HStack(spacing: 8) {
-                        thermalChip("start", run.thermalStart)
-                        Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
-                        thermalChip("end", run.thermalEnd)
-                        thermalChip("peak", run.thermalPeak)
-                        if let tp = run.fastest?.throttlePct {
-                            Text("+\(Int(tp))%").font(.caption2.monospacedDigit()).foregroundStyle(.orange)
-                        }
+                    ThermalBar(levels: tl).frame(height: 8).padding(.top, 8)
+                    if let tp = run.fastest?.throttlePct {
+                        Text("throttle +\(Int(tp))%").font(.caption2.monospacedDigit())
+                            .foregroundStyle(.orange)
                     }
                 }
                 ForEach(run.results.sorted { $0.coldMedian < $1.coldMedian }) { r in
@@ -904,7 +901,7 @@ struct HistoryView: View {
         .padding(.vertical, 2)
         .contentShape(Rectangle())
         .onTapGesture {
-            if editMode == .inactive {
+            if editMode?.wrappedValue != .active {
                 withAnimation(.spring(duration: 0.3)) {
                     if isOpen { expanded.remove(run.id) } else { expanded.insert(run.id) }
                 }
@@ -914,14 +911,6 @@ struct HistoryView: View {
             Button { renaming = run; newName = run.name } label: { Label("Rename", systemImage: "pencil") }
             Button { exportRuns([run]) } label: { Label("Export", systemImage: "square.and.arrow.up") }
             Button(role: .destructive) { history.delete([run.id]) } label: { Label("Delete", systemImage: "trash") }
-        }
-    }
-
-    private func thermalChip(_ label: String, _ level: Int?) -> some View {
-        HStack(spacing: 2) {
-            Image(systemName: "thermometer.medium").font(.caption2)
-                .foregroundStyle(thermalLevelColor(level ?? 0))
-            Text(label).font(.caption2).foregroundStyle(.secondary)
         }
     }
 
@@ -969,10 +958,12 @@ struct HistoryView: View {
         guard let scene = UIApplication.shared.connectedScenes
                 .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
               let root = scene.keyWindow?.rootViewController else { return }
+        var top = root
+        while let presented = top.presentedViewController { top = presented }
         let av = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-        av.popoverPresentationController?.sourceView = root.view
+        av.popoverPresentationController?.sourceView = top.view
         av.popoverPresentationController?.sourceRect = CGRect(
-            x: root.view.bounds.midX, y: root.view.bounds.midY, width: 0, height: 0)
-        root.present(av, animated: true)
+            x: top.view.bounds.midX, y: top.view.bounds.midY, width: 0, height: 0)
+        top.present(av, animated: true)
     }
 }
