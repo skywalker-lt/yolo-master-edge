@@ -17,6 +17,7 @@ struct BenchResult: Identifiable {
     var id: String { "\(modelId)|\(compute.rawValue)" }
     let modelId: String
     let shortID: String
+    let fullName: String
     let compute: ComputeChoice
     let coldMedian: Double
     let coldP90: Double
@@ -140,37 +141,56 @@ struct BenchView: View {
                 .tint(running ? .red : .accentColor)
                 .disabled(models.isEmpty || (mode == .sustained && selectedModel == nil))
             }
-            if showSettings { settingsPanel }
+            // sustained target + duration are ALWAYS visible in sustained mode
+            // (not hidden behind the gear); the gear holds advanced iters/warmup
+            if mode == .sustained { sustainedConfig }
+            if showSettings { advancedSettings }
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal)
     }
 
-    private var settingsPanel: some View {
-        VStack(spacing: 6) {
-            if mode == .sustained {
-                HStack {
-                    Menu {
-                        Picker("Model", selection: $selectedModel) {
-                            ForEach(models) { m in Text(m.fullName).tag(Optional(m)) }
-                        }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text(selectedModel?.shortID ?? "Model").lineLimit(1)
-                            Image(systemName: "chevron.up.chevron.down").font(.caption2)
-                        }
+    private var sustainedConfig: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Menu {
+                    Picker("Model", selection: $selectedModel) {
+                        ForEach(models) { m in Text(m.fullName).tag(Optional(m)) }
                     }
-                    .fixedSize()
-                    Picker("Unit", selection: $selectedCompute) {
-                        ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).tag(c) }
+                } label: {
+                    HStack(spacing: 3) {
+                        Text(selectedModel?.shortID ?? "Model").lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down").font(.caption2)
                     }
-                    .pickerStyle(.segmented)
                 }
-                Stepper(value: $sustainedMinutes, in: 1...15, step: 1) {
-                    Text("Sustained: \(Int(sustainedMinutes)) min").font(.caption)
+                .fixedSize()
+                Picker("Unit", selection: $selectedCompute) {
+                    ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).tag(c) }
+                }
+                .pickerStyle(.segmented)
+            }
+            // manual duration selection: a fine stepper plus quick presets
+            HStack(spacing: 8) {
+                Stepper(value: $sustainedMinutes, in: 1...60, step: 1) {
+                    Text("Duration: \(Int(sustainedMinutes)) min")
+                        .font(.caption.monospacedDigit())
+                }
+                ForEach([3, 5, 10, 20], id: \.self) { p in
+                    Button("\(p)m") { sustainedMinutes = Double(p) }
+                        .font(.caption2)
+                        .buttonStyle(.bordered)
+                        .tint(Int(sustainedMinutes) == p ? .accentColor : .secondary)
                 }
             }
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .disabled(running)
+    }
+
+    private var advancedSettings: some View {
+        VStack(spacing: 6) {
             Stepper(value: $iters, in: 20...200, step: 10) {
                 Text("Timed iters: \(iters)").font(.caption)
             }
@@ -249,7 +269,7 @@ struct BenchView: View {
             .frame(width: 60, height: 60)
             VStack(alignment: .leading, spacing: 2) {
                 Text("FASTEST").font(.caption2).foregroundStyle(.secondary)
-                Text(r.shortID).font(.headline)
+                Text(r.fullName).font(.headline).lineLimit(1).minimumScaleFactor(0.6)
                 Text("\(r.compute.rawValue)  ·  \(fmt(r.coldMedian)) ms  ·  \(Int(r.fpsEquiv)) FPS")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
@@ -262,12 +282,12 @@ struct BenchView: View {
 
     private func modelCard(_ mid: String) -> some View {
         let rows = results.filter { $0.modelId == mid }.sorted { $0.coldMedian < $1.coldMedian }
-        let short = rows.first?.shortID ?? mid
+        let title = rows.first?.fullName ?? mid
         let fastestUnit = rows.first?.compute
         let expanded = expandedCards.contains(mid)
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(short).font(.subheadline.bold())
+                Text(title).font(.subheadline.bold()).lineLimit(1).minimumScaleFactor(0.6)
                 Spacer()
                 if let f = fastestUnit {
                     Text("fastest \(f.rawValue)").font(.caption2)
@@ -399,11 +419,11 @@ struct BenchView: View {
             for m in models {
                 for c in units {
                     if Task.isCancelled { return }
-                    await MainActor.run { phase = .loadingModel(m.shortID, c.rawValue) }
+                    await MainActor.run { phase = .loadingModel(m.fullName, c.rawValue) }
                     guard let det = try? Detector(modelURL: m.url, compute: c.mode) else {
                         done += 1; continue
                     }
-                    await MainActor.run { phase = .benchmarking(m.shortID, c.rawValue, done, total) }
+                    await MainActor.run { phase = .benchmarking(m.fullName, c.rawValue, done, total) }
                     for _ in 0..<warmN { autoreleasepool { _ = try? det.inferOnly(img) } }
                     var ms: [Double] = []
                     for _ in 0..<iterN {
@@ -413,7 +433,7 @@ struct BenchView: View {
                     guard !ms.isEmpty else { done += 1; continue }
                     ms.sort()
                     let (pre, inf, dec) = stageBreakdown(det, img)
-                    let r = BenchResult(modelId: m.id, shortID: m.shortID, compute: c,
+                    let r = BenchResult(modelId: m.id, shortID: m.shortID, fullName: m.fullName, compute: c,
                         coldMedian: ms[ms.count / 2],
                         coldP90: ms[min(Int(Double(ms.count) * 0.9), ms.count - 1)],
                         coldMin: ms.first ?? 0, pre: pre, inf: inf, dec: dec)
@@ -421,7 +441,7 @@ struct BenchView: View {
                     let d = done
                     await MainActor.run {
                         withAnimation(.spring(duration: 0.3)) { results.append(r) }
-                        phase = .benchmarking(m.shortID, c.rawValue, d, total)
+                        phase = .benchmarking(m.fullName, c.rawValue, d, total)
                         lightHaptic.impactOccurred(); lightHaptic.prepare()
                     }
                 }
@@ -439,7 +459,7 @@ struct BenchView: View {
         let totalS = Int(sustainedMinutes * 60)
         loopTask = Task.detached(priority: .userInitiated) {
             let img = testImage()
-            await MainActor.run { phase = .loadingModel(m.shortID, c.rawValue) }
+            await MainActor.run { phase = .loadingModel(m.fullName, c.rawValue) }
             guard let det = try? Detector(modelURL: m.url, compute: c.mode) else {
                 await MainActor.run { running = false; phase = .idle }; return
             }
@@ -468,7 +488,7 @@ struct BenchView: View {
                     let liveMed = live.isEmpty ? 0 : live[live.count / 2]
                     await MainActor.run {
                         sparkSamples = pts; liveMs = liveMed
-                        phase = .sustained(m.shortID, c.rawValue, elapsed, totalS)
+                        phase = .sustained(m.fullName, c.rawValue, elapsed, totalS)
                     }
                 }
             }
@@ -477,7 +497,7 @@ struct BenchView: View {
             let sust = tail.isEmpty ? coldMed : tail[tail.count / 2]
             let p90 = all.isEmpty ? 0 : all[min(Int(Double(all.count) * 0.9), all.count - 1)]
             let (pre, inf, dec) = stageBreakdown(det, img)
-            let r = BenchResult(modelId: m.id, shortID: m.shortID, compute: c,
+            let r = BenchResult(modelId: m.id, shortID: m.shortID, fullName: m.fullName, compute: c,
                 coldMedian: coldMed, coldP90: p90, coldMin: all.first ?? 0,
                 pre: pre, inf: inf, dec: dec,
                 sustainedMedian: sust, throttlePct: coldMed > 0 ? (sust - coldMed) / coldMed * 100 : 0)
