@@ -30,6 +30,15 @@ struct BenchResult: Identifiable {
     var fpsEquiv: Double { coldMedian > 0 ? 1000.0 / coldMedian : 0 }
 }
 
+/// Run-control flags the detached bench loop polls each iteration (word-sized
+/// reads; a data flag, eventual consistency is fine). Lets a run be PAUSED
+/// (suspended, resumable) rather than only cancelled, and auto-paused when the
+/// tab loses focus so benchmarking never competes with Live/Photo inference.
+final class BenchControl: @unchecked Sendable {
+    var paused = false
+    var cancelled = false
+}
+
 struct BenchView: View {
     enum Mode: String, CaseIterable, Identifiable {
         case sweep = "Cold Sweep", sustained = "Sustained"
@@ -48,6 +57,9 @@ struct BenchView: View {
     @State private var mode: Mode = .sweep
     @State private var phase: Phase = .idle
     @State private var running = false
+    @State private var paused = false
+    @State private var control = BenchControl()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showSettings = false
     @State private var expandedCards: Set<String> = []
     // sustained target + settings
@@ -110,6 +122,14 @@ struct BenchView: View {
             for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
             thermal = ProcessInfo.processInfo.thermalState
         }
+        // leaving the tab (or backgrounding) auto-pauses the run so it never
+        // competes with Live/Photo inference; the user resumes with play
+        .onDisappear { autoPause() }
+        .onChange(of: scenePhase) { _, ph in if ph != .active { autoPause() } }
+    }
+
+    private func autoPause() {
+        if running && !paused { paused = true; control.paused = true }
     }
 
     // MARK: - top bar
@@ -131,15 +151,22 @@ struct BenchView: View {
                         .buttonStyle(.bordered)
                         .disabled(running)
                 }
-                Button {
-                    if running { stop() } else { start() }
-                } label: {
-                    Image(systemName: running ? "stop.fill" : "play.fill")
-                        .frame(minWidth: 40)
+                if running {
+                    Button { togglePause() } label: {
+                        Image(systemName: paused ? "play.fill" : "pause.fill").frame(minWidth: 40)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(paused ? .accentColor : .orange)
+                    Button { stop() } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.bordered)
+                        .tint(.red)
+                } else {
+                    Button { start() } label: {
+                        Image(systemName: "play.fill").frame(minWidth: 40)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(models.isEmpty || (mode == .sustained && selectedModel == nil))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(running ? .red : .accentColor)
-                .disabled(models.isEmpty || (mode == .sustained && selectedModel == nil))
             }
             // sustained target + duration are ALWAYS visible in sustained mode
             // (not hidden behind the gear); the gear holds advanced iters/warmup
@@ -148,7 +175,7 @@ struct BenchView: View {
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal)
+        .padding(.horizontal, 10)
     }
 
     private var sustainedConfig: some View {
@@ -172,11 +199,11 @@ struct BenchView: View {
             }
             // manual duration selection: a fine stepper plus quick presets
             HStack(spacing: 8) {
-                Stepper(value: $sustainedMinutes, in: 1...60, step: 1) {
+                Stepper(value: $sustainedMinutes, in: 1...Double(maxSustained), step: 1) {
                     Text("Duration: \(Int(sustainedMinutes)) min")
                         .font(.caption.monospacedDigit())
                 }
-                ForEach([3, 5, 10, 20], id: \.self) { p in
+                ForEach([3, 5, 10, 20].filter { $0 <= maxSustained }, id: \.self) { p in
                     Button("\(p)m") { sustainedMinutes = Double(p) }
                         .font(.caption2)
                         .buttonStyle(.bordered)
@@ -187,7 +214,13 @@ struct BenchView: View {
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         .disabled(running)
+        .onChange(of: selectedCompute) { _, _ in
+            if sustainedMinutes > Double(maxSustained) { sustainedMinutes = Double(maxSustained) }
+        }
     }
+
+    // CPU inference is slow and hot - cap sustained CPU stress at 3 minutes.
+    private var maxSustained: Int { selectedCompute == .cpu ? 3 : 60 }
 
     private var advancedSettings: some View {
         VStack(spacing: 6) {
@@ -207,6 +240,14 @@ struct BenchView: View {
 
     private var progressCard: some View {
         VStack(spacing: 8) {
+            if paused {
+                HStack(spacing: 4) {
+                    Image(systemName: "pause.circle.fill")
+                    Text("Paused").font(.caption.bold())
+                }
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity)
+            }
             HStack(alignment: .center, spacing: 12) {
                 // leading flexible column: the ProgressView fills THIS width only,
                 // so it can never run under the thermal dial on the right
@@ -215,8 +256,7 @@ struct BenchView: View {
                 ThermalTach(level: thermalLevel, color: thermalColor)
             }
             if mode == .sustained, sparkSamples.count > 1 {
-                SparklineView(samples: sparkSamples, baseline: sparkBaseline,
-                              color: msColor(liveMs))
+                SparklineView(samples: sparkSamples, baseline: sparkBaseline, color: .blue)
                     .frame(height: 58)
                 HStack(spacing: 6) {
                     if let b = sparkBaseline {
@@ -366,7 +406,8 @@ struct BenchView: View {
 
     private func start() {
         guard !running else { return }
-        running = true
+        control.paused = false; control.cancelled = false
+        running = true; paused = false
         medHaptic.impactOccurred(); medHaptic.prepare()
         sparkSamples = []; sparkBaseline = nil; liveMs = 0
         if mode == .sweep {
@@ -378,9 +419,24 @@ struct BenchView: View {
     }
 
     private func stop() {
+        control.cancelled = true
         loopTask?.cancel(); loopTask = nil
-        running = false
+        running = false; paused = false
         phase = .idle
+    }
+
+    private func togglePause() {
+        paused.toggle()
+        control.paused = paused
+        lightHaptic.impactOccurred(); lightHaptic.prepare()
+    }
+
+    /// Suspend the detached loop while paused; returns false if cancelled.
+    private func pauseGate() async -> Bool {
+        while control.paused && !control.cancelled {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+        }
+        return !control.cancelled
     }
 
     /// 640x640 mid-gray test image; inferOnly measures predict() wall time.
@@ -418,7 +474,8 @@ struct BenchView: View {
             var done = 0
             for m in models {
                 for c in units {
-                    if Task.isCancelled { return }
+                    if control.cancelled { return }
+                    if !(await pauseGate()) { return }
                     await MainActor.run { phase = .loadingModel(m.fullName, c.rawValue) }
                     guard let url = try? m.compiledURL(),
                           let det = try? Detector(modelURL: url, compute: c.mode) else {
@@ -428,7 +485,7 @@ struct BenchView: View {
                     for _ in 0..<warmN { autoreleasepool { _ = try? det.inferOnly(img) } }
                     var ms: [Double] = []
                     for _ in 0..<iterN {
-                        if Task.isCancelled { return }
+                        if control.cancelled { return }
                         autoreleasepool { if let t = try? det.inferOnly(img) { ms.append(t) } }
                     }
                     guard !ms.isEmpty else { done += 1; continue }
@@ -473,14 +530,19 @@ struct BenchView: View {
             let coldMed = cold.isEmpty ? 0 : cold[cold.count / 2]
             await MainActor.run { sparkBaseline = coldMed; sparkSamples = [] }
             // sustained loop
-            let t0 = CFAbsoluteTimeGetCurrent()
+            var t0 = CFAbsoluteTimeGetCurrent()
             var all: [Double] = []
             var lastPub = 0.0
             while CFAbsoluteTimeGetCurrent() - t0 < Double(totalS) {
-                if Task.isCancelled { return }
+                if control.cancelled { return }
+                if control.paused {
+                    let ps = CFAbsoluteTimeGetCurrent()
+                    if !(await pauseGate()) { return }
+                    t0 += CFAbsoluteTimeGetCurrent() - ps   // exclude paused time from elapsed
+                }
                 autoreleasepool { if let t = try? det.inferOnly(img) { all.append(t) } }
                 let now = CFAbsoluteTimeGetCurrent()
-                if now - lastPub >= 0.5 {
+                if now - lastPub >= 0.1 {
                     lastPub = now
                     let elapsed = Int(now - t0)
                     let recent = Array(all.suffix(2400))
