@@ -27,6 +27,28 @@ struct BundledModel: Identifiable, Hashable {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     }
 
+    /// User-imported Core ML models (Settings > Custom models, Beta). Kept out of
+    /// the bundle so they survive app updates and can be deleted individually.
+    static var customModelsDir: URL {
+        cacheDir.appendingPathComponent("CustomModels", isDirectory: true)
+    }
+
+    /// The models the user has imported (.mlmodelc / .mlpackage / .mlmodel).
+    static func customModels() -> [BundledModel] {
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: customModelsDir, includingPropertiesForKeys: nil) else { return [] }
+        return items
+            .filter { ["mlmodelc", "mlpackage", "mlmodel"].contains($0.pathExtension.lowercased()) }
+            .map { BundledModel(id: $0.deletingPathExtension().lastPathComponent, url: $0) }
+            .sorted { $0.id < $1.id }
+    }
+
+    /// Remove an imported model and any compiled cache it produced.
+    static func deleteCustom(_ m: BundledModel) {
+        try? FileManager.default.removeItem(at: m.url)
+        try? FileManager.default.removeItem(at: cacheDir.appendingPathComponent(m.id + ".mlmodelc"))
+    }
+
     /// A ready-to-load .mlmodelc. If this model is a .mlpackage, it is compiled
     /// and cached in Application Support on FIRST use (kept out of `discover` so
     /// launch stays instant); later launches reuse the cache. Compile is the
@@ -68,6 +90,7 @@ struct BundledModel: Identifiable, Hashable {
                 found.append(BundledModel(id: name, url: ready ? cached : pkg))
             }
         }
+        for m in customModels() where seen.insert(m.id).inserted { found.append(m) }
         return found.sorted { $0.id < $1.id }
     }
 
@@ -86,6 +109,13 @@ enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
     case gpu = "GPU"        // CPU + GPU
     case cpu = "CPU"        // CPU only
     var id: String { rawValue }
+
+    /// Units to expose in a compute picker. CPU-only inference can crash Live/Photo
+    /// on some MoE models, so it is hidden unless the user opts in (Settings).
+    static func available(allowCPU: Bool) -> [ComputeChoice] {
+        allowCPU ? allCases : allCases.filter { $0 != .cpu }
+    }
+
     var mode: ComputeMode {
         switch self {
         case .ane: return ComputeMode("all")
