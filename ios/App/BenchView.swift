@@ -187,9 +187,11 @@ struct BenchView: View {
 
     private var progressCard: some View {
         VStack(spacing: 8) {
-            HStack(alignment: .top) {
+            HStack(alignment: .center, spacing: 12) {
+                // leading flexible column: the ProgressView fills THIS width only,
+                // so it can never run under the thermal dial on the right
                 phaseContent
-                Spacer(minLength: 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 ThermalTach(level: thermalLevel, color: thermalColor)
             }
             if mode == .sustained, sparkSamples.count > 1 {
