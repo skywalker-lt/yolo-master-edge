@@ -638,7 +638,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
             hostView.heightAnchor.constraint(equalTo: sv.frameLayoutGuide.heightAnchor),
         ])
         let dt = UITapGestureRecognizer(target: context.coordinator,
-                                        action: #selector(Coordinator.doubleTap(_:)))
+                                        action: #selector(Coordinator.handleDoubleTap(_:)))
         dt.numberOfTapsRequired = 2
         sv.addGestureRecognizer(dt)
         return sv
@@ -672,7 +672,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
             exitFired = false
         }
 
-        @objc func doubleTap(_ gr: UITapGestureRecognizer) {
+        @objc func handleDoubleTap(_ gr: UITapGestureRecognizer) {
             guard let sv = gr.view as? UIScrollView else { return }
             if sv.zoomScale > sv.minimumZoomScale * 1.3 {
                 sv.setZoomScale(sv.minimumZoomScale, animated: true)
