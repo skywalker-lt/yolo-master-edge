@@ -6,8 +6,8 @@ This project provides a universal inference runtime for [YOLO-Master](https://gi
 
 <p align="left">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/main/assets/edge_deployment_architecture_dark.png">
-    <img src="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/main/assets/edge_deployment_architecture_light.png" width="900" alt="Edge Deployment Bundle — Architecture">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/dev/ios/assets/edge_deployment_architecture_dark.png">
+    <img src="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/dev/ios/assets/edge_deployment_architecture_light.png" width="900" alt="Edge Deployment Bundle — Architecture">
   </picture>
 </p>
 
