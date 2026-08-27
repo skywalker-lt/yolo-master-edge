@@ -42,3 +42,9 @@ mac/*.mlmodelc
 # local SDK paths (per-machine, not shared)
 gui/sdk-paths.cmd
 tests/ncnn_rawdump
+
+# private working docs + mid-build artifacts (local-only, never publish)
+PROJECT.md
+PROJECT03_FEASIBILITY.md
+runs/
+tempo-ncnn/
