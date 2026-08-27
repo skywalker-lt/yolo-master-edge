@@ -20,7 +20,7 @@ This project provides a universal inference runtime for [YOLO-Master](https://gi
 <br>
 <br>
 
-**🍾 Welcome to the 5th platform of YOLO-Master Edge**
+**🍾 Welcome to the 5th platform of YOLO-Master Edge. [Try it now.](https://testflight.apple.com/join/EVExpVHD)**
 
 Native iOS SwiftUI app for on-device YOLO-Master detection and segmentation, powered by Apple Core ML and the same YOLOMasterKit inference path as the macOS runtime. Everything runs locally on the Neural Engine, GPU, or CPU. Nothing you capture leaves the iPhone. Requires iPhone on iOS 17 or later. iPhone 13 and later models are recommended. 
 
@@ -44,13 +44,11 @@ All data are measured under Live mode on ANE with `YOLO-Master-v0.1-N` (COCO) fo
 | iPhone Air | A19 Pro | 36 | 🟠 |
 | iPhone 15 Pro Max | A17 Pro | 42 | 🟠 |
 
-### Install
+### Install (Public Beta)
 
 The app is distributed through TestFlight. Install the TestFlight app on App Store, then open the invite link below to start testing it: 
 
 https://testflight.apple.com/join/EVExpVHD
-
-> Note: the app is currently under Apple's beta review process and will be officially available before Aug 31. 
 
 ### Build from source
 
