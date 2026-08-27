@@ -2,7 +2,7 @@
 
 <img alt="C++" src="https://img.shields.io/badge/C++-17-blue.svg?style=flat&logo=c%2B%2B"> <img alt="Onnx-runtime" src="https://img.shields.io/badge/OnnxRuntime-717272.svg?logo=Onnx&logoColor=white"> <img alt="NCNN" src="https://img.shields.io/badge/NCNN-Tencent-blue.svg"> <img alt="MNN" src="https://img.shields.io/badge/MNN-Alibaba-orange.svg"> <img alt="TensorRT" src="https://img.shields.io/badge/TensorRT-NVIDIA-76B900.svg"> <img alt="Core ML" src="https://img.shields.io/badge/CoreML-Apple-black.svg"> <img alt="Linux" src="https://img.shields.io/badge/Linux-FCC624.svg?logo=linux&logoColor=black"> <img alt="Windows" src="https://img.shields.io/badge/Windows-0078D6.svg?logo=windows&logoColor=white"> <img alt="Jetson" src="https://img.shields.io/badge/Jetson%20Orin-76B900.svg?logo=nvidia&logoColor=white"> <img alt="macOS" src="https://img.shields.io/badge/macOS-000000.svg?logo=apple&logoColor=white"> <img alt="iOS" src="https://img.shields.io/badge/iOS-000000.svg?logo=apple&logoColor=white"> 
 
-This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML (NEW!)](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, MacOS, and iOS; supports CPU, [CUDA](https://developer.nvidia.com/cuda-toolkit), [MPS](https://developer.apple.com/documentation/metalperformanceshaders), and [ANE](https://machinelearning.apple.com). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
+This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, MacOS, and **iOS (NEW!)**; supports CPU, [CUDA](https://developer.nvidia.com/cuda-toolkit), [MPS](https://developer.apple.com/documentation/metalperformanceshaders), and [ANE (on Apple devices）](https://machinelearning.apple.com). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
 
 <p align="left">
   <picture>
@@ -10,6 +10,62 @@ This project provides a universal inference runtime for [YOLO-Master](https://gi
     <img src="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/dev/ios/assets/edge_deployment_architecture_light.png" width="900" alt="Edge Deployment Bundle — Architecture">
   </picture>
 </p>
+
+---
+
+## 📱 Update (27-08-2026): YOLO-Master for iPhone v1.1.0 Beta Build 1
+
+<img width="4812" height="2291" alt="screnshots-framed" src="https://github.com/user-attachments/assets/e858e07b-eeff-40c2-b11a-dcb4dba44577" />
+
+<br>
+<br>
+
+**🍾 Welcome to the 5th platform of YOLO-Master Edge**
+
+Native iOS SwiftUI app for on-device YOLO-Master detection and segmentation, powered by Apple Core ML and the same YOLOMasterKit inference path as the macOS runtime. Everything runs locally on the Neural Engine, GPU, or CPU. Nothing you capture leaves the iPhone. Requires iPhone on iOS 17 or later. iPhone 13 and later models are recommended. 
+
+### Features
+
+- **📹 Live** - Real-time camera detection with a dynamic performance visuliaztion (FPS tachometer, per-stage latency measures, and phone's thermal state), multi-cam with automatic lens switching and pinch zoom, tap-to-focus, torch, and a full-resolution shutter that renders the live overlay (boxes and segmentation masks) into the saved photo. Also supports live IoU/conf tuning without pausing the inference. 
+
+- **📸 Photo** - Batch detection over images you pick from your library, up to 100 images at a time. Per-image and batch stats, segmentation masks, live conf/IoU tuning, and export of annotated images back to Photos.
+
+- **🎛️ Bench** - On-device benchmarking on all devices. A Cold Sweep measures every bundled model across compute units (Neural Engine (ANE), GPU, CPU) with expandable pre/inference/decode stage breakdowns, and a Sustained mode runs a thermal-throttle test with a live latency heatbeat sparkline and a colored state timeline. Pause/resume, a persistent run History vault (with per-run graphs) and CSV export.
+
+- **⚙️ Settings** - App info and an expandable About card (wihich explains the MoE architecture summary with Paper, Model / App Repo links), Licenses and Acknowledgements (from macOS build), a Privacy and Security summary, a CPU-inference opt-in for Live and Photo modes, erase-all benchmark history, and a Beta importer for your own trained Core ML models (.mlpackage / .mlmodelc / .mlmodel).
+
+### Performance
+
+All data are measured under Live mode on ANE with `YOLO-Master-v0.1-N` (COCO) for 3 min.
+
+| iPhone Model | SoC | End-to-end FPS | Thermal State after 1 min |
+|---|---|---|---|
+| iPhone 17 Pro Max | A19 Pro | 51 | 🟢 |
+| iPhone Air | A19 Pro | 36 | 🟠 |
+| iPhone 15 Pro Max | A17 Pro | 42 | 🟠 |
+
+### Install
+
+The app is distributed through TestFlight. Install the TestFlight app on App Store, then open the invite link below to start testing it: 
+
+https://testflight.apple.com/join/EVExpVHD
+
+> Note: the app is currently under Apple's beta review process and will be officially available before Aug 31. 
+
+### Build from source
+
+```zsh
+brew install xcodegen
+cd ios && xcodegen # this generates YOLOMasterIOS.xcodeproj
+```
+
+Drop your Core ML models into directory `ios/Models/`, set your signing team ID in `ios/project.yml`, open the project, and run. See `ios/README.md` for details.
+
+### Privacy & License (iOS App Update)
+
+The app has no internet connection. No data leaves the device, and we don't collect anything. See PRIVACY.md for detailed terms. 
+
+The app is licensed under AGPL-3.0, consistent with YOLO-Master and Ultralytics; coremltools is BSD-3-Clause. It is released for research and personal experience only, and any direct commercial use of this app is prohibited. 
 
 ---
 
