@@ -157,11 +157,17 @@ class Tuning {
     @Volatile var style: BoxStyle = BoxStyle.Chip
     @Volatile var segOverlay: SegOverlayMode = SegOverlayMode.Both
     @Volatile var showHUD: Boolean = true
+    /** ncnn threads for the Live loop: 1 / 2 / 4, or 0 = every core (no big-core pinning). */
+    @Volatile var threads: Int = 2
 }
+
+/** Labels of the Live threads picker; 0 = all cores. */
+val threadChoices = listOf(1, 2, 4, 0)
+fun threadLabel(t: Int) = if (t == 0) "all" else "$t"
 
 /** `TuningPanel` (`StatsHUD.swift:409-451`): padding 10, radius 12. */
 @Composable
-fun TuningPanel(tuning: Tuning, isSeg: Boolean, onChange: () -> Unit = {}, modifier: Modifier = Modifier) {
+fun TuningPanel(tuning: Tuning, isSeg: Boolean, onChange: () -> Unit = {}, modifier: Modifier = Modifier, showThreads: Boolean = false, onThreads: (Int) -> Unit = {}) {
     val ios = LocalIosColors.current
     var conf by remember { mutableFloatStateOf(tuning.conf) }
     var iou by remember { mutableFloatStateOf(tuning.iou) }
@@ -177,6 +183,13 @@ fun TuningPanel(tuning: Tuning, isSeg: Boolean, onChange: () -> Unit = {}, modif
         if (isSeg) Segmented(SegOverlayMode.entries, seg, { it.label }, modifier = Modifier.fillMaxWidth()) { seg = it; tuning.segOverlay = it; onChange() }
         SliderRow("conf", conf, 0.05f..0.9f) { conf = it; tuning.conf = it; onChange() }
         SliderRow("IoU", iou, 0.1f..0.9f) { iou = it; tuning.iou = it; onChange() }
+        if (showThreads) {
+            var threads by remember { mutableStateOf(tuning.threads) }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("threads", style = IosType.caption, color = ios.label, modifier = Modifier.width(54.dp))
+                Segmented(threadChoices, threads, { threadLabel(it) }, modifier = Modifier.weight(1f)) { threads = it; tuning.threads = it; onThreads(it) }
+            }
+        }
     }
 }
 

@@ -125,7 +125,7 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
         _ui.value = _ui.value.copy(loadingModel = true, loadError = null)
         camera.analysisExecutor.execute {
             detector?.close(); detector = null
-            val det = Detector.open(model, _ui.value.compute)
+            val det = Detector.open(model, _ui.value.compute, threads = tuning.threads)
             if (det == null) {
                 _ui.value = _ui.value.copy(loadingModel = false, running = false, wantRun = false, loadError = Detector.lastError)
                 return@execute
@@ -146,6 +146,30 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
         camera.analysisExecutor.execute { detector?.close(); detector = null }
         _ui.value = _ui.value.copy(running = false, loadingModel = false)
         _frame.value = FrameResult(frameSize = _frame.value.frameSize)
+    }
+
+    /** Threads picker changed: reload the model with the new thread policy if running. */
+    fun applyThreads() { if (running.get() || _ui.value.loadingModel) { suspendLoop(); startLoop() } }
+
+    // ---- diagnostics: thermal headroom + prime-core clock, sampled once a second ----------------
+    data class Diag(val headroom: Float = -1f, val primeMHz: Int = -1)
+    private val _diag = MutableStateFlow(Diag())
+    val diag: StateFlow<Diag> = _diag
+    private val pm = app.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+    private val diagJob = viewModelScope.launch(Dispatchers.IO) {
+        val cpus = Runtime.getRuntime().availableProcessors()
+        while (true) {
+            val head = if (android.os.Build.VERSION.SDK_INT >= 30) try { pm.getThermalHeadroom(0) } catch (_: Throwable) { Float.NaN } else Float.NaN
+            var mhz = -1
+            for (c in (cpus - 1) downTo 0) {
+                try {
+                    val f = java.io.File("/sys/devices/system/cpu/cpu$c/cpufreq/scaling_cur_freq")
+                    if (f.canRead()) { mhz = f.readText().trim().toInt() / 1000; break }
+                } catch (_: Throwable) {}
+            }
+            _diag.value = Diag(if (head.isNaN()) -1f else head, mhz)
+            kotlinx.coroutines.delay(1000)
+        }
     }
 
     /** Tab hidden / app backgrounded: stop but keep the intent. */

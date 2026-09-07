@@ -14,6 +14,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -123,6 +124,7 @@ fun LiveScreen(vm: LiveViewModel = viewModel()) {
     val frame by vm.frame.collectAsStateWithLifecycle()
     val cam by vm.camera.state.collectAsStateWithLifecycle()
     val thermal by vm.thermal.state.collectAsStateWithLifecycle()
+    val diag by vm.diag.collectAsStateWithLifecycle()
     val allowCPU by rememberBoolPref(Prefs.ALLOW_CPU, true)
 
     var hasCamera by remember { mutableStateOf(ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
@@ -160,14 +162,17 @@ fun LiveScreen(vm: LiveViewModel = viewModel()) {
         lensTimer = scope.launch { delay(3000); lensExpanded = false }
     }
 
-    CompositionLocalProvider(LocalHazeState provides haze) {
+    // Live: NO real-time backdrop blur. Re-blurring the 30 fps camera feed behind three cards
+    // runs on the same GPU as ncnn Vulkan and was the prime suspect for 4x slower inference on
+    // the S26; the cards use the translucent scrim here (blur stays on the static tabs).
+    CompositionLocalProvider(LocalHazeState provides null) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             if (!hasCamera) {
                 EmptyState("Camera access required", Icons.Filled.Videocam, null)
             } else {
                 // preview + overlay share one full-bleed container so boxes never shear
                 Box(
-                    Modifier.fillMaxSize().hazeBackdrop(haze)
+                    Modifier.fillMaxSize()
                         .pointerInput(cam.minZoom, cam.maxZoom) {
                             detectTransformGestures { _, _, zoom, _ ->
                                 if (zoom != 1f) { zoomBase = vm.camera.setZoom(zoomBase * zoom) }
@@ -244,12 +249,18 @@ fun LiveScreen(vm: LiveViewModel = viewModel()) {
                             HudStats(
                                 active = active, fps = if (active) 1000.0 / max(e2e, 0.1) else 0.0, mode = DialMode.FPS, fpsLabel = "FPS",
                                 pre = frame.pre, inf = frame.inf, dec = frame.dec, mask = frame.maskMs, isSeg = ui.isSeg, dets = frame.dets.size,
-                                thermalLevel = thermal.level, thermalKnown = thermal.known,
+                                // headroom >= 0.9 = the SoC is clamping clocks (S26: prime cores at ~1.45 of
+                                // 4.74 GHz with the camera open): show it as the red tachometer state.
+                                thermalLevel = if (diag.headroom >= 0.9f) 3 else thermal.level, thermalKnown = thermal.known || diag.headroom >= 0f,
                                 extras = if (active) listOf(
                                     "camera" to String.format("%.1f fps", cam.cameraHz),
                                     "loop" to String.format("%.1f fps", frame.loopHz),
                                     "frame age" to if (cam.ageReliable) String.format("%.0f ms", cam.frameAgeMs) else "--",
                                     "backend" to ui.backend,
+                                    "threads" to "${vm.tuning.threads.let { if (it == 0) "all" else it }}",
+                                    "headroom" to if (diag.headroom >= 0f) String.format("%.2f", diag.headroom) else "--",
+                                    "prime clk" to if (diag.primeMHz > 0) "${diag.primeMHz} MHz" else "--",
+                                    "throttled" to if (diag.headroom >= 0.9f) "yes" else "no",
                                 ) else emptyList(),
                             ),
                             modifier = Modifier.padding(bottom = 20.dp),
@@ -273,22 +284,29 @@ fun LiveScreen(vm: LiveViewModel = viewModel()) {
                         tint = if (cam.torchOn) IosYellow else null, enabled = cam.hasTorch,
                     )
                     BorderedIconButton(icon = Icons.Filled.Tune, onClick = { showTuning = !showTuning })
+                    // play/pause: a plain combined-click surface (a Material Button would swallow the
+                    // tap before an outer gesture box saw it). Long press >= 0.4 s = heavy haptic, tap swallowed.
+                    val playEnabled = ui.selected != null
+                    val playTint = if (ui.wantRun) IosRed else ios.accent
                     Box(
-                        Modifier.pointerInput(Unit) {
-                            detectTapGestures(
-                                onLongPress = { longPressFired = true; haptics.heavy(); scope.launch { delay(600); longPressFired = false } },
-                                onTap = { if (!longPressFired) { haptics.medium(); vm.togglePlay() } },
+                        Modifier.height(34.dp).widthIn(min = 44.dp).clip(RoundedCornerShape(8.dp))
+                            .background(if (playEnabled) playTint else ios.quaternaryFill)
+                            .combinedClickable(
+                                enabled = playEnabled,
+                                onLongClick = { longPressFired = true; haptics.heavy(); scope.launch { delay(600); longPressFired = false } },
+                                onClick = { if (!longPressFired) { haptics.medium(); vm.togglePlay() } },
                             )
-                        },
+                            .padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        ProminentIconButton(
-                            icon = if (ui.wantRun) Icons.Filled.Pause else Icons.Filled.PlayArrow, onClick = {},
-                            tint = if (ui.wantRun) IosRed else null, enabled = ui.selected != null,
+                        Icon(
+                            if (ui.wantRun) Icons.Filled.Pause else Icons.Filled.PlayArrow, null,
+                            tint = if (playEnabled) Color.White else ios.tertiaryLabel, modifier = Modifier.size(18.dp),
                         )
                     }
                 }
                 AnimatedVisibility(showTuning, enter = fadeIn(), exit = fadeOut()) {
-                    TuningPanel(vm.tuning, isSeg = ui.isSeg, onChange = { showHud = vm.tuning.showHUD }, modifier = Modifier.padding(horizontal = 16.dp))
+                    TuningPanel(vm.tuning, isSeg = ui.isSeg, onChange = { showHud = vm.tuning.showHUD }, modifier = Modifier.padding(horizontal = 16.dp), showThreads = true, onThreads = { vm.applyThreads() })
                 }
             }
         }
