@@ -219,6 +219,7 @@ std::vector<Detection> nms_and_cap(const std::vector<RawDet>& cands, const Confi
             d.box = cv::Rect2f(static_cast<float>(b.x), static_cast<float>(b.y),
                                static_cast<float>(b.width), static_cast<float>(b.height));
             d.mask_coeffs = c.mask_coeffs;
+            d.cand_index = idx[k];
             dets.push_back(std::move(d));
         }
     }
@@ -247,11 +248,21 @@ static inline float smoothstep(float a, float b, float x) {
 cv::Mat seg_overlay(const std::vector<Detection>& dets, const std::vector<float>& proto,
                     int pc, int ph, int pw, const LetterboxInfo& lb, int imgsz,
                     int orig_w, int orig_h, int mask_alpha) {
-    cv::Mat rgba(orig_h, orig_w, CV_8UC4, cv::Scalar(0, 0, 0, 0));
-    if (proto.empty() || pc <= 0 || imgsz <= 0) return rgba;
+    return seg_overlay(dets, proto, pc, ph, pw, lb, imgsz, orig_w, orig_h, orig_w, orig_h, mask_alpha);
+}
+
+cv::Mat seg_overlay(const std::vector<Detection>& dets, const std::vector<float>& proto,
+                    int pc, int ph, int pw, const LetterboxInfo& lb, int imgsz,
+                    int orig_w, int orig_h, int out_w, int out_h, int mask_alpha) {
+    cv::Mat rgba(std::max(out_h, 0), std::max(out_w, 0), CV_8UC4, cv::Scalar(0, 0, 0, 0));
+    if (proto.empty() || pc <= 0 || imgsz <= 0 || out_w <= 0 || out_h <= 0 || orig_w <= 0 || orig_h <= 0)
+        return rgba;
     const size_t plane = static_cast<size_t>(ph) * pw;
     const float sx = lb.scale_x * pw / imgsz, sy = lb.scale_y * ph / imgsz;  // orig px -> mask space
     const float ox0 = lb.pad_x * (float)pw / imgsz, oy0 = lb.pad_y * (float)ph / imgsz;
+    // output px -> orig px. fx == fy == 1 when out == orig, which keeps every expression below
+    // identical to the unsized rendering (x / 1.0f is exact).
+    const float fx = (float)out_w / orig_w, fy = (float)out_h / orig_h;
     std::vector<float> ml(plane);
     for (const auto& d : dets) {
         if (static_cast<int>(d.mask_coeffs.size()) != pc) continue;   // detection-only box: skip
@@ -263,18 +274,18 @@ cv::Mat seg_overlay(const std::vector<Detection>& dets, const std::vector<float>
             ml[i] = 1.f / (1.f + std::exp(-s));
         }
         const float* col = class_color(d.class_id);
-        const int x0 = std::max(0, (int)std::floor(d.box.x));
-        const int y0 = std::max(0, (int)std::floor(d.box.y));
-        const int x1 = std::min(orig_w, (int)std::ceil(d.box.x + d.box.width));
-        const int y1 = std::min(orig_h, (int)std::ceil(d.box.y + d.box.height));
+        const int x0 = std::max(0, (int)std::floor(d.box.x * fx));
+        const int y0 = std::max(0, (int)std::floor(d.box.y * fy));
+        const int x1 = std::min(out_w, (int)std::ceil((d.box.x + d.box.width) * fx));
+        const int y1 = std::min(out_h, (int)std::ceil((d.box.y + d.box.height) * fy));
         for (int oy = y0; oy < y1; ++oy) {
-            const float my = oy * sy + oy0;
+            const float my = (oy / fy) * sy + oy0;
             const int myi = std::clamp((int)my, 0, ph - 1);
             const int myi2 = std::min(myi + 1, ph - 1);
             const float fy = std::clamp(my - myi, 0.f, 1.f);
             uint8_t* dst = rgba.ptr<uint8_t>(oy);
             for (int ox = x0; ox < x1; ++ox) {
-                const float mx = ox * sx + ox0;
+                const float mx = (ox / fx) * sx + ox0;
                 const int mxi = std::clamp((int)mx, 0, pw - 1);
                 const int mxi2 = std::min(mxi + 1, pw - 1);
                 const float fx = std::clamp(mx - mxi, 0.f, 1.f);

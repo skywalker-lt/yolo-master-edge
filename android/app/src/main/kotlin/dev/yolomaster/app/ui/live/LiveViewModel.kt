@@ -1,0 +1,278 @@
+package dev.yolomaster.app.ui.live
+
+import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.BitmapRegionDecoder
+import android.graphics.Canvas
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Rect
+import android.os.SystemClock
+import android.util.Log
+import android.util.Size
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import dev.yolomaster.app.YoloMasterApp
+import dev.yolomaster.app.detect.Detector
+import dev.yolomaster.app.model.BundledModel
+import dev.yolomaster.app.model.ComputeChoice
+import dev.yolomaster.app.system.GallerySaver
+import dev.yolomaster.app.system.ThermalMonitor
+import dev.yolomaster.app.ui.common.Tuning
+import dev.yolomaster.app.ui.overlay.Annotate
+import dev.yolomaster.app.ui.overlay.SegOverlayMode
+import dev.yolomaster.ncnn.Detection
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.max
+import kotlin.math.roundToInt
+
+/** One rendered frame's worth of overlay data (published conflated; stale frames are dropped). */
+data class FrameResult(
+    val dets: List<Detection> = emptyList(),
+    val mask: Bitmap? = null,
+    val frameSize: Size = Size(1280, 720),
+    val pre: Double = 0.0, val inf: Double = 0.0, val dec: Double = 0.0, val maskMs: Double = 0.0,
+    val loopHz: Double = 0.0,
+    val seq: Long = 0,
+)
+
+/** UI-facing state of the Live tab (`LiveView.swift` @State). */
+data class LiveUi(
+    val models: List<BundledModel> = emptyList(),
+    val initializing: Boolean = true,
+    val selected: BundledModel? = null,
+    val compute: ComputeChoice = ComputeChoice.GPU,
+    val wantRun: Boolean = true,
+    val running: Boolean = false,
+    val loadingModel: Boolean = false,
+    val isSeg: Boolean = false,
+    val classNames: List<String> = emptyList(),
+    val backend: String = "",
+    val backendNote: String = "",
+    val capturing: Boolean = false,
+    val loadError: String? = null,
+)
+
+class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Analyzer {
+    private val catalog = YoloMasterApp.from(app).catalog
+    val tuning = Tuning()
+    val thermal = ThermalMonitor(app)
+    val camera = CameraController(app)
+
+    private val _ui = MutableStateFlow(LiveUi())
+    val ui: StateFlow<LiveUi> = _ui
+    private val _frame = MutableStateFlow(FrameResult())
+    val frame: StateFlow<FrameResult> = _frame
+
+    // inference-thread state
+    @Volatile private var detector: Detector? = null
+    private val running = AtomicBoolean(false)
+    private val maskRing = arrayOfNulls<Bitmap>(3)
+    private var ringIdx = 0
+    private var seq = 0L
+    private var loopWindowStart = 0L
+    private var loopFrames = 0
+    private var loopHz = 0.0
+    private val shutterArmed = AtomicBoolean(true)
+
+    init {
+        thermal.start()
+        viewModelScope.launch {
+            val models = withContext(Dispatchers.IO) { catalog.discover() }
+            val allow = dev.yolomaster.app.system.Prefs.allowCPU(app)
+            _ui.value = _ui.value.copy(models = models, initializing = false, selected = BundledModel.preferred(models))
+            if (!allow && _ui.value.compute == ComputeChoice.CPU) _ui.value = _ui.value.copy(compute = ComputeChoice.GPU)
+            if (_ui.value.wantRun) startLoop()
+        }
+    }
+
+    // ---- selection ----------------------------------------------------------------------------
+
+    fun selectModel(m: BundledModel) {
+        var c = _ui.value.compute
+        if (m.cpuOnly) c = ComputeChoice.CPU
+        _ui.value = _ui.value.copy(selected = m, compute = c)
+    }
+
+    fun selectCompute(c: ComputeChoice) { _ui.value = _ui.value.copy(compute = c) }
+
+    fun refreshModels() {
+        viewModelScope.launch {
+            val models = withContext(Dispatchers.IO) { catalog.discover(force = true) }
+            _ui.value = _ui.value.copy(models = models, selected = _ui.value.selected?.let { s -> models.firstOrNull { it.id == s.id } } ?: BundledModel.preferred(models))
+        }
+    }
+
+    // ---- run control ----------------------------------------------------------------------------
+
+    fun togglePlay() {
+        if (_ui.value.running || _ui.value.loadingModel) { _ui.value = _ui.value.copy(wantRun = false); suspendLoop() }
+        else { _ui.value = _ui.value.copy(wantRun = true); startLoop() }
+    }
+
+    /** Loads the model on the inference thread; frames are only processed once it is loaded. */
+    fun startLoop() {
+        val model = _ui.value.selected ?: return
+        if (running.get() || _ui.value.loadingModel) return
+        _ui.value = _ui.value.copy(loadingModel = true, loadError = null)
+        camera.analysisExecutor.execute {
+            detector?.close(); detector = null
+            val det = Detector.open(model, _ui.value.compute)
+            if (det == null) {
+                _ui.value = _ui.value.copy(loadingModel = false, running = false, wantRun = false, loadError = Detector.lastError)
+                return@execute
+            }
+            detector = det
+            seq = 0; loopFrames = 0; loopWindowStart = 0
+            running.set(true)
+            _ui.value = _ui.value.copy(
+                loadingModel = false, running = true, isSeg = det.isSeg, classNames = det.classNames,
+                backend = det.activeBackend, backendNote = det.backendNote,
+            )
+        }
+    }
+
+    /** `suspendLoop()`: stop, wipe the overlay and every stat; the thermal reading stays. */
+    fun suspendLoop() {
+        running.set(false)
+        camera.analysisExecutor.execute { detector?.close(); detector = null }
+        _ui.value = _ui.value.copy(running = false, loadingModel = false)
+        _frame.value = FrameResult(frameSize = _frame.value.frameSize)
+    }
+
+    /** Tab hidden / app backgrounded: stop but keep the intent. */
+    fun onHidden() { if (running.get() || _ui.value.loadingModel) suspendLoop() }
+    fun onShown() { if (_ui.value.wantRun && !running.get()) startLoop() }
+
+    // ---- the loop: runs inside analyze() on "ym-infer" -----------------------------------------
+
+    override fun analyze(image: ImageProxy) {
+        val det = detector
+        if (!running.get() || det == null) { image.close(); return }
+        val t0 = SystemClock.elapsedRealtimeNanos()
+        camera.noteFrame(image)
+        try {
+            val raw = det.forward(image)
+            image.close()
+            val t1 = SystemClock.elapsedRealtimeNanos()
+            val conf = tuning.conf; val iou = tuning.iou
+            val dets = raw.decode(conf, iou, 300)
+            val t2 = SystemClock.elapsedRealtimeNanos()
+            var mask: Bitmap? = null
+            if (det.isSeg && tuning.segOverlay != SegOverlayMode.Boxes && dets.isNotEmpty()) {
+                val slot = ringIdx; ringIdx = (ringIdx + 1) % maskRing.size
+                mask = raw.maskOverlay(dets.take(100), maxSide = 640, reuse = maskRing[slot])
+                if (mask != null) maskRing[slot] = mask
+            }
+            val t3 = SystemClock.elapsedRealtimeNanos()
+            val fwdWall = (t1 - t0) / 1e6
+            val pre = max(0.0, fwdWall - raw.inferMs - raw.decodeMs)
+            val inf = raw.inferMs
+            val dec = raw.decodeMs + (t2 - t1) / 1e6
+            val maskMs = (t3 - t2) / 1e6
+            val size = Size(raw.origW, raw.origH)
+            raw.close()
+            // loop rate over a 1 s window
+            val now = SystemClock.elapsedRealtime()
+            if (loopWindowStart == 0L) loopWindowStart = now
+            loopFrames++
+            if (now - loopWindowStart >= 1000) { loopHz = loopFrames * 1000.0 / (now - loopWindowStart); loopFrames = 0; loopWindowStart = now }
+            if (running.get()) _frame.value = FrameResult(dets, mask, size, pre, inf, dec, maskMs, loopHz, ++seq)
+        } catch (t: Throwable) {
+            Log.w(TAG, "frame failed: ${t.message}")
+            try { image.close() } catch (_: Throwable) {}
+        }
+        // ~30 fps pacing: the next delivered frame is then the freshest.
+        val spent = (SystemClock.elapsedRealtimeNanos() - t0) / 1_000_000
+        if (spent < 33) SystemClock.sleep(33 - spent)
+    }
+
+    // ---- shutter ----------------------------------------------------------------------------------
+
+    /**
+     * `captureFrame()`: full-res still cropped to the preview aspect, overlay baked, saved to the
+     * gallery. [onDone] gets true on success. Re-arms no sooner than 1.0 s after the tap.
+     */
+    fun capture(onDone: (Boolean) -> Unit) {
+        if (!shutterArmed.compareAndSet(true, false)) return
+        val t0 = SystemClock.elapsedRealtime()
+        val snap = _frame.value
+        val ui = _ui.value
+        _ui.value = ui.copy(capturing = true)
+        val drawBoxes = !(ui.isSeg && tuning.segOverlay == SegOverlayMode.Masks)
+        val drawMask = ui.isSeg && tuning.segOverlay != SegOverlayMode.Boxes
+        val style = tuning.style.kitStyle
+        val names = ui.classNames
+        camera.capturePhoto { proxy ->
+            viewModelScope.launch(Dispatchers.Default) {
+                var ok = false
+                try {
+                    val bmp = proxy?.use { decodeCropped(it, snap.frameSize) }
+                    if (bmp != null) {
+                        val s = bmp.height.toFloat() / snap.frameSize.height
+                        val scaled = snap.dets.map { d -> d.copy(x1 = d.x1 * s, y1 = d.y1 * s, x2 = d.x2 * s, y2 = d.y2 * s) }
+                        val canvas = Canvas(bmp)
+                        if (drawMask && snap.mask != null) {
+                            canvas.drawBitmap(snap.mask, null, Rect(0, 0, bmp.width, bmp.height), Paint(Paint.FILTER_BITMAP_FLAG))
+                        }
+                        Annotate.draw(canvas, bmp.width, scaled, names, style, drawBoxes)
+                        ok = GallerySaver.save(getApplication(), bmp)
+                        bmp.recycle()
+                    }
+                } catch (t: Throwable) { Log.w(TAG, "capture compose failed", t) }
+                // re-arm >= 1.0 s after the tap (the shutter sound is about that long)
+                val wait = 1000 - (SystemClock.elapsedRealtime() - t0)
+                if (wait > 0) kotlinx.coroutines.delay(wait)
+                _ui.value = _ui.value.copy(capturing = false)
+                shutterArmed.set(true)
+                withContext(Dispatchers.Main) { onDone(ok) }
+            }
+        }
+    }
+
+    /** Decode the JPEG still, rotated upright, center-cropped to the analysis frame's aspect. */
+    private fun decodeCropped(proxy: ImageProxy, frame: Size): Bitmap? {
+        val buf = proxy.planes[0].buffer
+        val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
+        val rot = proxy.imageInfo.rotationDegrees
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val w = bounds.outWidth; val h = bounds.outHeight
+        if (w <= 0 || h <= 0) return null
+        // crop in the UNROTATED image so that after rotation it has the upright frame's aspect
+        val uprightAspect = frame.width.toFloat() / frame.height
+        val cropAspect = if (rot == 90 || rot == 270) 1f / uprightAspect else uprightAspect
+        var cw = w; var ch = (w / cropAspect).roundToInt()
+        if (ch > h) { ch = h; cw = (h * cropAspect).roundToInt() }
+        val rect = Rect((w - cw) / 2, (h - ch) / 2, (w - cw) / 2 + cw, (h - ch) / 2 + ch)
+        val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        val decoder = BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false) ?: return null
+        var region = try { decoder.decodeRegion(rect, opts) } catch (oom: OutOfMemoryError) {
+            decoder.decodeRegion(rect, BitmapFactory.Options().apply { inSampleSize = 2; inPreferredConfig = Bitmap.Config.ARGB_8888 })
+        } finally { decoder.recycle() }
+        region ?: return null
+        if (rot != 0) {
+            val m = Matrix().apply { postRotate(rot.toFloat()) }
+            val r = Bitmap.createBitmap(region, 0, 0, region.width, region.height, m, true)
+            region.recycle(); region = r
+        }
+        return if (region.isMutable) region else region.copy(Bitmap.Config.ARGB_8888, true).also { region.recycle() }
+    }
+
+    override fun onCleared() {
+        running.set(false)
+        camera.analysisExecutor.execute { detector?.close(); detector = null }
+        camera.stop()
+        thermal.stop()
+    }
+
+    companion object { private const val TAG = "LiveVM" }
+}

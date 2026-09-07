@@ -13,6 +13,13 @@ public:
     // callers select the "-int8_ncnn" sibling (meta::ncnn_int8_sibling) and pass Int8 here.
     NcnnBackend(const std::string& param_path, const std::string& bin_path, int threads = 4,
                 bool use_vulkan = false, Precision precision = Precision::Auto);
+    // infer() == forward_raw(bgr, cfg) + nms_and_cap(candidates, ...). forward_raw is the "forward
+    // once, tune cheap" seam the app needs on its own: preprocess + extractor + candidate decode,
+    // filling candidates/cand_lb/cand_orig_*/proto* and pre_ms/infer_ms/post_ms (post_ms = decode
+    // only; infer() adds the NMS time on top). `decode = false` is the bench path (iOS
+    // `inferOnly`): the extractor still runs (ncnn computes on extract) but the output is not
+    // reshaped/decoded, so infer_ms is the pure kernel time and the cached candidates are cleared.
+    void forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode = true);
     std::vector<Detection> infer(const cv::Mat& bgr, const Config& cfg) override;
     Precision requested_precision() const { return requested_; }
     bool fp16_active() const { return fp16_; }   // what net_.opt actually runs with

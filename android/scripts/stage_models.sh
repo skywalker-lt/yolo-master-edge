@@ -1,13 +1,29 @@
 #!/usr/bin/env bash
-# Stage ncnn model dirs from the repo's (gitignored) models/ into the runtime's test
-# assets so the on-device harness can load them. Run before ./gradlew connectedAndroidTest.
+# Stage ncnn model dirs from the repo's (gitignored) models/ into a module's assets so the
+# on-device harness (:runtime) or the app (:app) can load them.
+#
+#   scripts/stage_models.sh                 # -> android/runtime/src/main/assets/models (harness)
+#   scripts/stage_models.sh --module app    # -> android/app/src/main/assets/models     (the app)
 #
 # Models are NOT committed (they ship as GitHub Release assets); this copies your local
-# working-tree copies into assets/ where the instrumented test reads them.
+# working-tree copies into assets/. Only the three runtime files are copied (param, bin,
+# metadata.yaml): quantizer leftovers (quant/, quant_manifest.json, __pycache__/, model_ncnn.py)
+# must never land in an APK.
 set -euo pipefail
 
+MODULE=runtime
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --module) MODULE="$2"; shift 2 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+case "$MODULE" in runtime|app) ;; *) echo "--module must be runtime or app" >&2; exit 2 ;; esac
+
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-DST="$REPO/android/runtime/src/main/assets/models"
+ASSETS="$REPO/android/$MODULE/src/main/assets"
+DST="$ASSETS/models"
 mkdir -p "$DST"
 
 # name-in-assets  <-  path-under-repo/models   (float models)
@@ -26,12 +42,16 @@ STAGE_INT8=(
   "esmoe_n_visdrone-int8_ncnn:esmoe_n_visdrone-int8_ncnn"
   "p03_v01n-int8_ncnn:p03_v01n-int8_ncnn"
 )
+FILES=(model.ncnn.param model.ncnn.bin metadata.yaml)
 
 stage_one() {  # name-in-assets  path-under-repo/models  kind
   local name="$1" rel="$2" kind="$3" src="$REPO/models/$2"
   if [ -d "$src" ]; then
-    rm -rf "$DST/$name"
-    cp -r "$src" "$DST/$name"
+    rm -rf "$DST/$name"; mkdir -p "$DST/$name"
+    for f in "${FILES[@]}"; do
+      [ -f "$src/$f" ] || { echo "ERROR: $src/$f missing" >&2; exit 1; }
+      cp "$src/$f" "$DST/$name/$f"
+    done
     echo "staged  $name  ($kind)"
   elif [ "$kind" = int8 ]; then
     echo "WARN: $src not found - build it with scripts/quantize_ncnn_int8.py (INT8 rows will be skipped)" >&2
@@ -41,8 +61,13 @@ stage_one() {  # name-in-assets  path-under-repo/models  kind
 }
 for pair in "${STAGE[@]}";      do stage_one "${pair%%:*}" "${pair##*:}" float; done
 for pair in "${STAGE_INT8[@]}"; do stage_one "${pair%%:*}" "${pair##*:}" int8;  done
+du -sh "$DST" | sed 's/^/assets: /'
 
-PROBE="$REPO/android/runtime/src/main/assets/probe.jpg"
-[ -f "$PROBE" ] || echo "NOTE: drop a test image at $PROBE (any scene with objects)"
-echo "      and a VisDrone-domain image at $REPO/android/runtime/src/main/assets/probe_visdrone.jpg (used for esmoe/mixture rows)"
-echo "done. now: cd android && ./gradlew :runtime:connectedAndroidTest"
+if [ "$MODULE" = runtime ]; then
+  PROBE="$ASSETS/probe.jpg"
+  [ -f "$PROBE" ] || echo "NOTE: drop a test image at $PROBE (any scene with objects)"
+  echo "      and a VisDrone-domain image at $ASSETS/probe_visdrone.jpg (used for esmoe/mixture rows)"
+  echo "done. now: cd android && gradle :runtime:connectedAndroidTest"
+else
+  echo "done. now: cd android && gradle :app:assembleRelease"
+fi
