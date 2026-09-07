@@ -8,6 +8,8 @@
 #include <map>
 #include <set>
 #include <filesystem>
+#include <sstream>
+#include <cstdlib>
 
 namespace fs = std::filesystem;
 
@@ -382,6 +384,81 @@ bool read_ncnn_yaml(const std::string& path, std::vector<std::string>& names, in
     names.clear();
     for (auto& kv : nm) names.push_back(kv.second);
     return !names.empty();
+}
+
+std::string NcnnParamScan::reason() const {
+    if (!ok) return "param file unreadable";
+    std::string r;
+    if (router_emulated())
+        r = "emulated-router fingerprint (1e-9 nudge x" + std::to_string(nudge_1e9) + ", 1e30 mask x" +
+            std::to_string(mask_1e30) + ", amax x" + std::to_string(router_amax) + ")";
+    if (fp16_overflow > 0) {
+        if (!r.empty()) r += "; ";
+        r += std::to_string(fp16_overflow) + " literal(s) overflow fp16";
+    }
+    return r;
+}
+
+NcnnParamScan scan_ncnn_param(const std::string& param_path) {
+    NcnnParamScan s;
+    std::ifstream f(param_path);
+    if (!f) return s;
+    std::string line;
+    if (!std::getline(f, line) || line.find("7767517") == std::string::npos) return s;   // magic
+    if (!std::getline(f, line)) return s;                                              // "layers blobs"
+    s.ok = true;
+    // ncnn writes floats with %e (always a '.' or an exponent); ints never do. Evaluating only
+    // float-looking tokens avoids false overflow hits on weight counts such as "6=147456".
+    auto eval_float = [&s](const std::string& v) {
+        if (v.find_first_of(".eE") == std::string::npos) return;
+        if (v == "1.000000e-9") { s.nudge_1e9++; return; }
+        if (v == "1.000000e30") { s.mask_1e30++; return; }
+        char* end = nullptr;
+        const double d = std::strtod(v.c_str(), &end);
+        if (end == v.c_str()) return;
+        const double a = std::fabs(d);
+        if (a > 65504.0) s.fp16_overflow++;
+        else if (a > 0.0 && a < 6.1035e-5) s.fp16_flush++;
+    };
+    while (std::getline(f, line)) {
+        if (line.empty()) continue;
+        std::istringstream ls(line);
+        std::string type, name;
+        int nin = 0, nout = 0;
+        if (!(ls >> type >> name >> nin >> nout)) continue;
+        s.layers++;
+        std::string tok;
+        for (int i = 0; i < nin + nout && (ls >> tok); ++i) {}   // skip blob names
+        if (type == "Reduction" && name.rfind("amax_", 0) == 0) s.router_amax++;
+        const bool quantizable =
+            (type == "Convolution" || type == "ConvolutionDepthWise" || type == "InnerProduct");
+        while (ls >> tok) {
+            const auto eq = tok.find('=');
+            if (eq == std::string::npos) continue;
+            const std::string key = tok.substr(0, eq), val = tok.substr(eq + 1);
+            if (quantizable && key == "8" && val != "0") s.int8_layers++;
+            if (!key.empty() && key[0] == '-') {           // array param "-23303=1,0" -> elements
+                std::istringstream vs(val);
+                std::string el;
+                while (std::getline(vs, el, ',')) eval_float(el);
+            } else {
+                eval_float(val);
+            }
+        }
+    }
+    return s;
+}
+
+bool read_ncnn_yaml_scalar(const std::string& path, const std::string& key, std::string& value) {
+    std::ifstream f(path);
+    if (!f) return false;
+    const std::string k = key + ":";
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty() || line[0] == ' ' || line[0] == '\t' || line[0] == '-') continue;   // top-level only
+        if (line.rfind(k, 0) == 0) { value = trim(line.substr(k.size())); return true; }
+    }
+    return false;
 }
 
 } // namespace meta

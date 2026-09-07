@@ -37,11 +37,35 @@ inline std::string detect_backend(const std::string& model) {
     return "";
 }
 
+// Resolve an ncnn model argument (dir or bare .param) plus a precision to its param/bin pair.
+// Precision::Int8 selects the "<name>-int8_ncnn" sibling (meta::ncnn_int8_sibling). A missing
+// sibling is a HARD error: an "int8" number must never silently come from a float model.
+inline bool resolve_ncnn_paths(const std::string& model, Precision precision,
+                               std::string& param, std::string& bin, std::string& err) {
+    namespace fs = std::filesystem;
+    const std::string m = (precision == Precision::Int8) ? meta::ncnn_int8_sibling(model) : model;
+    std::error_code ec;
+    if (fs::is_directory(m, ec)) {
+        param = (fs::path(m) / "model.ncnn.param").string();
+        bin   = (fs::path(m) / "model.ncnn.bin").string();
+    } else {
+        param = m;
+        bin = m.substr(0, m.rfind('.')) + ".bin";
+    }
+    if (!fs::exists(param, ec)) {
+        err = std::string(precision == Precision::Int8 ? "int8 model not found: " : "ncnn model not found: ") + param;
+        return false;
+    }
+    return true;
+}
+
 // Construct a backend. On failure returns nullptr and fills `err`. `backend` may be
 // "auto" (detected from the path). `device` is onnx-only ("cpu|cuda|coreml|trt").
+// `precision` is honoured by the ncnn backend only (see Precision in yolomaster.hpp).
 inline std::unique_ptr<Backend> make_backend(std::string model, std::string backend,
                                              int threads, const std::string& device,
-                                             std::string& resolved, std::string& err) {
+                                             std::string& resolved, std::string& err,
+                                             Precision precision = Precision::Auto) {
     namespace fs = std::filesystem;
     if (backend == "auto") {
         backend = detect_backend(model);
@@ -60,13 +84,9 @@ inline std::unique_ptr<Backend> make_backend(std::string model, std::string back
 #endif
         } else if (backend == "ncnn") {
 #ifdef USE_NCNN
-            std::string param = model, bin;
-            std::error_code ec;
-            if (fs::is_directory(model, ec)) {
-                param = (fs::path(model) / "model.ncnn.param").string();
-                bin   = (fs::path(model) / "model.ncnn.bin").string();
-            } else bin = param.substr(0, param.rfind('.')) + ".bin";
-            return std::make_unique<NcnnBackend>(param, bin, threads, want_gpu);   // want_gpu = Vulkan
+            std::string param, bin;
+            if (!resolve_ncnn_paths(model, precision, param, bin, err)) return nullptr;
+            return std::make_unique<NcnnBackend>(param, bin, threads, want_gpu, precision);   // want_gpu = Vulkan
 #else
             err = "built without ncnn backend"; return nullptr;
 #endif

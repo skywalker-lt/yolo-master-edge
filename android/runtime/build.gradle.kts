@@ -17,7 +17,7 @@ val opencvRoot: String = sdkPaths.getProperty("OPENCV_ANDROID_ROOT", System.gete
 android {
     namespace = "dev.yolomaster.ncnn"
     compileSdk = 34
-    ndkVersion = "26.3.11579264"
+    ndkVersion = "29.0.14206865" // r29: opencv-mobile 4.13 links __kmpc_dispatch_deinit, absent from the r26-r28 OpenMP runtime
 
     defaultConfig {
         minSdk = 24 // libc++fs + Vulkan 1.1

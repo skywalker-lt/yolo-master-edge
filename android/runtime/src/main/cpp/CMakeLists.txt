@@ -16,6 +16,13 @@ if(NOT NCNN_ANDROID_ROOT)
 endif()
 set(ncnn_DIR "${NCNN_ANDROID_ROOT}/${ANDROID_ABI}/lib/cmake/ncnn")
 find_package(ncnn REQUIRED)
+# The official prebuilt is built with NCNN_DISABLE_EXCEPTION/RTTI and exports
+# "-fno-rtti;-fno-exceptions" to every consumer. Our core (NcnnBackend throws on a bad
+# model, the JNI bridge catches and reports it as lastError) needs both, and ncnn itself
+# never throws, so dropping the exported flags is safe. A PRIVATE target_compile_options
+# would be emitted BEFORE the interface flags and lose; clearing the property is the
+# deterministic fix.
+set_property(TARGET ncnn PROPERTY INTERFACE_COMPILE_OPTIONS "")
 
 # ---- OpenCV (opencv-mobile Android: core + imgproc only) ----
 if(NOT OPENCV_ANDROID_ROOT)

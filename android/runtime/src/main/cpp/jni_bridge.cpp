@@ -3,16 +3,25 @@
 // It wraps exactly one seam from the shared C++ core: Backend::infer(cv::Mat, Config).
 // Nothing from the CLI driver (main.cpp), videoio, or the filesystem source layer is
 // pulled in. Robustness rules encoded here:
-//   * CPU path is fp32 (inherited from ncnn_backend.cpp:23-33) or ARM fp16 zeroes the
-//     mixture routing -> no detections. We never re-enable fp16 on CPU.
+//   * Precision is PER MODEL (policy lives in NcnnBackend, ncnn_backend.cpp): AUTO runs fp16 on
+//     armv8.2 CPUs for fp16-safe (dense) models and pins fp32 for the emulated-router mixture
+//     graphs, whose export constants (1e-9 / 1e30) are unrepresentable in fp16 and would zero
+//     the routing. The decision is read from the .param fingerprint, never from the caller.
+//     An explicit FP16 the model cannot honour is downgraded and explained in backendNote.
+//   * INT8 loads the pre-quantized "<name>-int8_ncnn" sibling (mixed per-layer int8). It is a
+//     CPU story (no ncnn Vulkan int8 kernels) and a missing sibling is a hard init failure -
+//     an int8 number must never silently come from a float model.
 //   * Vulkan is verified available (get_gpu_count) before it is requested; otherwise we
-//     transparently fall back to CPU-fp32 (reported via activeBackend).
+//     transparently fall back to the CPU choice. activeBackend reports the REAL resolved
+//     precision from the backend (ncnn-CPU-fp16 / -fp32 / -int8+fp16 / -int8+fp32 / ncnn-Vulkan
+//     / ncnn-Vulkan-fp32), not the requested flags.
 //   * Every entry point is try/catch -> typed error string, never a native crash.
 #include <jni.h>
 #include <android/bitmap.h>
 #include <android/log.h>
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -38,7 +47,9 @@ namespace {
 struct Handle {
     std::unique_ptr<NcnnBackend> be;
     Config cfg;
-    std::string activeBackend;
+    std::string activeBackend;   // the backend's real active_ep (resolved precision), not the request
+    std::string note;            // backend ep_note: why a requested precision was downgraded ("" if none)
+    Precision precision = Precision::Auto;
     bool vulkan = false;
 };
 
@@ -101,32 +112,49 @@ extern "C" {
 
 JNIEXPORT jlong JNICALL
 Java_dev_yolomaster_ncnn_YoloMasterNcnn_nativeInit(JNIEnv* env, jobject, jstring jModelDir,
-                                                   jboolean useVulkan, jint threads) {
+                                                   jboolean useVulkan, jint threads, jint precisionCode) {
     g_last_error.clear();
-    const std::string dir = jstr(env, jModelDir);
+    // precisionCode is the Kotlin Precision.native value (== C++ Precision): 0 auto, 1 fp32, 2 fp16, 3 int8.
+    const Precision precision = (precisionCode >= 0 && precisionCode <= 3)
+                                    ? static_cast<Precision>(precisionCode) : Precision::Auto;
+    std::string dir = jstr(env, jModelDir);
+    if (precision == Precision::Int8) dir = meta::ncnn_int8_sibling(dir);   // "<name>-int8_ncnn"
     const std::string param = dir + "/model.ncnn.param";
     const std::string bin = dir + "/model.ncnn.bin";
+    if (precision == Precision::Int8 && !std::ifstream(param).good()) {
+        g_last_error = "int8 model dir not found: " + dir;   // hard fail: never a silent float fallback
+        LOGE("%s", g_last_error.c_str());
+        return 0;
+    }
 
     bool haveVk = false;
-    if (useVulkan) {
+    if (useVulkan && precision == Precision::Int8) {
+        LOGI("Vulkan requested with int8: forcing CPU (no ncnn Vulkan int8 kernels)");
+    } else if (useVulkan) {
         haveVk = acquire_gpu();
-        if (!haveVk) LOGI("Vulkan requested but unavailable; using CPU-fp32");
+        if (!haveVk) LOGI("Vulkan requested but unavailable; using CPU");
     }
     const int th = threads > 0 ? (int)threads : std::max(1, ncnn::get_big_cpu_count());
 
     try {
         auto h = std::make_unique<Handle>();
+        h->precision = precision;
+        h->be = std::make_unique<NcnnBackend>(param, bin, th, haveVk, precision);
+        // The backend may decline Vulkan for this model; keep the process-global GPU refcount honest.
+        const bool vkActive = h->be->active_ep.rfind("ncnn-Vulkan", 0) == 0;
+        if (haveVk && !vkActive) { release_gpu(); haveVk = false; }
         h->vulkan = haveVk;
-        h->be = std::make_unique<NcnnBackend>(param, bin, th, haveVk);
-        // Build the inference Config from the model's own metadata (mirrors main.cpp:163-174):
+        // Build the inference Config from the model's own metadata (mirrors main.cpp):
         // the ncnn graph bakes attention token counts at the training imgsz, so it is fixed.
         Config& c = h->cfg;
         c.imgsz = h->be->fixed_imgsz > 0 ? h->be->fixed_imgsz
                   : (h->be->meta_imgsz > 0 ? h->be->meta_imgsz : 640);
         c.class_names = h->be->meta_names;  // may be empty -> labels fall back to the class index
-        h->activeBackend = haveVk ? "ncnn-Vulkan" : "ncnn-CPU-fp32";
-        LOGI("init ok: %s imgsz=%d classes=%zu threads=%d", h->activeBackend.c_str(), c.imgsz,
-             c.class_names.size(), th);
+        h->activeBackend = h->be->active_ep;   // the REAL resolved precision, not the requested flags
+        h->note = h->be->ep_note;
+        LOGI("init ok: %s requested=%s imgsz=%d classes=%zu threads=%d%s%s", h->activeBackend.c_str(),
+             precision_name(precision), c.imgsz, c.class_names.size(), th,
+             h->note.empty() ? "" : " note=", h->note.c_str());
         return reinterpret_cast<jlong>(h.release());
     } catch (const std::exception& e) {
         g_last_error = e.what();
@@ -222,6 +250,12 @@ JNIEXPORT jstring JNICALL
 Java_dev_yolomaster_ncnn_YoloMasterNcnn_nativeActiveBackend(JNIEnv* env, jobject, jlong handle) {
     auto* h = reinterpret_cast<Handle*>(handle);
     return env->NewStringUTF(h ? h->activeBackend.c_str() : "");
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_yolomaster_ncnn_YoloMasterNcnn_nativeBackendNote(JNIEnv* env, jobject, jlong handle) {
+    auto* h = reinterpret_cast<Handle*>(handle);
+    return env->NewStringUTF(h ? h->note.c_str() : "");
 }
 
 JNIEXPORT jobjectArray JNICALL

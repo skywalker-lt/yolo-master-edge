@@ -47,6 +47,31 @@ struct Config {
     int num_classes() const { return static_cast<int>(class_names.size()); }
 };
 
+// ---- numeric precision policy (ncnn; other backends ignore it) ----
+// Auto derives fp16-vs-fp32 from the model itself (meta::scan_ncnn_param); explicit modes that a
+// model cannot honour are DOWNGRADED and explained in Backend::ep_note, never silently zero-det.
+// Int8 selects the pre-quantized "<name>-int8_ncnn" sibling directory (meta::ncnn_int8_sibling).
+// The integer values are the JNI ABI (android/runtime): keep them stable.
+enum class Precision { Auto = 0, Fp32 = 1, Fp16 = 2, Int8 = 3 };
+inline const char* precision_name(Precision p) {
+    switch (p) {
+        case Precision::Fp32: return "fp32";
+        case Precision::Fp16: return "fp16";
+        case Precision::Int8: return "int8";
+        default: return "auto";
+    }
+}
+// case-insensitive; false on an unknown spelling
+inline bool parse_precision(const std::string& s, Precision& out) {
+    std::string t;
+    for (char c : s) t += (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    if (t == "auto") { out = Precision::Auto; return true; }
+    if (t == "fp32" || t == "float32") { out = Precision::Fp32; return true; }
+    if (t == "fp16" || t == "half") { out = Precision::Fp16; return true; }
+    if (t == "int8") { out = Precision::Int8; return true; }
+    return false;
+}
+
 const std::vector<std::string>& visdrone_classes();  // 10
 const std::vector<std::string>& sku110k_classes();   // 1
 
@@ -93,6 +118,48 @@ bool read_ncnn_yaml(const std::string& yaml_path, std::vector<std::string>& name
 // same, additionally reading the `end2end:` key (v26.08 sidecars; false when absent)
 bool read_ncnn_yaml(const std::string& yaml_path, std::vector<std::string>& names, int& imgsz,
                     bool& end2end);
+
+// Static scan of an ncnn .param text (45-190 KB of ASCII, sub-millisecond) for numeric hazards.
+// pnnx emits generic layer names, but the emulated MoE router (scripts/export_ncnn_mixture.py)
+// leaves an exact fingerprint in the graph: literal 1e-9 mask nudges, 1e30 expert masks and
+// "amax_*" Reduction layers. Both constants are unrepresentable in fp16 (1e-9 flushes to 0 under
+// ARM FZ16 and breaks the ceil() one-hot; 1e30 overflows fp16's 65504 max), so such models must
+// stay fp32 on CPU. Dense models carry none of them. int8 layers (ncnn2int8 output) carry a
+// non-zero "8=" param on Convolution / ConvolutionDepthWise / InnerProduct.
+// NOTE: fp16_flush counts benign sub-normal guards too (e.g. a "+1e-6" denominator); it is
+// informational only and does not make a model unsafe - p03_v01n has three and runs fp16 fine.
+struct NcnnParamScan {
+    bool ok = false;         // file opened and header parsed
+    int layers = 0;
+    int router_amax = 0;     // Reduction layers named amax_*
+    int nudge_1e9 = 0;       // "=1.000000e-9" literals (router mask nudge)
+    int mask_1e30 = 0;       // "=1.000000e30" literals (router expert mask)
+    int fp16_overflow = 0;   // other float literals with |v| > 65504 (e.g. FLT_MAX clamps)
+    int fp16_flush = 0;      // other float literals with 0 < |v| < 6.1035e-5 (informational)
+    int int8_layers = 0;     // quantized layers
+    bool router_emulated() const { return nudge_1e9 > 0 || mask_1e30 > 0 || router_amax > 0; }
+    bool fp16_safe() const { return ok && !router_emulated() && fp16_overflow == 0; }
+    bool is_int8() const { return int8_layers > 0; }
+    std::string reason() const;   // why-not-fp16, for ep_note ("" when fp16_safe())
+};
+NcnnParamScan scan_ncnn_param(const std::string& param_path);   // never throws; ok=false on failure
+// One top-level scalar "key: value" from a metadata.yaml (false when absent).
+bool read_ncnn_yaml_scalar(const std::string& yaml_path, const std::string& key, std::string& value);
+// Pure string rule shared by the factory, the CLI and the JNI bridge:
+//   "<name>_ncnn"      -> "<name>-int8_ncnn"   (a dir already ending in -int8_ncnn is returned as-is)
+//   "x.ncnn.param"     -> "x-int8.param"       (bare pair; the .bin is derived by the caller)
+inline std::string ncnn_int8_sibling(const std::string& model_path) {
+    auto ends_with = [](const std::string& a, const std::string& suf) {
+        return a.size() >= suf.size() && a.compare(a.size() - suf.size(), suf.size(), suf) == 0;
+    };
+    std::string p = model_path;
+    while (p.size() > 1 && (p.back() == '/' || p.back() == '\\')) p.pop_back();
+    if (ends_with(p, "-int8_ncnn") || ends_with(p, "-int8.param")) return p;
+    if (ends_with(p, ".ncnn.param")) return p.substr(0, p.size() - 11) + "-int8.param";
+    if (ends_with(p, ".param")) return p.substr(0, p.size() - 6) + "-int8.param";
+    if (ends_with(p, "_ncnn")) return p.substr(0, p.size() - 5) + "-int8_ncnn";
+    return p + "-int8_ncnn";
+}
 }
 
 // ---- versatile input source ----

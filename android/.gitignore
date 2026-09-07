@@ -12,4 +12,5 @@ sdk-paths.properties
 # Staged model payloads and test images (ship as Release assets, not tracked)
 runtime/src/main/assets/models/*/
 runtime/src/main/assets/probe.jpg
+runtime/src/main/assets/probe_visdrone.jpg
 runtime/src/androidTest/assets/

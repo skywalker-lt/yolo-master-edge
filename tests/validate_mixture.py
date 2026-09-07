@@ -128,6 +128,9 @@ def main():
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--conf", type=float, default=0.25, help="must match the export's --conf (reference predict)")
     ap.add_argument("--only", default="")
+    ap.add_argument("--ncnn-fp16", action="store_true",
+                    help="run the ncnn raw dump with fp16 packed/storage/arithmetic enabled. NO-OP ON x86 "
+                         "(ncnn's fp16 kernels are the armv8.2 path): only an ARM/Jetson run certifies fp16.")
     args = ap.parse_args()
 
     import onnxruntime as ort
@@ -280,13 +283,17 @@ def main():
             if (nsib / "model.ncnn.param").exists():
                 dump = Path(__file__).parent / "ncnn_rawdump"
                 if not dump.exists():
+                    import os
                     root = Path(__file__).resolve().parent.parent
+                    # NCNN_ROOT overrides the vendored SDK (e.g. third_party/ncnn-x86-20260526, the
+                    # from-source build that actually runs on an Ubuntu-20.04 host).
+                    ncnn_root = Path(os.environ.get("NCNN_ROOT", str(root / "third_party" / "ncnn")))
                     subprocess.run(["g++", "-O2", "-std=c++17",
-                                    f"-I{root}/third_party/ncnn/include/ncnn",
+                                    f"-I{ncnn_root}/include/ncnn",
                                     str(Path(__file__).parent / "ncnn_rawdump.cpp"),
                                     "-o", str(dump),
-                                    f"-L{root}/third_party/ncnn/lib", "-lncnn",
-                                    f"-Wl,-rpath,{root}/third_party/ncnn/lib", "-fopenmp"],
+                                    f"-L{ncnn_root}/lib", "-lncnn",
+                                    f"-Wl,-rpath,{ncnn_root}/lib", "-fopenmp"],
                                    check=True)
                 maxd = 0.0
                 for stem in stems:
@@ -294,7 +301,8 @@ def main():
                     blob_n, _ = preprocess(img, args.imgsz)
                     fin, fout = Path(tmp) / "in.f32", Path(tmp) / "out.f32"
                     blob_n[0].astype(np.float32).tofile(fin)
-                    r = subprocess.run([str(dump), str(nsib / "model.ncnn.param"),
+                    r = subprocess.run([str(dump)] + (["--fp16"] if args.ncnn_fp16 else []) +
+                                       [str(nsib / "model.ncnn.param"),
                                         str(nsib / "model.ncnn.bin"), str(fin),
                                         "3", str(args.imgsz), str(args.imgsz), str(fout)],
                                        capture_output=True, text=True)
