@@ -72,11 +72,14 @@ class Detector private constructor(
          * Returns null (with the reason in [lastError]) when the model cannot be loaded.
          */
         fun open(model: BundledModel, compute: ComputeChoice, threads: Int = DEFAULT_THREADS, warmup: Boolean = true): Detector? {
-            YoloMasterNcnn.setPowersave(2)
+            // threads == 0: every core, no pinning (lets the scheduler dodge the camera HAL's threads);
+            // otherwise pin the OpenMP team to the big cores as the S26 bench showed is optimal.
+            val nThreads = if (threads <= 0) Runtime.getRuntime().availableProcessors() else threads
+            YoloMasterNcnn.setPowersave(if (threads <= 0) 0 else 2)
             val rt = YoloMasterNcnn()
             val useVulkan = compute == ComputeChoice.GPU && !model.cpuOnly
             val precision = if (model.isInt8) Precision.INT8 else Precision.AUTO
-            if (!rt.init(model.dir.absolutePath, useVulkan = useVulkan, threads = threads, precision = precision)) {
+            if (!rt.init(model.dir.absolutePath, useVulkan = useVulkan, threads = nThreads, precision = precision)) {
                 lastError = rt.lastError
                 Log.w(TAG, "init failed for ${model.id}: $lastError")
                 rt.close()
@@ -91,7 +94,7 @@ class Detector private constructor(
                 gray.recycle()
                 Log.i(TAG, "opened ${model.id} on ${rt.activeBackend} threads=$threads warmup=${"%.1f".format(warm)} ms note='${rt.backendNote}'")
             }
-            return Detector(rt, model, compute, threads, warm)
+            return Detector(rt, model, compute, nThreads, warm)
         }
 
         /** Thread-local like the runtime's own lastError; read right after a failed open. */

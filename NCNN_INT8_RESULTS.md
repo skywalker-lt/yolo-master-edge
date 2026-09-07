@@ -217,3 +217,38 @@ milestone). Vulkan latency was not part of this run (both harnesses were CPU-onl
 they now carry a `vulkan` variant / row (`ncnn_bench --variants ...,vulkan`, `LatencyBenchTest`
 `useVulkan=true`, both reporting `first_ms=` for the pipeline-compile first inference), pending a
 device run; until then the app's Bench tab is the only GPU-vs-CPU measurement.
+
+### GPU (Vulkan) vs CPU, from the app's Bench tab (MEASURED on the S26, 2026-09-08, cold sweep,
+warmup 10 / 50 timed, pure model time, medians)
+
+| model | GPU (ncnn-Vulkan) | CPU fp16 | CPU int8+fp16 |
+|---|---|---|---|
+| v0.1-seg-n | **54.4** | 84.9 | 74.4 |
+| p03_v01n | **47.1** | 71.9 | 52.6 |
+| esmoe_n_visdrone | 43.4 | 52.6 | **36.7** |
+| moa-n (fp32 pinned on both) | **80.4** | 140.8 | n/a |
+
+Vulkan beats CPU fp16 on every float model (1.2-1.75x) despite the 16-40 MatMul/Tile layers
+that fall back to CPU inside the graph; mixed-INT8 on CPU still beats the GPU on esmoe. The
+CPU rows match the standalone `ncnn_bench` numbers (seg 84.9 vs 87.0, p03 71.9 vs 71.5), so the
+app's thread pinning works. GPU is therefore the right default unit for the float models. A
+first Live-tab run on GPU showed 222 ms model time for seg-n, i.e. 4x the bench number: a
+Live-path contention effect (camera pipeline + real-time backdrop blur on the same GPU), under
+investigation; it is not a Vulkan property of the SoC.
+
+### Live-tab speed on the S26 is thermal, not runtime (MEASURED, 2026-09-08)
+
+With the camera open, the app's Live tab ran seg-N at 222-280 ms model time on CPU fp16 (4-7 fps)
+and about 8 fps on Vulkan, for every thread setting (1/2/4/all), while the same models bench at
+85 ms (CPU) / 54 ms (GPU). The HUD diagnostics explain it: thermal headroom 0.98 (1.0 = the
+severe-throttling threshold) and the prime-core clock at 1382-1497 MHz against
+`cpuinfo_max_freq` = 4,742,400 kHz, i.e. the cores were clamped to ~30% of their ceiling.
+85 ms x (4.74 / 1.45) = 278 ms, which is the Live number. Camera pipeline + continuous inference
++ screen + USB charging push a Samsung flagship into its clamp within a minute; the bench's
+cold-sweep numbers are the first-seconds performance only. Consequences: (1) under the clamp the
+GPU is the most efficient unit (8 vs 5-7 fps), so GPU stays the default; (2) the Sustained bench
+mode (3 min, last-quarter median + throttle %) is the number to quote for this device; (3) the
+Live HUD now flags `throttled` (headroom >= 0.9, red tachometer) so a slow reading is never
+mistaken for a runtime defect. Also measured: moa-n (VisDrone-trained mixture model) fires ~287
+boxes at conf 0.25 on an indoor scene on every platform (CLI 287, EsMoE 0, seg-N 15): out-of-domain
+model behaviour, not an app bug.

@@ -110,9 +110,19 @@ class CameraController(private val context: Context) {
     private fun bind(p: ProcessCameraProvider, owner: LifecycleOwner, analyzer: ImageAnalysis.Analyzer) {
         p.unbindAll()
         val ratio16x9 = AspectRatioStrategy(AspectRatio.RATIO_16_9, AspectRatioStrategy.FALLBACK_RULE_AUTO)
-        val preview = Preview.Builder()
-            .setResolutionSelector(ResolutionSelector.Builder().setAspectRatioStrategy(ratio16x9).build())
-            .build()
+        val previewBuilder = Preview.Builder()
+            .setResolutionSelector(
+                ResolutionSelector.Builder().setAspectRatioStrategy(ratio16x9)
+                    .setResolutionStrategy(ResolutionStrategy(Size(1280, 720), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)).build(),
+            )
+        // The iOS app turns video HDR off for latency; here the equivalents are the HAL's per-frame
+        // stabilization / noise reduction / edge enhancement, which burn CPU+GPU the model needs.
+        Camera2Interop.Extender(previewBuilder)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            .setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
+            .setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
+        val preview = previewBuilder.build()
         val analysisBuilder = ImageAnalysis.Builder()
             .setResolutionSelector(
                 ResolutionSelector.Builder().setAspectRatioStrategy(ratio16x9)
@@ -124,6 +134,9 @@ class CameraController(private val context: Context) {
         // Lock 30 fps and count sensor frames (dropped frames never reach analyze()).
         Camera2Interop.Extender(analysisBuilder)
             .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
+            .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            .setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
+            .setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
             .setSessionCaptureCallback(object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
                     val now = SystemClock.elapsedRealtime()
