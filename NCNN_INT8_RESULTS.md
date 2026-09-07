@@ -161,6 +161,14 @@ mixed-INT8 beat fp16 there - need the arm64 device:
    high thread counts (LPDDR-bandwidth bound, as on Orin: +8.1% @1T, +6.5% @2T, tie @6T) is a
    legitimate result.
 
+### The app (2026-09-08)
+
+`android/app` is the Android port of the iOS app (Live / Photo / Bench / Settings), built on the
+pod as `android/app/build/outputs/apk/release/app-release.apk` and shipped in the S26 bundle with
+`run_s26_app_install.sh`. Its Bench tab sweeps every bundled model over GPU (Vulkan) and CPU with
+the same warmup/iters protocol, so the GPU-vs-CPU-fp16-vs-INT8 comparison on the phone comes
+straight out of the app (History + CSV share). Default unit = GPU; INT8 entries force CPU.
+
 ## 5. Samsung S26 results (MEASURED, 2026-09-08)
 
 Device: Samsung S26, arm64, ncnn caps asimdhp/asimddp/i8mm all present, `get_big_cpu_count()=2`
@@ -205,5 +213,7 @@ App-process harness (`LatencyBenchTest`, 50 frames, medians): at 1 thread seg fp
 and "big" threads every row ran 2-4x slower (500-680 ms) because the instrumentation process
 has no core affinity and its OpenMP team migrates off the prime cores. This is the reason the
 app runtime must call `ncnn::set_cpu_powersave(2)` and default to 2 threads (done in the app
-milestone). Vulkan latency was not measured by these harnesses (CPU-only by design); the app's
-Bench tab measures GPU vs CPU.
+milestone). Vulkan latency was not part of this run (both harnesses were CPU-only at the time);
+they now carry a `vulkan` variant / row (`ncnn_bench --variants ...,vulkan`, `LatencyBenchTest`
+`useVulkan=true`, both reporting `first_ms=` for the pipeline-compile first inference), pending a
+device run; until then the app's Bench tab is the only GPU-vs-CPU measurement.

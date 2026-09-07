@@ -20,7 +20,65 @@ yet. A future app module depends on `:runtime`.
     "ncnn-CPU-int8+fp32" | "ncnn-CPU-int8+fp16" | "ncnn-Vulkan" | "ncnn-Vulkan-fp32"),
     `backendNote` (why a requested precision was downgraded), `lastError`, `close()`
   - `Precision { AUTO, FP32, FP16, INT8 }` - see "Precision modes and mixed-INT8" below
-- An instrumented parity/robustness harness (`ParityTest`).
+  - the app-shape API (the iOS Kit contract) - see "Forward once, tune cheap" below:
+    `forwardRaw(bitmap, confFloor) -> RawOutput`, `forwardRaw(rgbaBuffer, w, h, rowStride, crop,
+    rotationDegrees, confFloor) -> RawOutput`, `RawOutput.decode(conf, iou, maxDet)`,
+    `RawOutput.maskOverlay(dets, maxSide, alpha, reuse) -> Bitmap?`, `inferOnly(bitmap) -> ms`,
+    `isSeg`, `classNames`, `imgsz`, `lastTimings`, `YoloMasterNcnn.setPowersave(mode)`,
+    `YoloMasterNcnn.palette` / `classColor(i)`
+- An instrumented parity/robustness harness (`ParityTest`, `SegRawTest`, `LatencyBenchTest`).
+
+## Forward once, tune cheap (the app-shape API)
+
+The harness shape (`infer` / `inferSeg`) does forward + NMS in one call. An app wants the iOS
+Kit shape instead: one forward per frame, then arbitrarily many cheap re-decodes (the Photo
+tab's conf/IoU sliders) and mask re-renders at display size (the Live overlay), with nothing
+big crossing JNI at 30 fps. That is `RawOutput`:
+
+```kotlin
+val rt = YoloMasterNcnn()
+YoloMasterNcnn.setPowersave(2)                       // on the inference thread, BEFORE init
+rt.init(dir, useVulkan = true, threads = 2)
+rt.forwardRaw(bitmap, confFloor = 0.05f).use { raw ->  // forward + candidate decode, no NMS
+    val dets = raw.decode(conf = 0.25f, iou = 0.45f)  // same C++ nms_and_cap as infer()
+    val mask = raw.maskOverlay(dets, maxSide = 640)   // premultiplied ARGB_8888, null on det models
+    // raw.preMs / inferMs / decodeMs / origW / origH / candidateCount / isSeg
+}
+```
+
+- `RawOutput` is a **native handle** (`AutoCloseable`): the candidates (score >= `confFloor`)
+  and the segmentation proto are moved out of the backend with zero copies and live on the
+  native heap, not the Java heap the Photo bitmaps need. A seg raw is ~3.3 MB proto + up to
+  ~1.6 MB candidates, a det raw <= 0.4 MB. `close()` is idempotent; a leaked raw is freed by the
+  finalizer with a `YMNcnn` warning. Decode and mask need **no model handle**: a screen can
+  close the runtime (releasing Vulkan) and keep its raws.
+- `decode(conf, iou, maxDet)` returns `Detection`s with `candIndex` set (the candidate each
+  came from); `maskOverlay(dets, ...)` reads that index, so masks are rendered for exactly the
+  chosen subset and no coefficient array ever crosses JNI. The overlay is rendered by the
+  sized `seg_overlay` overload in `cpp/src/common.cpp` at `orig * min(1, maxSide/max(orig))`
+  (same box clipping and smoothstep edge as the CLI) and written **premultiplied** (Android
+  composites premultiplied; straight RGBA would render the tints too bright). Pass `reuse` (a
+  mutable ARGB_8888 bitmap of the same size) to avoid per-frame allocation.
+- `forwardRaw(ByteBuffer, ...)` takes the CameraX `ImageAnalysis` RGBA_8888 frame directly
+  (`planes[0].buffer` must be direct, `planes[0].rowStride`, `cropRect`,
+  `imageInfo.rotationDegrees`): crop first, then rotate, so `origW/origH` and every box are in
+  the upright frame the preview shows. The RGBA->BGR conversion is the single copy and the
+  buffer is not retained: `imageProxy.close()` right after the call.
+- `inferOnly(bitmap)` is the kernel-only number for benchmarks (letterbox + extractor, no
+  decode, no NMS); `lastTimings` gives `preMs / inferMs / postMs` of the last forward (after
+  `infer()` `postMs` = decode + NMS, after `forwardRaw()` decode only). `isSeg` reads
+  `metadata.yaml` `task:` (missing = detect) without a forward; `imgsz` is the model's fixed
+  input size.
+
+**Thread policy.** The runtime is not thread-safe: own it from ONE inference thread (a
+single-thread executor). On phones with two prime cores the fastest configuration is
+`threads = 2` on those cores, but an app process has no affinity by default and ran 2-4x
+slower than the shell bench at >= 2 threads. `YoloMasterNcnn.setPowersave(2)`
+(`ncnn::set_cpu_powersave`, process-global) pins the **calling** thread and the OpenMP team
+ncnn spawns from it to the big cores, so call it on the inference thread before `init` and
+pass `threads = 2` explicitly (`threads = 0` still means "ncnn's big-core count"). The first
+Vulkan forward includes the pipeline/shader build: run one warm-up forward behind a loading
+card and do not count it.
 
 ## Robustness model (why this is not a naive ncnn wrapper)
 
@@ -93,7 +151,13 @@ The harness (`ParityTest`) asserts:
 - a missing model fails with an error, not a crash; `INT8` with no `-int8_ncnn` sibling
   fails with an error naming int8 (never a silent float fallback).
 
-Latencies are logged under the `ParityTest` / `YMNcnn` tags (`adb logcat`).
+`SegRawTest` covers the app-shape API on `v0.1-seg-N`: `forwardRaw` + `decode(0.25, 0.45)`
+equals `infer()` box for box (1e-3) on CPU and on Vulkan (det count within +/-1 of CPU when a
+GPU exists), the mask overlay at `maxSide = 640` is non-empty and premultiplied, the direct-RGBA
+path equals the Bitmap path, and `setPowersave(2)` + `threads = 2` leaves the detections
+unchanged.
+
+Latencies are logged under the `ParityTest` / `SegRawTest` / `YMNcnn` tags (`adb logcat`).
 
 ## Precision modes and mixed-INT8
 
@@ -130,18 +194,49 @@ android/
   settings.gradle.kts  build.gradle.kts  gradle.properties
   sdk-paths.example.properties            # template (real one gitignored)
   scripts/stage_models.sh
+  app/                                    # com.android.application = the YOLO-Master app (Compose)
+    build.gradle.kts                      # Compose 1.6 / Kotlin 1.9.24, CameraX 1.3.4, Haze 0.7.3
+    src/main/assets/models/               # staged by scripts/stage_models.sh --module app (gitignored)
+    src/main/kotlin/dev/yolomaster/app/
+      ui/{live,photo,bench,settings}/     # the four tabs of the iOS app, screen for screen
+      ui/{hud,overlay,common,theme}/      # StatsHUD widgets, the 5 box styles, materials, tokens
+      detect/Detector.kt                  # iOS-Kit-shaped wrapper: open/forward/decode/maskOverlay/inferOnly
+      model/, system/                     # model catalog + naming, haptics/thermal/gallery/picker
   runtime/                                # com.android.library = the runtime
     build.gradle.kts
     src/main/cpp/{CMakeLists.txt, jni_bridge.cpp}
-    src/main/kotlin/dev/yolomaster/ncnn/{YoloMasterNcnn,Types}.kt
+    src/main/kotlin/dev/yolomaster/ncnn/{YoloMasterNcnn,RawOutput,Types}.kt
     src/main/assets/models/.gitkeep       # staged models land here (payloads gitignored)
-    src/androidTest/kotlin/.../ParityTest.kt
+    src/androidTest/kotlin/.../{ParityTest,SegRawTest,LatencyBenchTest}.kt
 ```
 
 The `cpp/` core is not duplicated; `runtime/src/main/cpp/CMakeLists.txt` compiles
 `../../../../../cpp/src/{common,ncnn_backend,stb_impl}.cpp` directly, the same way the iOS
 app reuses `mac/Sources/YOLOMasterKit`.
 
+## The app (`:app`)
+
+A function-for-function port of the iOS app (`dev/ios`): tabs Live (CameraX preview + async
+overlay, lens stops, tap-to-focus, torch, full-res shutter with the overlay baked and saved to
+`Pictures/YOLO-Master`, stats HUD with the thermal tachometer), Photo (up to 100 images, 3-up
+gallery / zoomable pager, conf/IoU retune from cached raw outputs, export), Bench (cold sweep of
+every model x GPU/CPU, sustained runs with sparkline + thermal bar, history, CSV share) and
+Settings (about, licenses, privacy, the CPU toggle, custom model import, erase history).
+
+Defaults: compute = GPU (ncnn Vulkan; fp16 for fp16-safe models, fp32 pinned for the
+router-emulated mixture models), 2 CPU threads pinned to the big cores, INT8 siblings listed as
+their own models (`YOLO-Master-<stem>-int8`, CPU only). Build:
+
+```
+scripts/stage_models.sh --module app       # copies the 7 model dirs into app assets (~67 MB)
+gradle :app:assembleRelease                # -> app/build/outputs/apk/release/app-release.apk
+adb install -r -g app/build/outputs/apk/release/app-release.apk
+```
+
+`local.properties` may carry `YM_KEYSTORE=/path/to/dev.jks` (+ `YM_KEYSTORE_PASSWORD`,
+`YM_KEY_ALIAS`, `YM_KEY_PASSWORD`) so release builds from one machine install over each other;
+without it the AGP debug key is used.
+
 ## Not in this milestone
 
-App UI, CameraX/live video, UoMoE-N ncnn export, AAR publishing, upstream PR.
+UoMoE-N ncnn export, AAR publishing, Play Store signing, upstream PR.

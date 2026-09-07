@@ -11,6 +11,10 @@ struct Detection {
     float conf = 0.f;
     cv::Rect2f box;               // original-image pixel coords (float, sub-pixel precise)
     std::vector<float> mask_coeffs; // segmentation mask coefficients (empty for detection models)
+    // Index into the RawDet pool nms_and_cap() was run on (-1 when not produced by it). Lets a
+    // cached-raw consumer (the Android RawOutput) re-render masks for a chosen subset by index
+    // instead of shipping mask_coeffs across the JNI boundary; the CLI ignores it.
+    int cand_index = -1;
 };
 
 // Pre-NMS candidate (decoded to original-image px, unclipped). The GUI caches these after one forward
@@ -106,6 +110,14 @@ void draw(cv::Mat& img, const std::vector<Detection>& dets, const Config& cfg);
 cv::Mat seg_overlay(const std::vector<Detection>& dets, const std::vector<float>& proto,
                     int pc, int ph, int pw, const LetterboxInfo& lb, int imgsz,
                     int orig_w, int orig_h, int mask_alpha = 165);
+// Sized variant: same masks rendered into an `out_h x out_w` RGBA overlay (the Live/Photo
+// screens draw at display size, not image size). Box bounds are scaled by fx = out_w/orig_w
+// (fy likewise) and the mask is sampled at the un-scaled position (ox/fx, oy/fy), so the
+// per-box clipping and the smoothstep edge are unchanged; out == orig reproduces the overload
+// above bit-for-bit. `dets` stay in original-image px.
+cv::Mat seg_overlay(const std::vector<Detection>& dets, const std::vector<float>& proto,
+                    int pc, int ph, int pw, const LetterboxInfo& lb, int imgsz,
+                    int orig_w, int orig_h, int out_w, int out_h, int mask_alpha);
 // The 10-color class palette (RGB 0..1, indexed cls%10) shared by draw/overlay/GUI.
 const float* class_color(int class_id);   // returns pointer to 3 floats
 

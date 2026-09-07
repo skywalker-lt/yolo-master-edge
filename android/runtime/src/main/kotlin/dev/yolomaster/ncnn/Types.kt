@@ -16,7 +16,12 @@ package dev.yolomaster.ncnn
  */
 enum class Precision(val native: Int) { AUTO(0), FP32(1), FP16(2), INT8(3) }
 
-/** One detection in original-image pixel coordinates. */
+/**
+ * One detection in original-image pixel coordinates. [candIndex] is the index into the
+ * [RawOutput] candidate pool this detection was selected from (-1 for detections that did not
+ * come from [RawOutput.decode]); [RawOutput.maskOverlay] uses it to render masks for exactly
+ * the chosen subset without any mask data crossing JNI.
+ */
 data class Detection(
     val x1: Float,
     val y1: Float,
@@ -25,7 +30,15 @@ data class Detection(
     val score: Float,
     val classId: Int,
     val label: String,
+    val candIndex: Int = -1,
 )
+
+/**
+ * Per-stage wall times of the last forward on a runtime, in ms: [preMs] = letterbox + tensor
+ * fill, [inferMs] = the ncnn extractor alone (the iOS `inferOnly` number), [postMs] = candidate
+ * decode (plus NMS after [YoloMasterNcnn.infer]; decode only after [YoloMasterNcnn.forwardRaw]).
+ */
+data class Timings(val preMs: Double, val inferMs: Double, val postMs: Double)
 
 /**
  * Segmentation result: the detections plus a composited RGBA overlay the size of the

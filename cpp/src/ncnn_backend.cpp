@@ -90,7 +90,7 @@ NcnnBackend::NcnnBackend(const std::string& param_path, const std::string& bin_p
     fixed_imgsz = meta_imgsz;
 }
 
-std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg) {
+void NcnnBackend::forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode) {
     // ---- preprocess: letterbox -> ncnn RGB /255 ----
     auto t0 = clk::now();
     LetterboxInfo lb;
@@ -111,6 +111,13 @@ std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg)
     ex.extract(out_proto_.c_str(), pm);        // proto (empty on detection models)
     infer_ms = ms_since(t1);
 
+    // Every path below (re)fills the cached raw state; a bench-only forward leaves it empty so
+    // stale candidates can never be mistaken for this frame's.
+    candidates.clear();
+    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
+    proto.clear(); proto_c = proto_h = proto_w = 0;
+    if (!decode) { post_ms = 0; return; }
+
     // ---- reshape to channel-major [feat_dim x num_anchors] then decode ----
     // feat << anchors always (e.g. 14/116 vs 8400), so the smaller axis is the feature dim.
     auto t2 = clk::now();
@@ -120,11 +127,8 @@ std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg)
         for (int i = 0; i < out.h; ++i)
             std::memcpy(rows.data() + static_cast<size_t>(i) * 6, out.row(i), 6 * sizeof(float));
         candidates = decode_end2end(rows.data(), out.h, cfg, lb);
-        cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
-        proto.clear(); proto_c = proto_h = proto_w = 0;
-        auto dets_e2e = nms_and_cap(candidates, cfg, lb.orig_w, lb.orig_h);
         post_ms = ms_since(t2);
-        return dets_e2e;
+        return;
     }
     int feat_dim, num_anchors;
     std::vector<float> buf;
@@ -144,8 +148,6 @@ std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg)
         }
     }
     candidates = decode_candidates(buf.data(), feat_dim, num_anchors, cfg, lb);
-    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
-    proto.clear(); proto_c = proto_h = proto_w = 0;
     if (!pm.empty()) {                         // segmentation proto [c=nm, h=mh, w=mw]
         proto_c = pm.c; proto_h = pm.h; proto_w = pm.w;
         const size_t plane = static_cast<size_t>(proto_h) * proto_w;
@@ -153,8 +155,15 @@ std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg)
         for (int c = 0; c < proto_c; ++c)
             std::memcpy(proto.data() + c * plane, pm.channel(c), plane * sizeof(float));
     }
-    auto dets = nms_and_cap(candidates, cfg, lb.orig_w, lb.orig_h);
     post_ms = ms_since(t2);
+}
+
+std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg) {
+    forward_raw(bgr, cfg, /*decode=*/true);
+    // post_ms keeps its historical meaning for infer(): decode + NMS.
+    auto t3 = clk::now();
+    std::vector<Detection> dets = nms_and_cap(candidates, cfg, cand_orig_w, cand_orig_h);
+    post_ms += ms_since(t3);
     return dets;
 }
 

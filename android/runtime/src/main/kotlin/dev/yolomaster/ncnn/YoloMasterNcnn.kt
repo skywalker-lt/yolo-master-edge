@@ -1,6 +1,8 @@
 package dev.yolomaster.ncnn
 
 import android.graphics.Bitmap
+import android.graphics.Rect
+import java.nio.ByteBuffer
 import kotlin.math.abs
 
 /**
@@ -17,7 +19,7 @@ import kotlin.math.abs
  * [activeBackend] always reports what actually resolved; [backendNote] says why a request
  * was downgraded.
  *
- * Usage:
+ * Usage (harness shape: one call = forward + NMS):
  * ```
  * YoloMasterNcnn().use { rt ->
  *     rt.init(modelDir, useVulkan = false)
@@ -25,6 +27,20 @@ import kotlin.math.abs
  *     val dets = rt.infer(bitmap)
  * }
  * ```
+ *
+ * App shape (the iOS Kit contract - forward once, tune cheap):
+ * ```
+ * YoloMasterNcnn.setPowersave(2)                      // on the inference thread, before init
+ * rt.init(modelDir, useVulkan = true, threads = 2)
+ * rt.forwardRaw(bitmap).use { raw ->                  // or forwardRaw(ByteBuffer, ...) from CameraX
+ *     val dets = raw.decode(conf = 0.25f, iou = 0.45f)
+ *     val mask = raw.maskOverlay(dets, maxSide = 640)  // null for detection models
+ * }
+ * ```
+ * Thread policy: the runtime is NOT thread-safe - own it from one inference thread (a
+ * single-thread executor), call [setPowersave] there before [init] so the ncnn OpenMP team is
+ * pinned with the caller, and pass `threads = 2` on phones with two prime cores (`threads = 0`
+ * = ncnn's big-core count). [RawOutput]s outlive the runtime: decode/mask need no model handle.
  */
 class YoloMasterNcnn : AutoCloseable {
 
@@ -45,6 +61,23 @@ class YoloMasterNcnn : AutoCloseable {
 
     /** Message from the last failed native call ("" if none). */
     val lastError: String get() = nativeLastError()
+
+    /** True for segmentation models (metadata.yaml `task: segment`; a missing key means detect). Needs no forward. */
+    val isSeg: Boolean get() = handle != 0L && nativeIsSeg(handle)
+
+    /** Class names from the model's metadata (may be empty: labels then fall back to the class index). */
+    val classNames: List<String> get() = names.asList()
+
+    /** The model's fixed input size (the ncnn graph bakes it), 0 when not loaded. */
+    val imgsz: Int get() = if (handle != 0L) nativeImgsz(handle) else 0
+
+    /** Per-stage times of the last forward on this runtime (zeros before the first one). */
+    val lastTimings: Timings
+        get() {
+            if (handle == 0L) return Timings(0.0, 0.0, 0.0)
+            val t = nativeLastTimings(handle)
+            return Timings(t[0], t[1], t[2])
+        }
 
     /**
      * Load an ncnn model directory containing `model.ncnn.param`, `model.ncnn.bin`, and
@@ -132,6 +165,58 @@ class YoloMasterNcnn : AutoCloseable {
         return SegResult(dets, rgba, dims[0], dims[1])
     }
 
+    /**
+     * Forward only (no NMS) on an ARGB_8888 bitmap, keeping every candidate with score >=
+     * [confFloor]: the raw is then tuned with [RawOutput.decode] / [RawOutput.maskOverlay] at any
+     * conf >= confFloor without another forward. The caller owns the returned raw ([RawOutput.close]).
+     */
+    fun forwardRaw(bitmap: Bitmap, confFloor: Float = 0.05f): RawOutput {
+        check(handle != 0L) { "runtime not loaded" }
+        val src = bitmap.ensureArgb8888()
+        val ptr = nativeForwardRaw(handle, src, confFloor)
+        if (ptr == 0L) throw RuntimeException("forwardRaw failed: $lastError")
+        return RawOutput(ptr, names)
+    }
+
+    /**
+     * Forward only on a DIRECT RGBA_8888 buffer - the CameraX `ImageAnalysis` frame
+     * (`planes[0].buffer`, `planes[0].rowStride`, `cropRect`, `imageInfo.rotationDegrees`) - so a
+     * live loop never allocates a Bitmap. [crop] (null = whole frame) is applied first, then
+     * [rotationDegrees] (0/90/180/270 clockwise), so the raw's `origW/origH` and every box are in
+     * the upright frame the preview shows. The buffer is copied once natively and not retained:
+     * close the `ImageProxy` right after this returns.
+     */
+    fun forwardRaw(
+        rgba: ByteBuffer,
+        width: Int,
+        height: Int,
+        rowStride: Int,
+        crop: Rect?,
+        rotationDegrees: Int,
+        confFloor: Float = 0.05f,
+    ): RawOutput {
+        check(handle != 0L) { "runtime not loaded" }
+        require(rgba.isDirect) { "rgba must be a direct ByteBuffer" }
+        val ptr = nativeForwardRawRgba(
+            handle, rgba, width, height, rowStride,
+            crop?.left ?: 0, crop?.top ?: 0, crop?.width() ?: 0, crop?.height() ?: 0,
+            rotationDegrees, confFloor,
+        )
+        if (ptr == 0L) throw RuntimeException("forwardRaw failed: $lastError")
+        return RawOutput(ptr, names)
+    }
+
+    /**
+     * Kernel-only timing for benchmarks: letterbox + ncnn extractor, no decode, no NMS. Returns
+     * the extractor time in ms (the iOS `inferOnly` number). Clears the harness-shape cache.
+     */
+    fun inferOnly(bitmap: Bitmap): Double {
+        check(handle != 0L) { "runtime not loaded" }
+        val ms = nativeInferOnly(handle, bitmap.ensureArgb8888())
+        if (ms < 0) throw RuntimeException("inferOnly failed: $lastError")
+        return ms
+    }
+
     private fun decode(flat: FloatArray): List<Detection> {
         if (flat.isEmpty()) return emptyList()
         val n = flat[0].toInt()
@@ -168,8 +253,45 @@ class YoloMasterNcnn : AutoCloseable {
     private external fun nativeMetaNames(handle: Long): Array<String>
     private external fun nativeLastError(): String
     private external fun nativeRelease(handle: Long)
+    private external fun nativeForwardRaw(handle: Long, bitmap: Bitmap, confFloor: Float): Long
+    private external fun nativeForwardRawRgba(
+        handle: Long, buffer: ByteBuffer, width: Int, height: Int, rowStride: Int,
+        cropX: Int, cropY: Int, cropW: Int, cropH: Int, rotationDegrees: Int, confFloor: Float,
+    ): Long
+    private external fun nativeInferOnly(handle: Long, bitmap: Bitmap): Double
+    private external fun nativeLastTimings(handle: Long): DoubleArray
+    private external fun nativeIsSeg(handle: Long): Boolean
+    private external fun nativeImgsz(handle: Long): Int
 
     companion object {
         init { System.loadLibrary("yolomaster_ncnn") }
+
+        /**
+         * `ncnn::set_cpu_powersave(mode)`: 0 = all cores, 1 = little cores only, 2 = big cores
+         * only. Process-global; it pins the CALLING thread and the OpenMP team ncnn spawns from
+         * it, so call it on the inference thread before [init] (an app process has no affinity
+         * by default and ran 2-4x slower than the shell bench at >= 2 threads). Returns true when
+         * ncnn accepted the mode.
+         */
+        fun setPowersave(mode: Int): Boolean = nativeSetPowersave(mode) == 0
+
+        /**
+         * The 10-color class palette (index = classId % 10) as 30 floats `[r, g, b] * 10` in
+         * 0..1 - the same table the native mask overlay and the CLI draw use.
+         */
+        val palette: FloatArray by lazy { nativePalette() }
+
+        /** Color of [classId] as an opaque ARGB int, from [palette]. */
+        fun classColor(classId: Int): Int {
+            val i = ((classId % 10) + 10) % 10
+            val r = (palette[i * 3] * 255f + 0.5f).toInt()
+            val g = (palette[i * 3 + 1] * 255f + 0.5f).toInt()
+            val b = (palette[i * 3 + 2] * 255f + 0.5f).toInt()
+            return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+
+        // Static natives (no model handle). The raw handle natives live on RawOutput itself.
+        @JvmStatic private external fun nativeSetPowersave(mode: Int): Int
+        @JvmStatic private external fun nativePalette(): FloatArray
     }
 }

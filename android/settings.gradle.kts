@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "yolomaster-android"
 include(":runtime")
+include(":app")
