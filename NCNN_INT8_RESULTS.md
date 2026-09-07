@@ -281,3 +281,48 @@ seg-N re-exported at imgsz 416 (`yolo export format=ncnn imgsz=416`, 5.27 GFLOPs
 mAP50/50-95 0.641/0.473 (640) -> 0.581/0.413 (416), i.e. -6.0 pt box mAP for ~2.3x fewer FLOPs.
 Not the default. p03 (pruned v0.1-N) cannot be re-exported from `tempo-ncnn/models/p03_v01n.pt`
 (a TorchScript trace at 640); EsMoE-N VisDrone's checkpoint is not on this pod.
+
+Reframed (user observation: the phone is not warm, and games run hot yet fast): the Live clock
+drop is a vendor camera-scenario POWER POLICY (pre-emptive CPU cap while the camera HAL is
+active), not reactive thermal throttling. The app now opens an ADPF performance-hint session
+(API 31+, 33 ms target, every frame reported) for its threads, the sanctioned way to ask the
+power HAL for the clocks a deadline needs; `adb shell dumpsys thermalservice` during Live is the
+check that temperatures are nominal while the cap is on.
+
+ADPF result: the hint session lifts Live to ~11 fps for the first seconds, then the cap returns
+and behaviour is unchanged. Control experiment in flight: stock YOLO11n / YOLO11n-seg exported
+to ncnn (6.7 / 10.0 GFLOPs; on the pod's x86 CPU, ratio only: yolo11n 48 ms vs p03 83 ms,
+yolo11n-seg 62 ms vs seg-N 104 ms, ~1.7x). If YOLO11n reaches ~20 fps on the S26 the gap is
+YOLO-Master's graph on ncnn; if not, ncnn on this phone is the limit and the ONNX Runtime + QNN
+NPU path replaces it.
+
+CONTROL RESULT (S26, MEASURED by the user, 2026-09-08): stock YOLO11n on the same ncnn runtime
+runs ~35 fps at normal clocks and still ~19 fps under the camera cap (prime at 1267 MHz).
+YOLO-Master's graphs are therefore 3-4x slower than a YOLO11n of comparable FLOPs on the same
+runtime and phone: the runtime is not the limit, the lowering of the MoE/attention blocks is
+(MatMul x16-36, Permute/Reshape churn, Tile, Reduction, Softmax; several without Vulkan kernels).
+Next: per-layer profile with an NCNN_BENCHMARK build (x86 CPU ratios as the guide), then an
+export-side rewrite of the hot blocks, re-measured on the S26.
+
+Per-layer profile (NCNN_BENCHMARK build `third_party/ncnn-x86-bench`, x86 CPU 4T fp32, per forward):
+seg-N 61 ms vs yolo11n-seg 34 ms. Gap by layer type: MatMul +5.9 ms (16 vs 2 layers), ConvDW +4.5
+(26 vs 7), BinaryOp +4.1 (68 vs 21), Permute +3.5 (57 vs 2), Reshape +2.9 (45 vs 15), Convolution
++2.9 (135 vs 90), Softmax +2.1 (13 vs 2), Slice +1.1. p03 vs yolo11n has the same shape. Real
+convolutions are 11% of the gap; the rest is memory-bound glue from how pnnx lowers the MoE
+gating and attention blocks (worse on a phone's memory bus: 3-4x there vs 1.8x on x86).
+`ncnnoptimize` fuses none of it (696 -> 696 layers, 68.7 ms). The fix is export-side: fused
+attention (MultiHeadAttention/SDPA layers instead of MatMul+Permute chains), expert mixing folded
+into convolutions, reshape churn removed; mapping in progress.
+
+Export-side fix (`scripts/export_ncnn_dense.py`, 2026-09-08): export-time forward swaps under
+tracing (the fork is untouched): the attention scale folded into the qkv conv, `AAttn` re-expressed
+as `F.scaled_dot_product_attention` with the area folded into the heads axis (one fused ncnn SDPA
+layer per block, `pe` fed from the same conv's v channels), and the router's `.repeat` dropped so
+the gate broadcasts natively. Numerics: class scores agree with the stock export to ~1e-5, boxes
+to the stock export's own 2e-2 px conv noise, identical detection counts (seg 15/15, det 14/14).
+Layers: MatMul 16 -> 0, Tile 4 -> 0, Softmax 13 -> 5, Permute 57 -> 33, SDPA 0 -> 8. x86 CPU:
+seg-N 69.0 -> 53.4 ms (-23%), v0.1-N 61.3 -> 54.9 ms (-10%); yolo11n(-seg) 30-32 ms on the same
+box, the remaining gap being plain and depthwise convolutions (7x7 `pe`, MoE experts), i.e.
+architecture. New dirs: `models/{v0.1-seg-n-sdpa,v0.1-n-sdpa,v0.1-n}_ncnn` (the released v0.1-N
+needs the coco_eval repair shim and a trace-time top-k dispatch shim to lower at all; documented in
+the script). Shipped to the S26 bundle and the app (asset version 4).

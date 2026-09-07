@@ -83,6 +83,26 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
     private var loopHz = 0.0
     private val shutterArmed = AtomicBoolean(true)
 
+    /**
+     * ADPF performance hint session (API 31+): tells the power HAL the inference thread has a
+     * 33 ms deadline and reports each frame's real duration. This is the sanctioned way to lift
+     * a vendor "camera scenario" CPU cap (S26: prime cores held at 1.4 GHz while cool).
+     */
+    private var hint: android.os.PerformanceHintManager.Session? = null
+    private fun openHint() {
+        if (android.os.Build.VERSION.SDK_INT < 31) return
+        try {
+            val phm = getApplication<Application>().getSystemService(android.os.PerformanceHintManager::class.java) ?: return
+            hint?.close()
+            // the whole process' threads share the session: the OpenMP workers are unnamed and
+            // cannot be told apart from /proc, and boosting the group is what we want anyway
+            val tids = java.io.File("/proc/self/task").list()?.mapNotNull { it.toIntOrNull() }?.toIntArray() ?: intArrayOf(android.os.Process.myTid())
+            hint = phm.createHintSession(tids, 33_000_000L)
+            Log.i(TAG, "ADPF hint session: ${if (hint != null) "created for ${tids.size} threads" else "unavailable"}")
+        } catch (t: Throwable) { Log.w(TAG, "ADPF hint failed: ${t.message}") }
+    }
+    private fun closeHint() { try { hint?.close() } catch (_: Throwable) {}; hint = null }
+
     init {
         thermal.start()
         viewModelScope.launch {
@@ -132,6 +152,7 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
             }
             detector = det
             seq = 0; loopFrames = 0; loopWindowStart = 0
+            openHint()
             running.set(true)
             _ui.value = _ui.value.copy(
                 loadingModel = false, running = true, isSeg = det.isSeg, classNames = det.classNames,
@@ -143,7 +164,7 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
     /** `suspendLoop()`: stop, wipe the overlay and every stat; the thermal reading stays. */
     fun suspendLoop() {
         running.set(false)
-        camera.analysisExecutor.execute { detector?.close(); detector = null }
+        camera.analysisExecutor.execute { closeHint(); detector?.close(); detector = null }
         _ui.value = _ui.value.copy(running = false, loadingModel = false)
         _frame.value = FrameResult(frameSize = _frame.value.frameSize)
     }
@@ -233,7 +254,9 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
             try { image.close() } catch (_: Throwable) {}
         }
         // ~30 fps pacing: the next delivered frame is then the freshest.
-        val spent = (SystemClock.elapsedRealtimeNanos() - t0) / 1_000_000
+        val spentNs = SystemClock.elapsedRealtimeNanos() - t0
+        if (android.os.Build.VERSION.SDK_INT >= 31) try { hint?.reportActualWorkDuration(spentNs) } catch (_: Throwable) {}
+        val spent = spentNs / 1_000_000
         if (spent < 33) SystemClock.sleep(33 - spent)
     }
 
@@ -311,7 +334,7 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
 
     override fun onCleared() {
         running.set(false)
-        camera.analysisExecutor.execute { detector?.close(); detector = null }
+        camera.analysisExecutor.execute { closeHint(); detector?.close(); detector = null }
         camera.stop()
         thermal.stop()
     }

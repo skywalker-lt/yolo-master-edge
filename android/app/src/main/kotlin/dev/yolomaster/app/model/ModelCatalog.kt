@@ -63,7 +63,7 @@ class ModelCatalog(private val ctx: Context) {
     private val stamp = File(bundledRoot, ".assets-version")
 
     /** Bump when the bundled asset set changes so the copy is refreshed. */
-    private val assetsVersion = "2"   // 2: + v0.1-seg-n-416_ncnn
+    private val assetsVersion = "4"   // 4: + sdpa re-exports, v0.1-n baseline
 
     @Volatile private var cached: List<BundledModel>? = null
 
