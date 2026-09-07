@@ -30,9 +30,14 @@ mkdir -p "$DST"
 STAGE=(
   "v0.1-seg-n_ncnn:v0.1-seg-n_ncnn"
   "v0.1-seg-n-416_ncnn:v0.1-seg-n-416_ncnn"
+  "v0.1-seg-n-sdpa_ncnn:v0.1-seg-n-sdpa_ncnn"
+  "v0.1-n-sdpa_ncnn:v0.1-n-sdpa_ncnn"
+  "v0.1-n_ncnn:v0.1-n_ncnn"
   "moa-n_ncnn:mixture/moa-n_ncnn"
   "esmoe_n_visdrone_ncnn:esmoe_n_visdrone_ncnn"
   "p03_v01n_ncnn:p03_v01n_ncnn"
+  "yolo11n_ncnn:yolo11n_ncnn"
+  "yolo11n-seg_ncnn:yolo11n-seg_ncnn"
 )
 # Pre-quantized mixed-INT8 siblings (scripts/quantize_ncnn_int8.py). The runtime resolves
 # Precision.INT8 to "<name>-int8_ncnn" next to the float dir, so they MUST be staged under
