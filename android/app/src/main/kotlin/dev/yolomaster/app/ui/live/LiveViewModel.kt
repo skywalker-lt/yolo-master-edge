@@ -152,22 +152,40 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
     fun applyThreads() { if (running.get() || _ui.value.loadingModel) { suspendLoop(); startLoop() } }
 
     // ---- diagnostics: thermal headroom + prime-core clock, sampled once a second ----------------
-    data class Diag(val headroom: Float = -1f, val primeMHz: Int = -1)
+    /**
+     * [clusters]: one entry per CPU cluster (descending max clock), "cur/max MHz".
+     * [inferCore]: the CPU the "ym-infer" thread last ran on (so a thread that never reaches the
+     * prime cores is visible), -1 when unknown.
+     */
+    data class Diag(val headroom: Float = -1f, val primeMHz: Int = -1, val clusters: List<String> = emptyList(), val inferCore: Int = -1, val primeCores: String = "")
     private val _diag = MutableStateFlow(Diag())
     val diag: StateFlow<Diag> = _diag
     private val pm = app.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+    private fun readInt(path: String): Int = try { val f = java.io.File(path); if (f.canRead()) f.readText().trim().toInt() else -1 } catch (_: Throwable) { -1 }
     private val diagJob = viewModelScope.launch(Dispatchers.IO) {
         val cpus = Runtime.getRuntime().availableProcessors()
+        // cluster = group of cpus sharing cpuinfo_max_freq, represented by its first cpu
+        val maxOf = (0 until cpus).map { it to readInt("/sys/devices/system/cpu/cpu$it/cpufreq/cpuinfo_max_freq") }
+        val clusters = maxOf.filter { it.second > 0 }.groupBy { it.second }.entries.sortedByDescending { it.key }
+            .map { e -> Triple(e.value.first().first, e.key / 1000, e.value.map { it.first }) }
+        val primeCores = clusters.firstOrNull()?.third?.joinToString(",") ?: ""
+        val primeCpu = clusters.firstOrNull()?.first ?: (cpus - 1)
         while (true) {
             val head = if (android.os.Build.VERSION.SDK_INT >= 30) try { pm.getThermalHeadroom(0) } catch (_: Throwable) { Float.NaN } else Float.NaN
-            var mhz = -1
-            for (c in (cpus - 1) downTo 0) {
-                try {
-                    val f = java.io.File("/sys/devices/system/cpu/cpu$c/cpufreq/scaling_cur_freq")
-                    if (f.canRead()) { mhz = f.readText().trim().toInt() / 1000; break }
-                } catch (_: Throwable) {}
-            }
-            _diag.value = Diag(if (head.isNaN()) -1f else head, mhz)
+            val cur = clusters.map { (cpu, maxMHz, _) -> "${readInt("/sys/devices/system/cpu/cpu$cpu/cpufreq/scaling_cur_freq") / 1000}/$maxMHz" }
+            val prime = readInt("/sys/devices/system/cpu/cpu$primeCpu/cpufreq/scaling_cur_freq") / 1000
+            // where is the inference thread running? /proc/self/task/<tid>/stat field 39 = last cpu
+            var core = -1
+            try {
+                java.io.File("/proc/self/task").listFiles()?.forEach { t ->
+                    if (core < 0 && java.io.File(t, "comm").readText().trim() == "ym-infer") {
+                        val stat = java.io.File(t, "stat").readText()
+                        val fields = stat.substring(stat.lastIndexOf(')') + 2).split(" ")
+                        core = fields.getOrNull(36)?.toIntOrNull() ?: -1   // field 39 overall = index 36 after the comm
+                    }
+                }
+            } catch (_: Throwable) {}
+            _diag.value = Diag(if (head.isNaN()) -1f else head, prime, cur, core, primeCores)
             kotlinx.coroutines.delay(1000)
         }
     }

@@ -158,7 +158,9 @@ class Tuning {
     @Volatile var segOverlay: SegOverlayMode = SegOverlayMode.Both
     @Volatile var showHUD: Boolean = true
     /** ncnn threads for the Live loop: 1 / 2 / 4, or 0 = every core (no big-core pinning). */
-    @Volatile var threads: Int = 2
+    @Volatile var threads: Int = 0   // all cores (S26: 76 vs 87 ms pinned)
+    /** Lighter camera config (640x480 analysis, 15-30 fps) to test whether the camera pipeline triggers the SoC clamp. */
+    @Volatile var camLite: Boolean = false
 }
 
 /** Labels of the Live threads picker; 0 = all cores. */
@@ -167,7 +169,7 @@ fun threadLabel(t: Int) = if (t == 0) "all" else "$t"
 
 /** `TuningPanel` (`StatsHUD.swift:409-451`): padding 10, radius 12. */
 @Composable
-fun TuningPanel(tuning: Tuning, isSeg: Boolean, onChange: () -> Unit = {}, modifier: Modifier = Modifier, showThreads: Boolean = false, onThreads: (Int) -> Unit = {}) {
+fun TuningPanel(tuning: Tuning, isSeg: Boolean, onChange: () -> Unit = {}, modifier: Modifier = Modifier, showThreads: Boolean = false, onThreads: (Int) -> Unit = {}, onCamLite: (Boolean) -> Unit = {}) {
     val ios = LocalIosColors.current
     var conf by remember { mutableFloatStateOf(tuning.conf) }
     var iou by remember { mutableFloatStateOf(tuning.iou) }
@@ -188,6 +190,11 @@ fun TuningPanel(tuning: Tuning, isSeg: Boolean, onChange: () -> Unit = {}, modif
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("threads", style = IosType.caption, color = ios.label, modifier = Modifier.width(54.dp))
                 Segmented(threadChoices, threads, { threadLabel(it) }, modifier = Modifier.weight(1f)) { threads = it; tuning.threads = it; onThreads(it) }
+            }
+            var lite by remember { mutableStateOf(tuning.camLite) }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("cam lite (640x480, 15-30 fps)", style = IosType.caption, color = ios.label, modifier = Modifier.weight(1f))
+                Switch(checked = lite, onCheckedChange = { lite = it; tuning.camLite = it; onCamLite(it) }, modifier = Modifier.height(24.dp))
             }
         }
     }

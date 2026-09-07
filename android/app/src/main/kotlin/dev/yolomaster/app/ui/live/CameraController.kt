@@ -83,6 +83,10 @@ class CameraController(private val context: Context) {
     private var analysis: ImageAnalysis? = null
     private var zoomBias = 1f
     private var torchIntent = false
+    /** Lighter streams for the clamp experiment (set before start/rebind). */
+    @Volatile var lite: Boolean = false
+    private var lastOwner: LifecycleOwner? = null
+    private var lastAnalyzer: ImageAnalysis.Analyzer? = null
 
     // delivery-rate window (sensor frames, counted in the capture callback)
     @Volatile private var sensorFrames = 0
@@ -107,9 +111,16 @@ class CameraController(private val context: Context) {
     }
 
     @SuppressLint("RestrictedApi")
+    /** Re-bind with the current [lite] setting (used by the tuning panel switch). */
+    fun rebind() { val p = provider ?: return; val o = lastOwner ?: return; val a = lastAnalyzer ?: return; mainExecutor.execute { bind(p, o, a) } }
+
     private fun bind(p: ProcessCameraProvider, owner: LifecycleOwner, analyzer: ImageAnalysis.Analyzer) {
+        lastOwner = owner; lastAnalyzer = analyzer
         p.unbindAll()
         val ratio16x9 = AspectRatioStrategy(AspectRatio.RATIO_16_9, AspectRatioStrategy.FALLBACK_RULE_AUTO)
+        val analysisSize = if (lite) Size(640, 480) else Size(1280, 720)
+        val fpsRange = if (lite) Range(15, 30) else Range(30, 30)
+        val ratioStrategy = if (lite) AspectRatioStrategy(AspectRatio.RATIO_4_3, AspectRatioStrategy.FALLBACK_RULE_AUTO) else ratio16x9
         val previewBuilder = Preview.Builder()
             .setResolutionSelector(
                 ResolutionSelector.Builder().setAspectRatioStrategy(ratio16x9)
@@ -121,19 +132,19 @@ class CameraController(private val context: Context) {
             .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             .setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
             .setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
-            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
         val preview = previewBuilder.build()
         val analysisBuilder = ImageAnalysis.Builder()
             .setResolutionSelector(
-                ResolutionSelector.Builder().setAspectRatioStrategy(ratio16x9)
-                    .setResolutionStrategy(ResolutionStrategy(Size(1280, 720), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)).build(),
+                ResolutionSelector.Builder().setAspectRatioStrategy(ratioStrategy)
+                    .setResolutionStrategy(ResolutionStrategy(analysisSize, ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)).build(),
             )
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
             .setTargetRotation(previewView.display?.rotation ?: android.view.Surface.ROTATION_0)
         // Lock 30 fps and count sensor frames (dropped frames never reach analyze()).
         Camera2Interop.Extender(analysisBuilder)
-            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
             .setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             .setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
             .setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)

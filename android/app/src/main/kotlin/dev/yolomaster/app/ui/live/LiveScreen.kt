@@ -261,7 +261,16 @@ fun LiveScreen(vm: LiveViewModel = viewModel()) {
                                     "headroom" to if (diag.headroom >= 0f) String.format("%.2f", diag.headroom) else "--",
                                     "prime clk" to if (diag.primeMHz > 0) "${diag.primeMHz} MHz" else "--",
                                     "throttled" to if (diag.headroom >= 0.9f) "yes" else "no",
-                                ) else emptyList(),
+                                    "clusters" to diag.clusters.joinToString(" "),
+                                    "infer core" to if (diag.inferCore >= 0) "cpu${diag.inferCore} (prime: ${diag.primeCores})" else "--",
+                                ) else listOf(
+                                    // paused: keep the SoC diagnostics visible so the camera-alone clamp can be seen
+                                    "camera" to String.format("%.1f fps", cam.cameraHz),
+                                    "headroom" to if (diag.headroom >= 0f) String.format("%.2f", diag.headroom) else "--",
+                                    "prime clk" to if (diag.primeMHz > 0) "${diag.primeMHz} MHz" else "--",
+                                    "throttled" to if (diag.headroom >= 0.9f) "yes" else "no",
+                                    "clusters" to diag.clusters.joinToString(" "),
+                                ),
                             ),
                             modifier = Modifier.padding(bottom = 20.dp),
                         )
@@ -306,7 +315,7 @@ fun LiveScreen(vm: LiveViewModel = viewModel()) {
                     }
                 }
                 AnimatedVisibility(showTuning, enter = fadeIn(), exit = fadeOut()) {
-                    TuningPanel(vm.tuning, isSeg = ui.isSeg, onChange = { showHud = vm.tuning.showHUD }, modifier = Modifier.padding(horizontal = 16.dp), showThreads = true, onThreads = { vm.applyThreads() })
+                    TuningPanel(vm.tuning, isSeg = ui.isSeg, onChange = { showHud = vm.tuning.showHUD }, modifier = Modifier.padding(horizontal = 16.dp), showThreads = true, onThreads = { vm.applyThreads() }, onCamLite = { vm.camera.lite = it; vm.camera.rebind() })
                 }
             }
         }
