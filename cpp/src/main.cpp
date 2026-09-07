@@ -60,6 +60,7 @@ int main(int argc, char** argv) {
     int tile_size = 0;
     bool slicing_masks = false, cw_nms = false;
     float sigma = 0.1f;
+    std::string precision_s = "auto";
 
     app.add_option("-m,--model", model, "model: .onnx file, or ncnn dir / .param")->required();
     app.add_option("-s,--source", source, "image / directory / video / dataset.yaml")->required();
@@ -71,6 +72,10 @@ int main(int argc, char** argv) {
     app.add_option("--iou", iou, "NMS IoU threshold")->capture_default_str();
     app.add_option("--max-det", max_det, "max detections per image after NMS (tiled runs only; requires --slicing)")->capture_default_str();
     app.add_option("--threads", threads, "CPU threads")->capture_default_str();
+    app.add_option("--precision", precision_s,
+                   "ncnn numeric precision: auto|fp32|fp16|int8 (auto = fp16 for fp16-safe models on armv8.2 CPUs, "
+                   "fp32 pinned for emulated-router mixture graphs; int8 = load the <name>-int8_ncnn sibling)")
+        ->default_str("auto");
     app.add_option("--limit", limit, "cap #inputs (0 = all)");
     app.add_option("--out", outdir, "output dir for annotated results")->capture_default_str();
     app.add_option("--save-txt", savetxt, "dir to write per-image predictions ('class conf x1 y1 x2 y2')");
@@ -87,6 +92,11 @@ int main(int argc, char** argv) {
     app.add_option("--label-format", label_format, "yolo|coco|voc")->default_str("yolo");
     app.add_option("--sampling", sampling, "video label export: all|1s|N (every Nth frame)")->default_str("1s");
     CLI11_PARSE(app, argc, argv);
+
+    Precision precision = Precision::Auto;
+    if (!parse_precision(precision_s, precision)) {
+        std::cerr << "unknown --precision: " << precision_s << " (auto|fp32|fp16|int8)\n"; return 2;
+    }
 
     SliceMode slice_mode = SliceMode::Off;
     if (slicing == "dense") slice_mode = SliceMode::Dense;
@@ -124,13 +134,21 @@ int main(int argc, char** argv) {
 #endif
         } else if (backend == "ncnn") {
 #ifdef USE_NCNN
-            std::string param = model, bin;
+            // --precision int8 selects the pre-quantized "<name>-int8_ncnn" sibling; a missing
+            // sibling is a hard error so an int8 number can never come from a float model.
+            const std::string m = (precision == Precision::Int8) ? meta::ncnn_int8_sibling(model) : model;
+            std::string param = m, bin;
             std::error_code ec;
-            if (fs::is_directory(model, ec)) {
-                param = (fs::path(model) / "model.ncnn.param").string();
-                bin = (fs::path(model) / "model.ncnn.bin").string();
+            if (fs::is_directory(m, ec)) {
+                param = (fs::path(m) / "model.ncnn.param").string();
+                bin = (fs::path(m) / "model.ncnn.bin").string();
             } else bin = param.substr(0, param.rfind('.')) + ".bin";
-            be = std::make_unique<NcnnBackend>(param, bin, threads);
+            if (!fs::exists(param, ec)) {
+                std::cerr << (precision == Precision::Int8 ? "int8 model not found: " : "ncnn model not found: ")
+                          << param << "\n";
+                return 2;
+            }
+            be = std::make_unique<NcnnBackend>(param, bin, threads, false, precision);
 #else
             std::cerr << "built without ncnn backend\n"; return 2;
 #endif
@@ -175,7 +193,8 @@ int main(int argc, char** argv) {
 
     std::cout << "[model] " << model << "  backend=" << backend << "  ep=" << be->active_ep
               << "  imgsz=" << cfg.imgsz << "  nc=" << cfg.num_classes() << " (" << classes_src << ")"
-              << "  conf=" << cfg.conf_thresh << "  iou=" << cfg.iou_thresh << "  max_det=" << cfg.max_det << "\n";
+              << "  conf=" << cfg.conf_thresh << "  iou=" << cfg.iou_thresh << "  max_det=" << cfg.max_det
+              << (be->ep_note.empty() ? "" : "  note=" + be->ep_note) << "\n";
 
     if (!no_save) { std::error_code ec; fs::create_directories(outdir, ec); }
     if (!savetxt.empty()) { std::error_code ec; fs::create_directories(savetxt, ec); }

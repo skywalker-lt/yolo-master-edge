@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """Compute mAP50-95 from dumped predictions (lines: 'class conf x1 y1 x2 y2', pixel
-xyxy) vs VisDrone YOLO-format GT, reusing ultralytics' matching + DetMetrics so the
-number is directly comparable to ultralytics `.val()` (PyTorch / ONNX)."""
+xyxy) vs YOLO-format GT, reusing ultralytics' matching + DetMetrics so the number is
+directly comparable to ultralytics `.val()` (PyTorch / ONNX).
+
+Class names default to the VisDrone 10-class set (historic behaviour); pass
+`--names-yaml <metadata.yaml|dataset.yaml>` to score any other model (e.g. the COCO
+80-class `names:` block of an ncnn export sidecar).
+
+`evaluate()` is importable (no work happens at import time) so other tools, e.g.
+`tests/certify_ncnn_int8.py`, can score two prediction dirs in-process.
+"""
 import argparse, glob, os
 from pathlib import Path
 import numpy as np
@@ -57,23 +65,94 @@ def load_pred(path):
             torch.tensor(s, dtype=torch.float32), torch.tensor(c, dtype=torch.int64))
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--preds", required=True, help="dir of per-image prediction txts")
-    ap.add_argument("--images", default="/data/datasets/VisDrone/images/val")
-    ap.add_argument("--labels", default="/data/datasets/VisDrone/labels/val")
-    args = ap.parse_args()
+def _unquote(s):
+    s = s.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"":
+        s = s[1:-1]
+    return s
 
+
+def load_names_yaml(path):
+    """Parse the `names:` block of an ultralytics sidecar / dataset yaml into an ordered list.
+
+    Handles the exported-metadata form (`names:` then `  0: person` per line), a dataset
+    yaml list form (`  - person`), and the inline `names: [a, b]` form. Quotes around the
+    value are stripped. Deliberately line-based (no pyyaml dependency and immune to the
+    odd scalars that appear elsewhere in ultralytics sidecars); only the `names:` block
+    is read.
+
+    Args:
+        path: metadata.yaml (ncnn/onnx export sidecar) or dataset yaml.
+
+    Returns:
+        list[str]: class names indexed by class id (0..nc-1).
+
+    Raises:
+        SystemExit: no `names:` block, or non-contiguous ids.
+    """
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    mapping, listed = {}, []
+    in_block, block_indent = False, -1
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if not in_block:
+            if indent == 0 and line.startswith("names:"):
+                rest = line[len("names:"):].strip()
+                if rest.startswith("[") and rest.endswith("]"):          # inline list
+                    listed = [_unquote(x) for x in rest[1:-1].split(",") if x.strip()]
+                    break
+                in_block, block_indent = True, indent
+            continue
+        if indent <= block_indent:                                      # dedent = end of block
+            break
+        body = line.strip()
+        if body.startswith("- "):
+            listed.append(_unquote(body[2:]))
+        elif ":" in body:
+            k, v = body.split(":", 1)
+            k = _unquote(k)
+            if k.lstrip("-").isdigit():
+                mapping[int(k)] = _unquote(v)
+    if listed:
+        return listed
+    if not mapping:
+        raise SystemExit(f"no `names:` block found in {path}")
+    ids = sorted(mapping)
+    if ids != list(range(len(ids))):
+        raise SystemExit(f"non-contiguous class ids in {path}: {ids[:5]}...")
+    return [mapping[i] for i in ids]
+
+
+def evaluate(preds_dir, images_dir, labels_dir, names, limit=0):
+    """Score a dir of save-txt predictions against YOLO-format labels with ultralytics DetMetrics.
+
+    Args:
+        preds_dir: per-image `<stem>.txt` files with rows `class conf x1 y1 x2 y2` (pixel xyxy).
+            A missing file counts as zero predictions for that image.
+        images_dir: the `*.jpg` images (sorted; sizes are read to de-normalise the labels).
+        labels_dir: YOLO-format `<stem>.txt` labels; a missing file is an empty ground truth.
+        names: class names, list indexed by id or `{id: name}` dict.
+        limit: score only the first `limit` images in sorted order (0 = all). Matches the
+            edge CLI's `--limit N`, which truncates the same sorted listing.
+
+    Returns:
+        tuple[float, float, int]: (mAP50, mAP50-95, number of images scored).
+    """
     metrics = DetMetrics()
-    metrics.names = NAMES
-    imgs = sorted(glob.glob(os.path.join(args.images, "*.jpg")))
+    metrics.names = dict(enumerate(names)) if isinstance(names, (list, tuple)) else dict(names)
+    imgs = sorted(glob.glob(os.path.join(images_dir, "*.jpg")))
     if not imgs:
-        raise SystemExit(f"no *.jpg images found under {args.images}")
+        raise SystemExit(f"no *.jpg images found under {images_dir}")
+    if limit and limit > 0:
+        imgs = imgs[:limit]
     for img in imgs:
         stem = Path(img).stem
         w, h = Image.open(img).size
-        gt_b, gt_c = load_gt(os.path.join(args.labels, stem + ".txt"), w, h)
-        pb, ps, pc = load_pred(os.path.join(args.preds, stem + ".txt"))
+        gt_b, gt_c = load_gt(os.path.join(labels_dir, stem + ".txt"), w, h)
+        pb, ps, pc = load_pred(os.path.join(preds_dir, stem + ".txt"))
         N, M = pb.shape[0], gt_b.shape[0]
         tp = (np.zeros((N, 10), dtype=bool) if (M == 0 or N == 0)
               else match_predictions(pc, gt_c, box_iou(gt_b, pb)).cpu().numpy())
@@ -83,9 +162,26 @@ def main():
             "target_img": np.unique(gt_c.numpy()),
             "conf": ps.numpy() if N else np.zeros(0),
             "pred_cls": pc.numpy() if N else np.zeros(0),
+            "im_name": stem,            # required by ultralytics >= 8.4 (per-image P/R); ignored by older
         })
     metrics.process()
-    print(f"images={len(imgs)}  mAP50={metrics.box.map50:.4f}  mAP50-95={metrics.box.map:.4f}")
+    return float(metrics.box.map50), float(metrics.box.map), len(imgs)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--preds", required=True, help="dir of per-image prediction txts")
+    ap.add_argument("--images", default="/data/datasets/VisDrone/images/val")
+    ap.add_argument("--labels", default="/data/datasets/VisDrone/labels/val")
+    ap.add_argument("--names-yaml", default="",
+                    help="metadata.yaml / dataset yaml whose `names:` block gives the class names "
+                         "(default: the VisDrone 10-class set)")
+    ap.add_argument("--limit", type=int, default=0, help="score only the first N images (sorted; 0 = all)")
+    args = ap.parse_args()
+
+    names = load_names_yaml(args.names_yaml) if args.names_yaml else NAMES
+    map50, map5095, n = evaluate(args.preds, args.images, args.labels, names, limit=args.limit)
+    print(f"images={n}  mAP50={map50:.4f}  mAP50-95={map5095:.4f}")
 
 
 if __name__ == "__main__":

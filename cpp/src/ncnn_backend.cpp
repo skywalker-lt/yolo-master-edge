@@ -1,4 +1,5 @@
 #include "ncnn_backend.hpp"
+#include "cpu.h"   // ncnn::cpu_support_arm_asimdhp (returns 0 off-ARM)
 #include <chrono>
 #include <cstring>
 #include <stdexcept>
@@ -12,26 +13,69 @@ static double ms_since(const clk::time_point& t) {
 }
 
 NcnnBackend::NcnnBackend(const std::string& param_path, const std::string& bin_path, int threads,
-                         bool use_vulkan)
-    : threads_(threads) {
+                         bool use_vulkan, Precision precision)
+    : threads_(threads), requested_(precision) {
+    // ---- per-model numeric precision policy (decided before load_param; opt is load-time) ----
+    // fp16 is enabled only for models whose .param carries no fp16 hazard. The emulated-router
+    // mixture graphs (scripts/export_ncnn_mixture.py: 1e-9 mask nudges, 1e30 expert masks, FLT_MAX
+    // clamps) are pinned fp32: those constants are unrepresentable in fp16 (1e-9 flushes to 0 under
+    // ARM FZ16 and breaks the ceil() one-hot, 1e30 overflows fp16's 65504 max) and routing then
+    // returns zero detections. That is runtime-unfixable (the export-side fix is a separate task).
+    // Explicit requests a model cannot honour are DOWNGRADED and explained in ep_note - never a
+    // silent zero-detection run. ncnn's fp16 kernels are the armv8.2 (asimdhp) path; elsewhere the
+    // flags are inert, so the run is labelled fp32 rather than claiming an fp16 speedup.
+    const std::string mdir = std::filesystem::path(param_path).parent_path().string();
+    const meta::NcnnParamScan scan = meta::scan_ncnn_param(param_path);
+    int yaml_fp16_safe = -1;   // -1 unknown, 0 false, 1 true (optional corroboration stamped by the exporter)
+    {
+        std::string v;
+        if (meta::read_ncnn_yaml_scalar(mdir + "/metadata.yaml", "fp16_safe", v))
+            yaml_fp16_safe = (v.find("rue") != std::string::npos) ? 1 : 0;
+    }
+    auto note = [this](const std::string& s) { if (!ep_note.empty()) ep_note += "; "; ep_note += s; };
+
+    const bool model_fp16_safe = scan.fp16_safe() && yaml_fp16_safe != 0;   // any "unsafe" source wins
+    if (yaml_fp16_safe == 1 && !scan.fp16_safe())
+        note("metadata says fp16_safe but the .param scan disagrees; trusting the scan");
+    int8_ = scan.is_int8();
+    if (precision == Precision::Int8 && !int8_) note("int8 requested but the .param has no int8 layers");
+    if (int8_ && use_vulkan) {
+        use_vulkan = false;
+        note("int8 model: Vulkan disabled (no ncnn Vulkan int8 kernels)");
+    }
+
+    bool want_fp16 = false;
+    switch (precision) {
+        case Precision::Fp32:
+            want_fp16 = false;
+            break;
+        case Precision::Fp16:
+            want_fp16 = model_fp16_safe;
+            if (!model_fp16_safe) note("fp16 requested but refused: " + scan.reason());
+            break;
+        default:   // Auto, Int8: derive from the model
+            want_fp16 = model_fp16_safe;
+            if (!model_fp16_safe) note("fp32 pinned: " + scan.reason());
+            break;
+    }
+    const bool cpu_fp16 = ncnn::cpu_support_arm_asimdhp() != 0;
+    fp16_ = want_fp16 && (use_vulkan || cpu_fp16);
+    if (want_fp16 && !use_vulkan && !cpu_fp16 && precision == Precision::Fp16)
+        note("fp16 requested: CPU has no fp16 arithmetic (asimdhp); running fp32");
+
     net_.opt.num_threads = threads;
     net_.opt.use_vulkan_compute = use_vulkan;   // GPU path (the -shared prebuilt is Vulkan-enabled)
-    if (use_vulkan) {                           // fp16 on the GPU: big speedup, negligible accuracy loss
-        net_.opt.use_fp16_packed = true;
-        net_.opt.use_fp16_storage = true;
-        net_.opt.use_fp16_arithmetic = true;
-    } else {
-        // CPU stays fp32 everywhere. ncnn's defaults enable fp16 kernels when the CPU
-        // has them (armv8.2: Jetson/phones) - inert on x86, so all x64 validation ran
-        // fp32. The mixture routing arithmetic (1e-7 tiebreaks, 1e-9 mask nudges)
-        // underflows in fp16 and returns zero detections on ARM; pin the CPU path to
-        // the same fp32 behavior the parity harness certifies.
-        net_.opt.use_fp16_packed = false;
-        net_.opt.use_fp16_storage = false;
-        net_.opt.use_fp16_arithmetic = false;
-        net_.opt.use_bf16_storage = false;
+    net_.opt.use_fp16_packed = fp16_;
+    net_.opt.use_fp16_storage = fp16_;
+    net_.opt.use_fp16_arithmetic = fp16_;
+    net_.opt.use_bf16_storage = false;          // bf16 is never part of this policy
+    net_.opt.use_int8_inference = true;         // ncnn's default, stated explicitly
+    if (int8_) {
+        net_.opt.use_int8_packed = true;
+        net_.opt.use_int8_storage = true;       // use_int8_arithmetic stays at ncnn's default
     }
-    active_ep = use_vulkan ? "ncnn-Vulkan" : "cpu";
+    active_ep = use_vulkan ? (fp16_ ? "ncnn-Vulkan" : "ncnn-Vulkan-fp32")
+                           : std::string("ncnn-CPU-") + (int8_ ? "int8+" : "") + (fp16_ ? "fp16" : "fp32");
     if (net_.load_param(param_path.c_str()) != 0)
         throw std::runtime_error("ncnn: failed to load param " + param_path);
     if (net_.load_model(bin_path.c_str()) != 0)

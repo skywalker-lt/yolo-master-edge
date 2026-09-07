@@ -48,3 +48,6 @@ PROJECT.md
 PROJECT03_FEASIBILITY.md
 runs/
 tempo-ncnn/
+
+# standalone ncnn bench build trees (cpp/tools/CMakeLists.txt)
+cpp/tools/build*/

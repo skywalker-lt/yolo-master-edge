@@ -541,6 +541,12 @@ def main():
             with open(dst / "metadata.yaml", "w") as f:
                 f.write(f"imgsz:\n- {args.imgsz}\n- {args.imgsz}\n")
                 f.write("end2end: false\n")
+                # Corroboration for the runtime's per-model precision policy: every export from this
+                # script carries the emulated-router constants (1e-9 mask nudge, 1e30 expert mask)
+                # that are unrepresentable in fp16, so the CPU path must stay fp32. The runtime scans
+                # the .param itself (meta::scan_ncnn_param) and treats "any source says unsafe" as
+                # unsafe; this key only makes the intent visible in the sidecar.
+                f.write("fp16_safe: false\n")
                 f.write("names:\n")
                 for k in sorted(names):
                     f.write(f"  {k}: {names[k]}\n")
