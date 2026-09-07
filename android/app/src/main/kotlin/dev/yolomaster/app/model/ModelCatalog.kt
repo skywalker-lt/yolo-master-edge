@@ -37,9 +37,18 @@ data class BundledModel(
     val shortID: String get() = Naming.shortID(id)
 
     companion object {
-        /** iOS default: the first model whose stem mentions "seg", else the first. */
-        fun preferred(models: List<BundledModel>): BundledModel? =
-            models.firstOrNull { it.id.contains("seg", ignoreCase = true) } ?: models.firstOrNull()
+        /**
+         * iOS default: the first model whose stem mentions "seg", else the first. Reduced-input
+         * variants ("-416", "-320") are opt-in fast entries (seg-N@416 costs ~6 pt box mAP on the
+         * COCO smoke), so they never win the default even though they sort first.
+         */
+        fun preferred(models: List<BundledModel>): BundledModel? {
+            val reduced = Regex("-(416|320|256)(_|$)")
+            return models.firstOrNull { it.id.contains("seg", ignoreCase = true) && !reduced.containsMatchIn(it.id) }
+                ?: models.firstOrNull { it.id.contains("seg", ignoreCase = true) }
+                ?: models.firstOrNull { !reduced.containsMatchIn(it.id) }
+                ?: models.firstOrNull()
+        }
     }
 }
 
@@ -54,7 +63,7 @@ class ModelCatalog(private val ctx: Context) {
     private val stamp = File(bundledRoot, ".assets-version")
 
     /** Bump when the bundled asset set changes so the copy is refreshed. */
-    private val assetsVersion = "1"
+    private val assetsVersion = "2"   // 2: + v0.1-seg-n-416_ncnn
 
     @Volatile private var cached: List<BundledModel>? = null
 

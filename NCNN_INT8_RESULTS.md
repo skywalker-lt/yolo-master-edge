@@ -252,3 +252,32 @@ Live HUD now flags `throttled` (headroom >= 0.9, red tachometer) so a slow readi
 mistaken for a runtime defect. Also measured: moa-n (VisDrone-trained mixture model) fires ~287
 boxes at conf 0.25 on an indoor scene on every platform (CLI 287, EsMoE 0, seg-N 15): out-of-domain
 model behaviour, not an app bug.
+
+Update (same day): a 3-minute Sustained bench of seg-N on Vulkan holds 63.4 ms flat (cold 70.8),
+thermal bar nominal throughout, so continuous inference alone does NOT clamp this SoC. The clamp
+(prime cores at 1.4-1.5 GHz of 4.74) appears only with the camera pipeline running: the trigger
+is the camera path (Samsung's camera power policy and/or the two 720p 30 fps streams + RGBA
+conversion), not the model. Under investigation with the Live tab's `cam lite` switch (640x480
+analysis, 15-30 fps) and the SoC rows shown while paused.
+
+Final reading (2026-09-08): with per-cluster clocks in the HUD, Live on CPU (seg-N, 2 threads,
+inference thread confirmed on prime cpu6): first 3 s prime 3648/4742 MHz -> 5 fps; after 30 s
+prime 1497, performance cluster 787 -> 4 fps; `cam lite` (640x480, 15-30 fps) changes nothing;
+paused with the camera open the clusters idle at 883/787. Conclusions: (1) thread pinning works;
+(2) a camera + sustained-CPU clamp is real but only explains 5 -> 4 fps; (3) the base speed is
+the runtime ceiling: seg-N at 640 is 85 ms pure inference on CPU and 54 ms on Vulkan at full
+clock, i.e. ~11 / ~15 fps before overheads. The iPhone's 30 fps comes from the ANE (~10 ms);
+ncnn has no Hexagon NPU path. Levers: a 416/320 re-export for Live (2-4x), and ONNX Runtime with
+the QNN execution provider on the NPU (the ANE-class path) as the next milestone.
+
+CPU scaling across all cores (`ncnn_bench --powersave 0`, seg-N fp16, S26): 2T 97.0, 4T 88.8,
+6T 87.1, 8T 75.7 ms. All eight cores buy 13% over the 2-prime-core pin (87 ms): the NEON path
+bottoms out near 75 ms (~13 fps) for this model. The iPhone Air's ~25 fps on Core ML "CPU" is the
+AMX matrix engine via BNNS, which has no ncnn counterpart on Snapdragon. Runtime ceiling confirmed
+on both units; levers = smaller input export, NPU via ORT QNN.
+
+seg-N re-exported at imgsz 416 (`yolo export format=ncnn imgsz=416`, 5.27 GFLOPs vs ~12 at 640;
+`models/v0.1-seg-n-416_ncnn`, shipped in the app as an opt-in entry): 200-image COCO val smoke
+mAP50/50-95 0.641/0.473 (640) -> 0.581/0.413 (416), i.e. -6.0 pt box mAP for ~2.3x fewer FLOPs.
+Not the default. p03 (pruned v0.1-N) cannot be re-exported from `tempo-ncnn/models/p03_v01n.pt`
+(a TorchScript trace at 640); EsMoE-N VisDrone's checkpoint is not on this pod.

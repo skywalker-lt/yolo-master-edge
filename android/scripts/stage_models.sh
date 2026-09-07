@@ -29,6 +29,7 @@ mkdir -p "$DST"
 # name-in-assets  <-  path-under-repo/models   (float models)
 STAGE=(
   "v0.1-seg-n_ncnn:v0.1-seg-n_ncnn"
+  "v0.1-seg-n-416_ncnn:v0.1-seg-n-416_ncnn"
   "moa-n_ncnn:mixture/moa-n_ncnn"
   "esmoe_n_visdrone_ncnn:esmoe_n_visdrone_ncnn"
   "p03_v01n_ncnn:p03_v01n_ncnn"

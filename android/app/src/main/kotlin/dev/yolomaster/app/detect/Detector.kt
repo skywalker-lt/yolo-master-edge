@@ -63,7 +63,11 @@ class Detector private constructor(
 
     companion object {
         private const val TAG = "Detector"
-        const val DEFAULT_THREADS = 2
+        /**
+         * 0 = every core, no pinning. Measured on the S26 (`ncnn_bench --powersave 0`, seg-N fp16):
+         * 2 pinned prime cores 87 ms, all 8 cores 76 ms, so the spread wins by 13% on this SoC.
+         */
+        const val DEFAULT_THREADS = 0
 
         /**
          * Load [model] on [compute]. GPU = ncnn Vulkan (fp16 for fp16-safe models, fp32 pinned for
