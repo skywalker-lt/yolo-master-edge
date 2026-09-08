@@ -326,3 +326,16 @@ box, the remaining gap being plain and depthwise convolutions (7x7 `pe`, MoE exp
 architecture. New dirs: `models/{v0.1-seg-n-sdpa,v0.1-n-sdpa,v0.1-n}_ncnn` (the released v0.1-N
 needs the coco_eval repair shim and a trace-time top-k dispatch shim to lower at all; documented in
 the script). Shipped to the S26 bundle and the app (asset version 4).
+
+S26 RESULT of the export fix (MEASURED 2026-09-08, `ncnn_bench`, CPU fp16, 8 threads, all cores):
+v0.1-seg-N stock export 76 ms -> SDPA export **33.2 ms** (2.3x, ~30 fps model time); v0.1-N stock
+35.5 ms -> SDPA 30.2 ms. seg-N is now in the same class as stock yolo11n-seg on the same runtime,
+with identical weights and identical mAP. The SDPA graphs are now the shipped `v0.1-seg-n_ncnn`
+and `v0.1-n_ncnn` (stock exports archived under `models/archive/*-stock_ncnn`); INT8 siblings are
+regenerated from them with the same ACIQ recipe. Section 1-3 numbers above were measured on the
+stock exports and remain valid for those files.
+
+INT8 siblings regenerated from the SDPA graphs (ACIQ 1024): seg-N 153/164 layers, 3.1 MB
+(0.27x), 200-image COCO smoke -0.81 pt mAP50-95 (0.4573 -> 0.4492, passes the 1.0-pt gate; box
+match 0.844 as before); v0.1-N 139/145 layers, 3.5 MB. Full-val certification of the new
+siblings is still to be run; the app (asset version 5) ships them.

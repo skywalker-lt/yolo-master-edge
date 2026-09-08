@@ -30,8 +30,6 @@ mkdir -p "$DST"
 STAGE=(
   "v0.1-seg-n_ncnn:v0.1-seg-n_ncnn"
   "v0.1-seg-n-416_ncnn:v0.1-seg-n-416_ncnn"
-  "v0.1-seg-n-sdpa_ncnn:v0.1-seg-n-sdpa_ncnn"
-  "v0.1-n-sdpa_ncnn:v0.1-n-sdpa_ncnn"
   "v0.1-n_ncnn:v0.1-n_ncnn"
   "moa-n_ncnn:mixture/moa-n_ncnn"
   "esmoe_n_visdrone_ncnn:esmoe_n_visdrone_ncnn"
@@ -47,6 +45,7 @@ STAGE_INT8=(
   "v0.1-seg-n-int8_ncnn:v0.1-seg-n-int8_ncnn"
   "esmoe_n_visdrone-int8_ncnn:esmoe_n_visdrone-int8_ncnn"
   "p03_v01n-int8_ncnn:p03_v01n-int8_ncnn"
+  "v0.1-n-int8_ncnn:v0.1-n-int8_ncnn"
 )
 FILES=(model.ncnn.param model.ncnn.bin metadata.yaml)
 
