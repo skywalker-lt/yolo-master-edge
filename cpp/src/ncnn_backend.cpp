@@ -158,13 +158,4 @@ void NcnnBackend::forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode
     post_ms = ms_since(t2);
 }
 
-std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg) {
-    forward_raw(bgr, cfg, /*decode=*/true);
-    // post_ms keeps its historical meaning for infer(): decode + NMS.
-    auto t3 = clk::now();
-    std::vector<Detection> dets = nms_and_cap(candidates, cfg, cand_orig_w, cand_orig_h);
-    post_ms += ms_since(t3);
-    return dets;
-}
-
 } // namespace yolomaster

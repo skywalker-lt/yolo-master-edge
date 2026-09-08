@@ -54,13 +54,17 @@ android {
 
     androidResources {
         // Model weights are read straight from the APK on first launch; don't deflate them.
-        noCompress += listOf("bin", "param")
+        noCompress += listOf("bin", "param", "onnx")
         // Quantizer leftovers must never ship even if stage_models.sh is bypassed.
         ignoreAssetsPattern = "!__pycache__:!quant:!.DS_Store:!*.npz:!*.py:!quant_manifest.json"
     }
 
     packaging {
-        jniLibs { useLegacyPackaging = false }
+        // Legacy packaging = the .so files are extracted to the native lib dir at install time.
+        // The Hexagon skels (libQnnHtpV81Skel.so) are loaded by the DSP side through
+        // libcdsprpc.so from that dir (ORT points ADSP_LIBRARY_PATH at it): they must be real
+        // files, not pages inside the APK.
+        jniLibs { useLegacyPackaging = true }
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
 

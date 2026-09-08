@@ -1,8 +1,10 @@
-// JNI bridge for the YOLO-Master ncnn runtime on Android.
+// JNI bridge for the YOLO-Master runtime on Android (ncnn, and ONNX Runtime when USE_ORT).
 //
-// It wraps exactly one seam from the shared C++ core: Backend::infer(cv::Mat, Config).
-// Nothing from the CLI driver (main.cpp), videoio, or the filesystem source layer is
-// pulled in. Robustness rules encoded here:
+// It wraps exactly one seam from the shared C++ core: Backend::forward_raw / infer(cv::Mat,
+// Config). Nothing from the CLI driver (main.cpp), videoio, or the filesystem source layer is
+// pulled in. Two runtimes share the Handle (unique_ptr<Backend>): NcnnBackend (CPU / Vulkan) and
+// OrtBackend (CPU EP, or the QNN EP on the Hexagon NPU on arm64 with the QNN libs packaged).
+// Robustness rules encoded here:
 //   * Precision is PER MODEL (policy lives in NcnnBackend, ncnn_backend.cpp): AUTO runs fp16 on
 //     armv8.2 CPUs for fp16-safe (dense) models and pins fp32 for the emulated-router mixture
 //     graphs, whose export constants (1e-9 / 1e30) are unrepresentable in fp16 and would zero
@@ -47,6 +49,10 @@
 #if NCNN_VULKAN
 #include "gpu.h"
 #endif
+#ifdef USE_ORT
+#include "ort_backend.hpp"
+#include <dlfcn.h>
+#endif
 
 using namespace yolomaster;
 
@@ -56,14 +62,22 @@ using namespace yolomaster;
 
 namespace {
 
+// Kotlin Runtime.native / Unit.native codes (dev.yolomaster.ncnn.Types.kt): the JNI ABI, keep stable.
+enum RuntimeCode : int { kRuntimeNcnn = 0, kRuntimeOnnx = 1 };
+enum UnitCode : int { kUnitCpu = 0, kUnitGpu = 1, kUnitNpu = 2 };
+// nativeCapabilities() bits.
+enum CapBits : int { kCapNcnn = 1, kCapOrt = 2, kCapQnn = 4 };
+
 struct Handle {
-    std::unique_ptr<NcnnBackend> be;
+    std::unique_ptr<Backend> be;   // NcnnBackend or OrtBackend; everything below the init is runtime-agnostic
+    int runtime = kRuntimeNcnn;
     Config cfg;
-    std::string activeBackend;   // the backend's real active_ep (resolved precision), not the request
-    std::string note;            // backend ep_note: why a requested precision was downgraded ("" if none)
+    std::string activeBackend;   // the backend's real active_ep (resolved precision / EP), not the request
+    std::string note;            // backend ep_note: why a request was downgraded ("" if none)
     Precision precision = Precision::Auto;
     bool vulkan = false;
     bool seg = false;            // metadata.yaml `task: segment` (missing key = detect); no forward needed
+    int nodesTotal = 0, nodesOnCpu = 0;   // ORT graph placement at init (0/0 for ncnn)
 };
 
 // One forward's raw result, owned by Kotlin (dev.yolomaster.ncnn.RawOutput) until
@@ -144,7 +158,7 @@ cv::Mat bitmap_to_bgr(JNIEnv* env, jobject bitmap) {
 RawOutput* forward_to_raw(Handle& h, const cv::Mat& bgr, float confFloor) {
     Config cfg = h.cfg;                  // the model's imgsz/names; only the floor differs
     cfg.conf_thresh = confFloor;
-    NcnnBackend& be = *h.be;
+    Backend& be = *h.be;
     be.forward_raw(bgr, cfg, /*decode=*/true);
     auto r = std::make_unique<RawOutput>();
     r->candidates = std::move(be.candidates);
@@ -162,6 +176,41 @@ RawOutput* forward_to_raw(Handle& h, const cv::Mat& bgr, float confFloor) {
     be.proto.clear();
     be.proto_c = be.proto_h = be.proto_w = 0;
     return r.release();
+}
+
+// Runtime capability bits, probed once. QNN = the ORT build carries the QNN EP (arm64 AAR) AND
+// libQnnHtp.so is loadable from the app's native lib dir (packaged by extractOrt). The skels
+// are loaded later by the DSP through libcdsprpc.so; that failure shows up as an init note /
+// zero HTP placement, not here.
+int capabilities() {
+    static int caps = -1;
+    if (caps >= 0) return caps;
+    int c = kCapNcnn;
+#ifdef USE_ORT
+    c |= kCapOrt;
+#if defined(__aarch64__)
+    void* h = dlopen("libQnnHtp.so", RTLD_NOW | RTLD_LOCAL);   // kept open: the EP dlopens it again by name
+    if (h) c |= kCapQnn;
+    else LOGI("QNN unavailable: %s", dlerror());
+#endif
+#endif
+    caps = c;
+    LOGI("capabilities=%d (ncnn=%d ort=%d qnn=%d)", c, (c & kCapNcnn) != 0, (c & kCapOrt) != 0, (c & kCapQnn) != 0);
+    return caps;
+}
+
+// "key=value;key=value" -> value for key ("" when absent). The nativeInit2 options string.
+std::string opt_value(const std::string& options, const std::string& key) {
+    size_t pos = 0;
+    while (pos < options.size()) {
+        size_t end = options.find(';', pos);
+        if (end == std::string::npos) end = options.size();
+        const std::string kv = options.substr(pos, end - pos);
+        const size_t eq = kv.find('=');
+        if (eq != std::string::npos && kv.substr(0, eq) == key) return kv.substr(eq + 1);
+        pos = end + 1;
+    }
+    return "";
 }
 
 // Get-or-create the ARGB_8888 bitmap the mask overlay is written into. `reuse` is taken only
@@ -199,63 +248,179 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
 
 extern "C" {
 
-JNIEXPORT jlong JNICALL
-Java_dev_yolomaster_ncnn_YoloMasterNcnn_nativeInit(JNIEnv* env, jobject, jstring jModelDir,
-                                                   jboolean useVulkan, jint threads, jint precisionCode) {
+// Shared init. `runtime` / `unit` are the Kotlin codes; `options` is "perf=<htp mode>;strict=<0|1>".
+static jlong init_impl(JNIEnv* env, jstring jModelDir, int runtime, int unit, jint threads, jint precisionCode,
+                       jstring jCacheDir, jstring jOptions) {
     g_last_error.clear();
     // precisionCode is the Kotlin Precision.native value (== C++ Precision): 0 auto, 1 fp32, 2 fp16, 3 int8.
     const Precision precision = (precisionCode >= 0 && precisionCode <= 3)
                                     ? static_cast<Precision>(precisionCode) : Precision::Auto;
     std::string dir = jstr(env, jModelDir);
-    if (precision == Precision::Int8) dir = meta::ncnn_int8_sibling(dir);   // "<name>-int8_ncnn"
-    const std::string param = dir + "/model.ncnn.param";
-    const std::string bin = dir + "/model.ncnn.bin";
-    if (precision == Precision::Int8 && !std::ifstream(param).good()) {
-        g_last_error = "int8 model dir not found: " + dir;   // hard fail: never a silent float fallback
+    const std::string cacheDir = jstr(env, jCacheDir);
+    const std::string options = jstr(env, jOptions);
+    const int th = threads > 0 ? (int)threads : std::max(1, ncnn::get_big_cpu_count());
+    std::string initNote;   // bridge-level downgrades (no GPU / no NPU), prepended to the backend's note
+
+    auto h = std::make_unique<Handle>();
+    h->precision = precision;
+    h->runtime = runtime;
+
+    if (runtime == kRuntimeOnnx) {
+#ifdef USE_ORT
+        // ONNX file choice: INT8 means a QDQ sibling (A16W8 preferred, A8W8 second) and a missing
+        // sibling is a hard failure - an int8 number must never silently come from a float model.
+        std::string onnx;
+        if (precision == Precision::Int8) {
+            for (const char* cand : {"/model-a16w8.onnx", "/model-a8w8.onnx"})
+                if (std::ifstream(dir + cand).good()) { onnx = dir + cand; break; }
+            if (onnx.empty()) {
+                g_last_error = "int8 ONNX model not found: " + dir + "/model-a16w8.onnx (or -a8w8)";
+                LOGE("%s", g_last_error.c_str());
+                return 0;
+            }
+        } else {
+            onnx = dir + "/model.onnx";
+            if (!std::ifstream(onnx).good()) {
+                g_last_error = "ONNX model not found: " + onnx;
+                LOGE("%s", g_last_error.c_str());
+                return 0;
+            }
+        }
+        OrtOptions o;
+        o.threads = th;
+        o.log_tag = "YMOrt";
+        if (unit == kUnitNpu) {
+            if (capabilities() & kCapQnn) o.device = "qnn";
+            else { o.device = "cpu"; initNote = "NPU requested but no QNN runtime on this device; using the CPU EP"; }
+        } else if (unit == kUnitGpu) {
+            o.device = "cpu"; initNote = "ONNX has no GPU unit on Android; using the CPU EP";
+        } else {
+            o.device = "cpu";
+        }
+        const std::string perf = opt_value(options, "perf");
+        if (!perf.empty()) o.htp_perf = perf;
+        o.strict_htp = opt_value(options, "strict") == "1";
+        if (!cacheDir.empty() && o.device == "qnn") {
+            // <cacheDir>/<onnx stem>_ctx.onnx: the pre-compiled HTP context (Detector owns the
+            // dir + its SoC/ORT/model stamp, and wipes it on mismatch).
+            const size_t slash = onnx.find_last_of('/');
+            std::string stem = onnx.substr(slash == std::string::npos ? 0 : slash + 1);
+            stem = stem.substr(0, stem.size() - 5);   // ".onnx"
+            o.ctx_cache_path = cacheDir + "/" + stem + "_ctx.onnx";
+        }
+        if (o.strict_htp && o.device != "qnn") {
+            g_last_error = "strict NPU requested but " + (initNote.empty() ? std::string("the NPU is not selectable") : initNote);
+            LOGE("%s", g_last_error.c_str());
+            return 0;
+        }
+        try {
+            auto ort = std::make_unique<OrtBackend>(onnx, o);
+            h->nodesTotal = ort->nodes_total();
+            h->nodesOnCpu = ort->nodes_on_cpu();
+            {   // segmentation: the ONNX export's own `task`, corroborated by the shared metadata.yaml
+                std::string task;
+                h->seg = ort->task().find("segment") != std::string::npos ||
+                         (meta::read_ncnn_yaml_scalar(dir + "/metadata.yaml", "task", task) &&
+                          task.find("segment") != std::string::npos);
+            }
+            h->be = std::move(ort);
+        } catch (const std::exception& e) {
+            g_last_error = e.what();
+            LOGE("ort init failed: %s", e.what());
+            return 0;
+        }
+#else
+        g_last_error = "this build has no ONNX Runtime backend";
         LOGE("%s", g_last_error.c_str());
         return 0;
-    }
-
-    bool haveVk = false;
-    if (useVulkan && precision == Precision::Int8) {
-        LOGI("Vulkan requested with int8: forcing CPU (no ncnn Vulkan int8 kernels)");
-    } else if (useVulkan) {
-        haveVk = acquire_gpu();
-        if (!haveVk) LOGI("Vulkan requested but unavailable; using CPU");
-    }
-    const int th = threads > 0 ? (int)threads : std::max(1, ncnn::get_big_cpu_count());
-
-    try {
-        auto h = std::make_unique<Handle>();
-        h->precision = precision;
-        h->be = std::make_unique<NcnnBackend>(param, bin, th, haveVk, precision);
-        // The backend may decline Vulkan for this model; keep the process-global GPU refcount honest.
-        const bool vkActive = h->be->active_ep.rfind("ncnn-Vulkan", 0) == 0;
-        if (haveVk && !vkActive) { release_gpu(); haveVk = false; }
-        h->vulkan = haveVk;
-        // Build the inference Config from the model's own metadata (mirrors main.cpp):
-        // the ncnn graph bakes attention token counts at the training imgsz, so it is fixed.
-        Config& c = h->cfg;
-        c.imgsz = h->be->fixed_imgsz > 0 ? h->be->fixed_imgsz
-                  : (h->be->meta_imgsz > 0 ? h->be->meta_imgsz : 640);
-        c.class_names = h->be->meta_names;  // may be empty -> labels fall back to the class index
-        h->activeBackend = h->be->active_ep;   // the REAL resolved precision, not the requested flags
-        h->note = h->be->ep_note;
-        {   // `task:` is a top-level scalar of the ultralytics sidecar; the mixture exports omit it (= detect)
-            std::string task;
-            h->seg = meta::read_ncnn_yaml_scalar(dir + "/metadata.yaml", "task", task) &&
-                     task.find("segment") != std::string::npos;
+#endif
+    } else {
+        if (precision == Precision::Int8) dir = meta::ncnn_int8_sibling(dir);   // "<name>-int8_ncnn"
+        const std::string param = dir + "/model.ncnn.param";
+        const std::string bin = dir + "/model.ncnn.bin";
+        if (precision == Precision::Int8 && !std::ifstream(param).good()) {
+            g_last_error = "int8 model dir not found: " + dir;   // hard fail: never a silent float fallback
+            LOGE("%s", g_last_error.c_str());
+            return 0;
         }
-        LOGI("init ok: %s requested=%s imgsz=%d classes=%zu threads=%d%s%s", h->activeBackend.c_str(),
-             precision_name(precision), c.imgsz, c.class_names.size(), th,
-             h->note.empty() ? "" : " note=", h->note.c_str());
-        return reinterpret_cast<jlong>(h.release());
-    } catch (const std::exception& e) {
-        g_last_error = e.what();
-        LOGE("init failed: %s", e.what());
-        if (haveVk) release_gpu();
-        return 0;
+        const bool useVulkan = unit == kUnitGpu;
+        if (unit == kUnitNpu) initNote = "ncnn has no NPU path; using the CPU";
+        bool haveVk = false;
+        if (useVulkan && precision == Precision::Int8) {
+            LOGI("Vulkan requested with int8: forcing CPU (no ncnn Vulkan int8 kernels)");
+        } else if (useVulkan) {
+            haveVk = acquire_gpu();
+            if (!haveVk) LOGI("Vulkan requested but unavailable; using CPU");
+        }
+        try {
+            auto nb = std::make_unique<NcnnBackend>(param, bin, th, haveVk, precision);
+            // The backend may decline Vulkan for this model; keep the process-global GPU refcount honest.
+            const bool vkActive = nb->active_ep.rfind("ncnn-Vulkan", 0) == 0;
+            if (haveVk && !vkActive) { release_gpu(); haveVk = false; }
+            h->vulkan = haveVk;
+            {   // `task:` is a top-level scalar of the ultralytics sidecar; the mixture exports omit it (= detect)
+                std::string task;
+                h->seg = meta::read_ncnn_yaml_scalar(dir + "/metadata.yaml", "task", task) &&
+                         task.find("segment") != std::string::npos;
+            }
+            h->be = std::move(nb);
+        } catch (const std::exception& e) {
+            g_last_error = e.what();
+            LOGE("init failed: %s", e.what());
+            if (haveVk) release_gpu();
+            return 0;
+        }
     }
+
+    // Build the inference Config from the model's own metadata (mirrors main.cpp): the ncnn graph
+    // bakes attention token counts at the training imgsz and the ONNX export is static, so it is fixed.
+    Config& c = h->cfg;
+    c.imgsz = h->be->fixed_imgsz > 0 ? h->be->fixed_imgsz
+              : (h->be->meta_imgsz > 0 ? h->be->meta_imgsz : 640);
+    c.class_names = h->be->meta_names;  // may be empty -> labels fall back to the class index
+    h->activeBackend = h->be->active_ep;   // the REAL resolved precision / EP, not the requested flags
+    h->note = initNote.empty() ? h->be->ep_note
+              : (h->be->ep_note.empty() ? initNote : initNote + "; " + h->be->ep_note);
+    LOGI("init ok: %s runtime=%s requested=%s imgsz=%d classes=%zu threads=%d placement=%d/%d%s%s",
+         h->activeBackend.c_str(), h->be->runtime_name(), precision_name(precision), c.imgsz,
+         c.class_names.size(), th, h->nodesTotal - h->nodesOnCpu, h->nodesTotal,
+         h->note.empty() ? "" : " note=", h->note.c_str());
+    return reinterpret_cast<jlong>(h.release());
+}
+
+// The original ncnn entry point: runtime = ncnn, unit = GPU when useVulkan else CPU.
+JNIEXPORT jlong JNICALL
+Java_dev_yolomaster_ncnn_YoloMasterNcnn_nativeInit(JNIEnv* env, jobject, jstring jModelDir,
+                                                   jboolean useVulkan, jint threads, jint precisionCode) {
+    return init_impl(env, jModelDir, kRuntimeNcnn, useVulkan ? kUnitGpu : kUnitCpu, threads, precisionCode,
+                     nullptr, nullptr);
+}
+
+// runtime: 0 ncnn / 1 ONNX; unit: 0 CPU / 1 GPU / 2 NPU; cacheDir: EPContext cache dir ("" = none);
+// options: "perf=burst|sustained_high_performance;strict=0|1".
+JNIEXPORT jlong JNICALL
+Java_dev_yolomaster_ncnn_YoloMasterNcnn_nativeInit2(JNIEnv* env, jobject, jstring jModelDir, jint runtime,
+                                                    jint unit, jint threads, jint precisionCode,
+                                                    jstring jCacheDir, jstring jOptions) {
+    return init_impl(env, jModelDir, runtime == kRuntimeOnnx ? kRuntimeOnnx : kRuntimeNcnn,
+                     (unit >= kUnitCpu && unit <= kUnitNpu) ? (int)unit : kUnitCpu, threads, precisionCode,
+                     jCacheDir, jOptions);
+}
+
+// Capability bits: 1 ncnn, 2 ONNX Runtime, 4 QNN (Hexagon NPU) runtime present. Static.
+JNIEXPORT jint JNICALL
+Java_dev_yolomaster_ncnn_YoloMasterNcnn_nativeCapabilities(JNIEnv*, jclass) {
+    return capabilities();
+}
+
+// [nodesTotal, nodesOnCpu] of the ORT graph placement at init ([0, 0] for ncnn / unknown).
+JNIEXPORT jintArray JNICALL
+Java_dev_yolomaster_ncnn_YoloMasterNcnn_nativePlacement(JNIEnv* env, jobject, jlong handle) {
+    auto* h = reinterpret_cast<Handle*>(handle);
+    jint v[2] = {h ? h->nodesTotal : 0, h ? h->nodesOnCpu : 0};
+    jintArray arr = env->NewIntArray(2);
+    if (arr) env->SetIntArrayRegion(arr, 0, 2, v);
+    return arr;
 }
 
 JNIEXPORT void JNICALL

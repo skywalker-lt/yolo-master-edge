@@ -185,7 +185,20 @@ std::vector<std::string> gather_images(const std::string& src, int limit);
 class Backend {
 public:
     virtual ~Backend() = default;
-    virtual std::vector<Detection> infer(const cv::Mat& bgr, const Config& cfg) = 0;
+    // The "forward once, tune cheap" seam, shared by every runtime the app can host (ncnn, ORT):
+    // preprocess -> one forward -> candidate decode, filling candidates/cand_lb/cand_orig_*/proto*
+    // and pre_ms/infer_ms/post_ms (post_ms = decode only; infer() adds the NMS time on top).
+    // `decode = false` is the bench path (iOS `inferOnly`, Android nativeInferOnly): the forward
+    // still runs, but the output is not decoded, so infer_ms is the pure kernel time and the
+    // cached candidates are CLEARED (stale candidates must never pass for this frame's).
+    // Backends that only implement infer() (MNN, TensorRT) keep the default, which throws.
+    virtual void forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode = true);
+    // infer() == forward_raw(bgr, cfg) + nms_and_cap(candidates, ...). The default is the
+    // contract every backend is expected to keep; overriding is for runtimes without a
+    // forward_raw (they must then fill the cache themselves).
+    virtual std::vector<Detection> infer(const cv::Mat& bgr, const Config& cfg);
+    // Short runtime tag ("ncnn", "ort", ...): the runtime, not the device (that is active_ep).
+    virtual const char* runtime_name() const { return "unknown"; }
     std::vector<std::string> meta_names;   // auto-read from the model (may be empty)
     int meta_imgsz = 0;                    // auto-read (0 = unknown)
     int fixed_imgsz = 0;                   // hard input constraint (0 = flexible)

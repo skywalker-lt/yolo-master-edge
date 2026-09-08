@@ -44,8 +44,25 @@ target_include_directories(yolomaster_ncnn PRIVATE
   ${OpenCV_INCLUDE_DIRS}
 )
 
-# Compile only the ncnn backend (ORT/MNN/TRT are desktop-only).
 target_compile_definitions(yolomaster_ncnn PRIVATE USE_NCNN)
+
+# ---- ONNX Runtime (optional second runtime; QNN EP = Hexagon NPU on arm64) ----
+# ORT_ANDROID_ROOT is build/ort, filled by the Gradle `extractOrt` task from the
+# onnxruntime-android(-qnn) AARs: headers/ + jni/<abi>/libonnxruntime.so. Present for both ABIs
+# (arm64-v8a: the QNN build; x86_64: the plain build for ort-CPU on the emulator); when the
+# library for this ABI is missing the module builds ncnn-only, exactly as before.
+set(ORT_LIB "${ORT_ANDROID_ROOT}/jni/${ANDROID_ABI}/libonnxruntime.so")
+if(ORT_ANDROID_ROOT AND EXISTS "${ORT_LIB}")
+  target_sources(yolomaster_ncnn PRIVATE ${CORE}/src/ort_backend.cpp)
+  target_include_directories(yolomaster_ncnn PRIVATE ${ORT_ANDROID_ROOT}/headers)
+  target_compile_definitions(yolomaster_ncnn PRIVATE USE_ORT)
+  add_library(onnxruntime SHARED IMPORTED)
+  set_target_properties(onnxruntime PROPERTIES IMPORTED_LOCATION "${ORT_LIB}")
+  target_link_libraries(yolomaster_ncnn onnxruntime)
+  message(STATUS "ONNX Runtime backend: ON (${ORT_LIB})")
+else()
+  message(STATUS "ONNX Runtime backend: OFF (no ${ORT_LIB})")
+endif()
 
 find_library(log-lib log)
 

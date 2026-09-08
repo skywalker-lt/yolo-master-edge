@@ -2,6 +2,7 @@
 // drawing, model-metadata parsing, and versatile source resolution.
 #include "yolomaster.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <filesystem>
 #include <sstream>
 #include <cstdlib>
+#include <stdexcept>
 
 namespace fs = std::filesystem;
 
@@ -148,6 +150,20 @@ std::vector<RawDet> decode_end2end(const float* out, int num_det,
 }
 
 // Per-class NMS (ultralytics agnostic=False via class offset) + max_det cap + clip-to-frame.
+// ---- Backend defaults (the shared forward_raw / infer contract) ----
+void Backend::forward_raw(const cv::Mat&, const Config&, bool) {
+    throw std::runtime_error(std::string(runtime_name()) + " backend has no forward_raw (infer() only)");
+}
+
+std::vector<Detection> Backend::infer(const cv::Mat& bgr, const Config& cfg) {
+    forward_raw(bgr, cfg, /*decode=*/true);
+    // post_ms keeps its historical meaning for infer(): decode + NMS.
+    const auto t3 = std::chrono::high_resolution_clock::now();
+    std::vector<Detection> dets = nms_and_cap(candidates, cfg, cand_orig_w, cand_orig_h);
+    post_ms += std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - t3).count();
+    return dets;
+}
+
 std::vector<Detection> nms_and_cap(const std::vector<RawDet>& cands, const Config& cfg,
                                    int orig_w, int orig_h) {
     std::vector<cv::Rect2d> boxes; std::vector<float> scores; std::vector<int> idx;
