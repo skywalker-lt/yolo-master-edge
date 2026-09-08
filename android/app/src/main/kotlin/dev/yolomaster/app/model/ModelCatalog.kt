@@ -3,38 +3,80 @@ package dev.yolomaster.app.model
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import dev.yolomaster.ncnn.Runtime
+import dev.yolomaster.ncnn.YoloMasterNcnn
 import java.io.File
 import java.util.zip.ZipInputStream
 
+/** Runtime capability bits (`YoloMasterNcnn.capabilities`), pure so the catalog rules unit-test without the native lib. */
+object Caps {
+    const val NCNN = 1
+    const val ORT = 2
+    const val QNN = 4
+    fun hasOrt(caps: Int): Boolean = (caps and ORT) != 0
+    fun hasQnn(caps: Int): Boolean = (caps and QNN) != 0
+    /** The live bits of this build on this device (loads the native library on first use). */
+    val device: Int get() = YoloMasterNcnn.capabilities
+}
+
 /** Which compute unit a model may run on; the app shows this in the compute picker. */
 enum class ComputeChoice(val label: String) {
-    GPU("GPU"), CPU("CPU");
+    GPU("GPU"), CPU("CPU"), NPU("NPU");
 
     companion object {
-        /** iOS hides CPU behind a Settings toggle; INT8 models are CPU-only regardless. */
-        fun available(allowCPU: Boolean, model: BundledModel?): List<ComputeChoice> = when {
-            model?.cpuOnly == true -> listOf(CPU)
-            allowCPU -> listOf(GPU, CPU)
-            else -> listOf(GPU)
+        /**
+         * The units [runtime] can honour for [model] on a device with [caps], in picker order
+         * (the accelerator first). ncnn: GPU + CPU, CPU hidden behind the Settings toggle as on
+         * iOS, and INT8 siblings CPU-only regardless. ONNX: the Hexagon NPU (QNN) when the device
+         * has it, plus the CPU EP - always listed, since it is the fallback ORT itself uses and
+         * hiding it would leave a QNN-less phone with an empty picker.
+         */
+        fun available(runtime: Runtime, allowCPU: Boolean, model: BundledModel?, caps: Int): List<ComputeChoice> = when (runtime) {
+            Runtime.NCNN -> when {
+                model?.cpuOnly == true -> listOf(CPU)
+                allowCPU -> listOf(GPU, CPU)
+                else -> listOf(GPU)
+            }
+            Runtime.ONNX -> if (Caps.hasQnn(caps)) listOf(NPU, CPU) else listOf(CPU)
         }
+
+        /** The ncnn rule with the device's capabilities (the pre-ONNX signature). */
+        fun available(allowCPU: Boolean, model: BundledModel?): List<ComputeChoice> =
+            available(Runtime.NCNN, allowCPU, model, Caps.device)
     }
 }
 
 /**
- * One ncnn model directory (`model.ncnn.param` + `model.ncnn.bin` + `metadata.yaml`).
- * `id` is the directory name, which is also the runtime's identity for INT8 siblings.
+ * The runtimes [model] can be loaded on by THIS build: its own file pairs ([BundledModel.runtimes])
+ * minus ONNX when ONNX Runtime is not compiled in. ncnn first: it is the certified path.
+ */
+fun runtimesAvailable(model: BundledModel?, caps: Int): List<Runtime> =
+    (model?.runtimes ?: listOf(Runtime.NCNN)).filter { it != Runtime.ONNX || Caps.hasOrt(caps) }.ifEmpty { listOf(Runtime.NCNN) }
+
+/**
+ * One model directory: `metadata.yaml` plus `model.ncnn.param` + `model.ncnn.bin` ([hasNcnn])
+ * and / or `model.onnx` ([hasOnnx], with an optional QDQ sibling [onnxQuant]). `id` is the
+ * directory name, which is also the runtime's identity for INT8 siblings.
  */
 data class BundledModel(
     val id: String,
     val dir: File,
     val isSeg: Boolean,
     val isCustom: Boolean,
+    val hasNcnn: Boolean = true,
+    val hasOnnx: Boolean = false,
+    /** "a16w8" | "a8w8" when `model-<quant>.onnx` exists beside `model.onnx` (the NPU's preferred numerics); null otherwise. */
+    val onnxQuant: String? = null,
 ) {
     val isInt8: Boolean get() = id.endsWith("-int8_ncnn")
     /** ncnn has no Vulkan int8 kernels: INT8 entries force CPU (the runtime would too). */
     val cpuOnly: Boolean get() = isInt8
     val fullName: String get() = Naming.fullName(id)
     val shortID: String get() = Naming.shortID(id)
+    /** The runtimes this directory has files for, ncnn first. */
+    val runtimes: List<Runtime> get() = listOfNotNull(Runtime.NCNN.takeIf { hasNcnn }, Runtime.ONNX.takeIf { hasOnnx })
+    /** The ONNX file [dev.yolomaster.ncnn.Precision.INT8] would load (null when there is none). */
+    val onnxQuantFile: File? get() = onnxQuant?.let { File(dir, "model-$it.onnx") }
 
     companion object {
         /**
@@ -49,6 +91,16 @@ data class BundledModel(
                 ?: models.firstOrNull { !reduced.containsMatchIn(it.id) }
                 ?: models.firstOrNull()
         }
+
+        /** Catalog rule: a directory is a model when it has the ncnn pair or an ONNX graph. */
+        fun isModelDir(dir: File): Boolean = hasNcnnPair(dir) || File(dir, ONNX).isFile
+        internal fun hasNcnnPair(dir: File): Boolean = File(dir, NCNN_PARAM).isFile && File(dir, NCNN_BIN).isFile
+
+        const val NCNN_PARAM = "model.ncnn.param"
+        const val NCNN_BIN = "model.ncnn.bin"
+        const val ONNX = "model.onnx"
+        /** The QDQ siblings in the order the runtime tries them for INT8 (`jni_bridge.cpp`). */
+        val ONNX_QUANTS = listOf("a16w8", "a8w8")
     }
 }
 
@@ -63,11 +115,11 @@ class ModelCatalog(private val ctx: Context) {
     private val stamp = File(bundledRoot, ".assets-version")
 
     /** Bump when the bundled asset set changes so the copy is refreshed. */
-    private val assetsVersion = "5"   // 5: SDPA graphs are the shipped v0.1-seg-n / v0.1-n (+ int8 siblings)
+    private val assetsVersion = "6"   // 6: model.onnx staged beside the ncnn pair (yolo11n, seg-N, v0.1-N, EsMoE-N)
 
     @Volatile private var cached: List<BundledModel>? = null
 
-    /** Blocking: first call copies ~70 MB of assets. Call off the main thread. */
+    /** Blocking: first call copies ~120 MB of assets. Call off the main thread. */
     @Synchronized
     fun discover(force: Boolean = false): List<BundledModel> {
         cached?.takeIf { !force }?.let { return it }
@@ -83,11 +135,14 @@ class ModelCatalog(private val ctx: Context) {
     fun invalidate() { cached = null }
 
     private fun listDirs(root: File): List<File> =
-        root.listFiles()?.filter { File(it, "model.ncnn.param").isFile && File(it, "model.ncnn.bin").isFile }
-            ?.sortedBy { it.name } ?: emptyList()
+        root.listFiles()?.filter { it.isDirectory && BundledModel.isModelDir(it) }?.sortedBy { it.name } ?: emptyList()
 
-    private fun describe(dir: File, custom: Boolean): BundledModel =
-        BundledModel(id = dir.name, dir = dir, isSeg = readTask(dir) == "segment", isCustom = custom)
+    private fun describe(dir: File, custom: Boolean): BundledModel = BundledModel(
+        id = dir.name, dir = dir, isSeg = readTask(dir) == "segment", isCustom = custom,
+        hasNcnn = BundledModel.hasNcnnPair(dir),
+        hasOnnx = File(dir, BundledModel.ONNX).isFile,
+        onnxQuant = BundledModel.ONNX_QUANTS.firstOrNull { File(dir, "model-$it.onnx").isFile },
+    )
 
     private fun readTask(dir: File): String? {
         val yaml = File(dir, "metadata.yaml")
@@ -108,7 +163,7 @@ class ModelCatalog(private val ctx: Context) {
         bundledRoot.mkdirs()
         for (name in names) {
             val files = am.list("models/$name") ?: continue
-            if ("model.ncnn.param" !in files) continue
+            if (BundledModel.NCNN_PARAM !in files && BundledModel.ONNX !in files) continue
             val dst = File(bundledRoot, name)
             dst.mkdirs()
             for (f in files) {
@@ -126,15 +181,13 @@ class ModelCatalog(private val ctx: Context) {
         val name = sanitize(doc.name ?: "custom")
         val dst = File(customRoot, if (name.endsWith("_ncnn")) name else "${name}_ncnn")
         dst.mkdirs()
-        var got = 0
         for (f in doc.listFiles()) {
             val n = f.name ?: continue
-            if (n in REQUIRED || n == "metadata.yaml") {
+            if (n in MODEL_FILES) {
                 ctx.contentResolver.openInputStream(f.uri)?.use { i -> File(dst, n).outputStream().use { i.copyTo(it) } }
-                if (n in REQUIRED) got++
             }
         }
-        if (got < REQUIRED.size) { dst.deleteRecursively(); throw IllegalArgumentException("Folder must contain model.ncnn.param and model.ncnn.bin") }
+        if (!BundledModel.isModelDir(dst)) { dst.deleteRecursively(); throw IllegalArgumentException("Folder must contain $REQUIRED_MSG") }
         invalidate()
         return describe(dst, custom = true)
     }
@@ -144,21 +197,19 @@ class ModelCatalog(private val ctx: Context) {
         val name = sanitize((displayName ?: "custom").removeSuffix(".zip"))
         val dst = File(customRoot, if (name.endsWith("_ncnn")) name else "${name}_ncnn")
         dst.mkdirs()
-        var got = 0
         ctx.contentResolver.openInputStream(uri)?.use { raw ->
             ZipInputStream(raw).use { zip ->
                 var e = zip.nextEntry
                 while (e != null) {
                     val base = e.name.substringAfterLast('/')
-                    if (!e.isDirectory && (base in REQUIRED || base == "metadata.yaml")) {
+                    if (!e.isDirectory && base in MODEL_FILES) {
                         File(dst, base).outputStream().use { zip.copyTo(it) }
-                        if (base in REQUIRED) got++
                     }
                     zip.closeEntry(); e = zip.nextEntry
                 }
             }
         } ?: throw IllegalArgumentException("Cannot open zip")
-        if (got < REQUIRED.size) { dst.deleteRecursively(); throw IllegalArgumentException("Zip must contain model.ncnn.param and model.ncnn.bin") }
+        if (!BundledModel.isModelDir(dst)) { dst.deleteRecursively(); throw IllegalArgumentException("Zip must contain $REQUIRED_MSG") }
         invalidate()
         return describe(dst, custom = true)
     }
@@ -169,5 +220,10 @@ class ModelCatalog(private val ctx: Context) {
 
     private fun sanitize(s: String) = s.replace(Regex("[^A-Za-z0-9._-]"), "_").ifEmpty { "custom" }
 
-    private companion object { val REQUIRED = setOf("model.ncnn.param", "model.ncnn.bin") }
+    private companion object {
+        /** Everything an import keeps: the ncnn pair, the ONNX graph and its QDQ siblings, the metadata. */
+        val MODEL_FILES = setOf(BundledModel.NCNN_PARAM, BundledModel.NCNN_BIN, BundledModel.ONNX, "metadata.yaml") +
+            BundledModel.ONNX_QUANTS.map { "model-$it.onnx" }
+        const val REQUIRED_MSG = "model.ncnn.param + model.ncnn.bin, or model.onnx"
+    }
 }

@@ -72,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.yolomaster.app.model.ComputeChoice
+import dev.yolomaster.app.model.runtimesAvailable
 import dev.yolomaster.app.system.Haptics
 import dev.yolomaster.app.system.ImageLoader
 import dev.yolomaster.app.system.Prefs
@@ -81,7 +82,9 @@ import dev.yolomaster.app.ui.common.ComputeMenu
 import dev.yolomaster.app.ui.common.LocalHazeState
 import dev.yolomaster.app.ui.common.ModelMenu
 import dev.yolomaster.app.ui.common.ProminentIconButton
+import dev.yolomaster.app.ui.common.RuntimeMenu
 import dev.yolomaster.app.ui.common.TuningPanel
+import dev.yolomaster.ncnn.Runtime
 import dev.yolomaster.app.ui.common.hazeBackdrop
 import dev.yolomaster.app.ui.common.materialCard
 import dev.yolomaster.app.ui.common.rememberHazeState
@@ -122,7 +125,8 @@ fun PhotoScreen(vm: PhotoViewModel = viewModel()) {
     var toast by remember { mutableStateOf<Toast?>(null) }
     var toastGen by remember { mutableStateOf(0) }
 
-    LaunchedEffect(allowCPU) { if (!allowCPU && ui.compute == ComputeChoice.CPU && ui.selected?.cpuOnly != true) vm.selectCompute(ComputeChoice.GPU) }
+    // Settings toggle: CPU hidden -> ncnn snaps back to GPU; ONNX has no GPU, its CPU EP stays.
+    LaunchedEffect(allowCPU) { if (!allowCPU && ui.runtime == Runtime.NCNN && ui.compute == ComputeChoice.CPU && ui.selected?.cpuOnly != true) vm.selectCompute(ComputeChoice.GPU) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(100)) { uris ->
         if (uris.isNotEmpty()) vm.load(uris.take(100))
@@ -148,7 +152,7 @@ fun PhotoScreen(vm: PhotoViewModel = viewModel()) {
                         else -> Pager(vm, ui) { vm.setViewMode(ViewMode.Gallery) }
                     }
                 }
-                if (ui.phase != Phase.Idle) ProgressCard(ui, Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                if (ui.phase != Phase.Idle || ui.measuring) ProgressCard(ui, Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                 AnimatedVisibility(showTuning) {
                     TuningPanel(vm.tuning, isSeg = ui.isSeg, onChange = { showHud = vm.tuning.showHUD; vm.retune() }, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                 }
@@ -173,7 +177,9 @@ fun PhotoScreen(vm: PhotoViewModel = viewModel()) {
                         extras = if (ui.statInf > 0) listOf(
                             "images" to "${ui.items.size}", "wall" to String.format("%.2f s", ui.wallSeconds),
                             "total dets" to "${ui.items.sumOf { it.dets.size }}", "avg e2e" to String.format("%.1f ms", ui.statPre + ui.statInf + ui.statDec + ui.statMask),
-                        ) else emptyList(),
+                            "runtime" to ui.runtime.label, "backend" to ui.backend,
+                        ) + (if (ui.runtime == Runtime.ONNX) listOf("placement" to "${ui.placement.onAccelerator}/${ui.placement.total} HTP") else emptyList())
+                        else emptyList(),
                     )
                     StatsHud(stats, fullWidth = true, modifier = Modifier.padding(horizontal = 8.dp).padding(bottom = 20.dp))
                 }
@@ -186,8 +192,12 @@ fun PhotoScreen(vm: PhotoViewModel = viewModel()) {
                     Modifier.padding(horizontal = 8.dp).materialCard(12.dp).padding(8.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    ModelMenu(ui.models, ui.selected, enabled = !ui.isRunning) { vm.selectModel(it) }
-                    ComputeMenu(ComputeChoice.available(allowCPU, ui.selected), ui.compute, enabled = !ui.isRunning) { vm.selectCompute(it) }
+                    val pickersOn = !ui.isRunning && !ui.measuring
+                    ModelMenu(ui.models, ui.selected, enabled = pickersOn) { vm.selectModel(it) }
+                    // runtime left of the unit; hidden while the model has a single runtime (nothing to pick)
+                    val runtimes = runtimesAvailable(ui.selected, ui.caps)
+                    if (runtimes.size > 1) RuntimeMenu(runtimes, ui.runtime, enabled = pickersOn) { vm.selectRuntime(it) }
+                    ComputeMenu(ComputeChoice.available(ui.runtime, allowCPU, ui.selected, ui.caps), ui.compute, enabled = pickersOn) { vm.selectCompute(it) }
                     Spacer(Modifier.weight(1f))
                     if (ui.items.isNotEmpty()) {
                         BorderedIconButton(icon = if (ui.viewMode == ViewMode.Gallery) Icons.Filled.CropPortrait else Icons.Filled.GridOn, onClick = {
@@ -221,9 +231,9 @@ fun PhotoScreen(vm: PhotoViewModel = viewModel()) {
 private fun ProgressCard(ui: PhotoUi, modifier: Modifier = Modifier) {
     val ios = LocalIosColors.current
     Row(modifier.fillMaxWidth().materialCard(12.dp).padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (ui.phase == Phase.LoadingModel) {
+        if (ui.phase == Phase.LoadingModel || ui.measuring) {
             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = ios.label)
-            Text("Loading the model to ${ui.compute.label}", style = IosType.caption, color = ios.label)
+            Text("Loading the model to ${ui.compute.label}${if (ui.measuring) " (measuring)" else ""}", style = IosType.caption, color = ios.label)
             Spacer(Modifier.weight(1f))
         } else {
             Text(if (ui.phase == Phase.Loading) "Loading / iCloud" else "Inference", style = IosType.caption, color = ios.label)

@@ -1,11 +1,14 @@
 package dev.yolomaster.app.ui.bench
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Log
 import dev.yolomaster.app.detect.Detector
 import dev.yolomaster.app.model.BundledModel
+import dev.yolomaster.app.model.Caps
 import dev.yolomaster.app.model.ComputeChoice
+import dev.yolomaster.ncnn.Runtime
 import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
@@ -89,15 +92,30 @@ object BenchStats {
     fun runName(sustained: Boolean, shortID: String?, unit: String, minutes: Int, modelCount: Int): String =
         if (sustained) "${shortID ?: "run"} · $unit · ${minutes}min" else "Sweep · $modelCount models"
 
-    /** CPU inference is slow and hot: sustained CPU stress is capped at 3 minutes (`BenchView.swift:309`). */
+    /** CPU inference is slow and hot: sustained CPU stress is capped at 3 minutes (`BenchView.swift:309`); GPU and NPU get 60. */
     fun maxSustainedMinutes(unit: ComputeChoice): Int = if (unit == ComputeChoice.CPU) 3 else 60
 
     /** Quick presets 3/5/10/20 filtered `< max` (`BenchView.swift:290`). */
     fun presets(maxMinutes: Int): List<Int> = listOf(3, 5, 10, 20).filter { it < maxMinutes }
 
-    /** The compute units a model is swept on: INT8 (CPU-only) models skip GPU; GPU runs first. */
-    fun unitsFor(model: BundledModel): List<ComputeChoice> =
-        if (model.cpuOnly) listOf(ComputeChoice.CPU) else listOf(ComputeChoice.GPU, ComputeChoice.CPU)
+    /**
+     * The runtime x unit cells a model is swept on, accelerator first within each runtime:
+     * ncnn·GPU, ncnn·CPU (INT8 CPU-only siblings skip GPU), then ONNX·NPU (when the device has the
+     * QNN runtime) and ONNX·CPU for models that ship a `model.onnx` on a build with ONNX Runtime.
+     */
+    fun cellsFor(model: BundledModel, caps: Int): List<Pair<Runtime, ComputeChoice>> = buildList {
+        if (model.hasNcnn) {
+            if (!model.cpuOnly) add(Runtime.NCNN to ComputeChoice.GPU)
+            add(Runtime.NCNN to ComputeChoice.CPU)
+        }
+        if (model.hasOnnx && Caps.hasOrt(caps)) {
+            if (Caps.hasQnn(caps)) add(Runtime.ONNX to ComputeChoice.NPU)
+            add(Runtime.ONNX to ComputeChoice.CPU)
+        }
+    }
+
+    /** The label of one cell: "ncnn·GPU", "ONNX·NPU" (matches [BenchResult.cell]). */
+    fun cellLabel(runtime: Runtime, compute: ComputeChoice): String = "${runtime.label}·${compute.label}"
 }
 
 /** What the engine reports while it runs; every call may come from the bench thread. */
@@ -124,7 +142,12 @@ sealed class SustainedOutcome {
  * Drives a [Detector] through the two protocols. Call on ONE dedicated thread: `Detector.open`
  * pins the calling thread to the big cores and the affinity only holds for that thread.
  */
-class BenchEngine {
+class BenchEngine(
+    /** App context for the ONNX side of [Detector.open] (EPContext cache dir, perf-mode / quant Settings); null = ncnn-only defaults. */
+    private val ctx: Context? = null,
+    /** Runtime capability bits; decides which ONNX cells exist. */
+    private val caps: Int = Caps.device,
+) {
     /** Suspend while paused (polled every 120 ms, `BenchView.swift:560-565`); false = cancelled. */
     private suspend fun pauseGate(control: BenchControl): Boolean {
         while (control.paused && !control.cancelled) delay(120)
@@ -132,36 +155,39 @@ class BenchEngine {
     }
 
     /**
-     * Cold sweep (`BenchView.swift:614-655`): every model x its units, warmup untimed then [iters]
-     * timed `inferOnly` calls on the gray probe. Returns true when it ran to completion.
+     * Cold sweep (`BenchView.swift:614-655`): every model x its runtime·unit cells, warmup untimed
+     * then [iters] timed `inferOnly` calls on the gray probe. Returns true when it ran to completion.
      */
     suspend fun runSweep(models: List<BundledModel>, warmup: Int, iters: Int, control: BenchControl, sink: BenchSink): Boolean {
         val img = Detector.grayProbe(640)
         try {
-            val total = models.sumOf { BenchStats.unitsFor(it).size }
+            val total = models.sumOf { BenchStats.cellsFor(it, caps).size }
             var done = 0
-            for (m in models) for (c in BenchStats.unitsFor(m)) {
+            for (m in models) for ((r, c) in BenchStats.cellsFor(m, caps)) {
+                val cell = BenchStats.cellLabel(r, c)
                 if (control.cancelled) return false
                 if (!pauseGate(control)) return false
-                sink.phase(BenchPhase.Loading(m.fullName, c.label))
-                val det = Detector.open(m, c)
-                if (det == null) { Log.w(TAG, "skip ${m.id}@${c.label}: ${Detector.lastError}"); done++; continue }
+                sink.phase(BenchPhase.Loading(m.fullName, cell))
+                val det = Detector.open(m, r, c, ctx = ctx)
+                if (det == null) { Log.w(TAG, "skip ${m.id}@$cell: ${Detector.lastError}"); done++; continue }
                 try {
-                    // WHY: the runtime may decline Vulkan (no device, driver blacklist) and silently run
-                    // on the CPU; a CPU number labelled "GPU" would poison the GPU-vs-CPU verdict.
-                    if (c == ComputeChoice.GPU && !det.onGpu) { Log.w(TAG, "skip ${m.id}@GPU: backend ${det.activeBackend}"); done++; continue }
-                    sink.phase(BenchPhase.Benchmarking(m.fullName, c.label, done, total))
+                    // WHY: the runtime may decline Vulkan (no device, driver blacklist) or the QNN EP
+                    // (no HTP, libs missing) and silently run on the CPU; a CPU number labelled "GPU"
+                    // or "NPU" would poison the accelerator-vs-CPU verdict.
+                    if (c == ComputeChoice.GPU && !det.onGpu) { Log.w(TAG, "skip ${m.id}@$cell: backend ${det.activeBackend}"); done++; continue }
+                    if (c == ComputeChoice.NPU && !det.onNpu) { Log.w(TAG, "skip ${m.id}@$cell: backend ${det.activeBackend}"); done++; continue }
+                    sink.phase(BenchPhase.Benchmarking(m.fullName, cell, done, total))
                     val ms = timedSamples(det, img, warmup, iters, control) ?: return false
                     if (ms.isEmpty()) { done++; continue }
                     val (pre, inf, dec) = stagePass(det, img)
-                    val r = BenchResult(
-                        modelId = m.id, compute = c.label,
+                    val res = BenchResult(
+                        modelId = m.id, runtime = r.label, compute = c.label,
                         coldMedian = BenchStats.median(ms), coldP90 = BenchStats.p90(ms), coldMin = BenchStats.min(ms),
                         preMs = pre, infMs = inf, decMs = dec,
                     )
                     done++
-                    sink.phase(BenchPhase.Benchmarking(m.fullName, c.label, done, total))
-                    sink.cell(r)
+                    sink.phase(BenchPhase.Benchmarking(m.fullName, cell, done, total))
+                    sink.cell(res)
                 } finally { det.close() }
             }
             return true
@@ -174,15 +200,17 @@ class BenchEngine {
      * points, live = median of the last 30, thermal sampled per publish, final = last-quarter median.
      */
     suspend fun runSustained(
-        m: BundledModel, c: ComputeChoice, minutes: Int, warmup: Int, iters: Int, control: BenchControl, sink: BenchSink,
+        m: BundledModel, r: Runtime, c: ComputeChoice, minutes: Int, warmup: Int, iters: Int, control: BenchControl, sink: BenchSink,
     ): SustainedOutcome {
         val img = Detector.grayProbe(640)
         val totalS = minutes * 60
+        val cell = BenchStats.cellLabel(r, c)
         try {
-            sink.phase(BenchPhase.Loading(m.fullName, c.label))
-            val det = Detector.open(m, c) ?: return SustainedOutcome.Failed("Could not load ${m.fullName}: ${Detector.lastError}")
+            sink.phase(BenchPhase.Loading(m.fullName, cell))
+            val det = Detector.open(m, r, c, ctx = ctx) ?: return SustainedOutcome.Failed("Could not load ${m.fullName}: ${Detector.lastError}")
             try {
                 if (c == ComputeChoice.GPU && !det.onGpu) return SustainedOutcome.Failed("GPU unavailable: ${det.backendNote.ifEmpty { det.activeBackend }}")
+                if (c == ComputeChoice.NPU && !det.onNpu) return SustainedOutcome.Failed("NPU unavailable: ${det.backendNote.ifEmpty { det.activeBackend }}")
                 // cold baseline
                 val cold = timedSamples(det, img, warmup, iters, control) ?: return SustainedOutcome.Cancelled
                 val coldMed = BenchStats.median(cold)
@@ -218,22 +246,22 @@ class BenchEngine {
                         val winTherm = ArrayList<Int>()
                         for (i in thermT.indices) if (thermT[i] >= cutoff) winTherm += thermL[i]
                         sink.tick(BenchStats.bucketed(winMs, 100), winTherm, BenchStats.liveMedian(all), (elapsed / 1000).toInt())
-                        sink.phase(BenchPhase.Sustained(m.fullName, c.label, (elapsed / 1000).toInt(), totalS))
+                        sink.phase(BenchPhase.Sustained(m.fullName, cell, (elapsed / 1000).toInt(), totalS))
                     }
                 }
                 val durationSec = ((SystemClock.elapsedRealtime() - t0) / 1000).toInt()
                 val sortedMs = all.sorted()
                 val sust = BenchStats.lastQuarterMedian(sortedMs, coldMed)
                 val (pre, inf, dec) = stagePass(det, img)
-                val r = BenchResult(
-                    modelId = m.id, compute = c.label,
+                val res = BenchResult(
+                    modelId = m.id, runtime = r.label, compute = c.label,
                     coldMedian = coldMed, coldP90 = BenchStats.p90(sortedMs), coldMin = BenchStats.min(sortedMs),
                     preMs = pre, infMs = inf, decMs = dec,
                     sustainedMedian = sust, throttlePct = BenchStats.throttlePct(coldMed, sust),
                     sparkline = BenchStats.bucketed(all, 120),    // smooth full-run trend
                     thermal = thermL.toList(),
                 )
-                return SustainedOutcome.Completed(r, durationSec)
+                return SustainedOutcome.Completed(res, durationSec)
             } finally { det.close() }
         } finally { img.recycle() }
     }

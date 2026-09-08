@@ -82,5 +82,12 @@ if [ "$MODULE" = runtime ]; then
   echo "      and a VisDrone-domain image at $ASSETS/probe_visdrone.jpg (used for esmoe/mixture rows)"
   echo "done. now: cd android && gradle :runtime:connectedAndroidTest"
 else
+  # The app's measured default (DefaultPolicy.kt: ncnn-CPU vs ONNX-NPU on first selection) runs on
+  # the same probe images as the harness; copy them from the runtime module when they are there.
+  for p in probe.jpg probe_visdrone.jpg; do
+    src="$REPO/android/runtime/src/main/assets/$p"
+    if [ -f "$src" ]; then cp "$src" "$ASSETS/$p"; echo "staged  $p  (measured-default probe)"
+    else echo "NOTE: $src missing - the app will default to ncnn-CPU unmeasured (drop it there and re-run)"; fi
+  done
   echo "done. now: cd android && gradle :app:assembleRelease"
 fi

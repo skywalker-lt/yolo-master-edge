@@ -197,7 +197,9 @@ void OrtBackend::build_session(const std::string& model_path, const OrtOptions& 
                 {"htp_performance_mode", opt.htp_perf.empty() ? "burst" : opt.htp_perf},
                 {"htp_graph_finalization_optimization_mode", "3"},
                 {"enable_htp_fp16_precision", "1"},
-                {"offload_graph_io_quantization", "1"},
+                // Strict sessions forbid any CPU node, and ORT rejects offloading the I/O Q/DQ to
+                // another EP in that mode (it logs a conflict); QNN places those nodes itself.
+                {"offload_graph_io_quantization", opt.strict_htp ? "0" : "1"},
                 {"qnn_context_priority", "high"},
             };
             opts_.AppendExecutionProvider("QNN", qo);

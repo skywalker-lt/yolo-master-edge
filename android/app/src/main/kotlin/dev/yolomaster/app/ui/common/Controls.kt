@@ -49,10 +49,11 @@ import dev.yolomaster.app.ui.overlay.BoxStyle
 import dev.yolomaster.app.ui.overlay.SegOverlayMode
 import dev.yolomaster.app.ui.theme.IosType
 import dev.yolomaster.app.ui.theme.LocalIosColors
+import dev.yolomaster.ncnn.Runtime
 
 /*
- * The controls shared by the three working tabs: the model Menu (shortID + chevron), the compute
- * dropdown, iOS `.bordered` / `.borderedProminent` icon buttons and the tuning panel.
+ * The controls shared by the three working tabs: the model Menu (shortID + chevron), the runtime
+ * and compute dropdowns, iOS `.bordered` / `.borderedProminent` icon buttons and the tuning panel.
  */
 
 /** iOS `Menu` with a `Picker("Model")` inside; label = `shortID` + up/down chevron. */
@@ -74,24 +75,38 @@ fun ModelMenu(models: List<BundledModel>, selected: BundledModel?, enabled: Bool
     }
 }
 
-/** The compute `Picker` (menu style): GPU / CPU, CPU only when allowed or forced. */
+/**
+ * A menu-style `Picker` over a short list: label + up/down chevron, one dropdown item per choice.
+ * The button is inert when there is a single choice (nothing to pick; the label still shows what
+ * is in force). The compute and runtime pickers are thin wrappers.
+ */
 @Composable
-fun ComputeMenu(choices: List<ComputeChoice>, selected: ComputeChoice, enabled: Boolean, onSelect: (ComputeChoice) -> Unit) {
+fun <T> PickerMenu(choices: List<T>, selected: T, label: (T) -> String, enabled: Boolean, onSelect: (T) -> Unit) {
     val ios = LocalIosColors.current
     var open by remember { mutableStateOf(false) }
     Box {
         TextButton(onClick = { open = true }, enabled = enabled && choices.size > 1, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-            Text(selected.label, style = IosType.body, color = if (enabled) ios.accent else ios.tertiaryLabel, maxLines = 1)
+            Text(label(selected), style = IosType.body, color = if (enabled) ios.accent else ios.tertiaryLabel, maxLines = 1)
             Icon(Icons.Filled.UnfoldMore, null, tint = if (enabled) ios.accent else ios.tertiaryLabel, modifier = Modifier.size(14.dp))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             for (c in choices) DropdownMenuItem(
-                text = { Text(c.label, style = IosType.body, color = if (c == selected) ios.accent else ios.label) },
+                text = { Text(label(c), style = IosType.body, color = if (c == selected) ios.accent else ios.label) },
                 onClick = { open = false; onSelect(c) },
             )
         }
     }
 }
+
+/** The compute `Picker` (menu style): GPU / CPU / NPU as the runtime offers, CPU only when allowed or forced. */
+@Composable
+fun ComputeMenu(choices: List<ComputeChoice>, selected: ComputeChoice, enabled: Boolean, onSelect: (ComputeChoice) -> Unit) =
+    PickerMenu(choices, selected, { it.label }, enabled, onSelect)
+
+/** The runtime `Picker` (ncnn / ONNX); callers hide it when the model has a single runtime. */
+@Composable
+fun RuntimeMenu(choices: List<Runtime>, selected: Runtime, enabled: Boolean, onSelect: (Runtime) -> Unit) =
+    PickerMenu(choices, selected, { it.label }, enabled, onSelect)
 
 /** iOS `.buttonStyle(.bordered)`: tinted translucent fill, no outline. */
 @Composable
