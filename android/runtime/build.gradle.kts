@@ -104,7 +104,15 @@ android {
     // Qualcomm libs; x86_64: the plain ORT for ort-CPU). libonnxruntime.so is also on the CMake
     // link line, which AGP packages too: pick one copy instead of failing on the duplicate.
     sourceSets["main"].jniLibs.srcDir(ortDir.map { it.dir("jni") })
-    packaging { jniLibs { pickFirsts += "**/libonnxruntime.so" } }
+    packaging {
+        jniLibs {
+            pickFirsts += "**/libonnxruntime.so"
+            // The Hexagon FastRPC loader opens the skel/stub libraries by file path from the app's
+            // native lib dir; zip-mapped (non-extracted) libs make HTP init fail silently and the
+            // QNN EP then places zero nodes. This applies to the androidTest APK (the M0 gate) too.
+            useLegacyPackaging = true
+        }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
