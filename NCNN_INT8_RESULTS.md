@@ -377,3 +377,25 @@ be set in the module that builds the APK (the runtime module for the test APK), 
 `QNN SetupBackend failed ... Failed to create device` and everything silently runs on the CPU.
 Reference (Qualcomm AI Hub) for YOLO11n on this SoC is ~3 ms graph time, so ~3x of session
 overhead remains to chase (perf mode, I/O conversions, context priority).
+
+M1 (app): runtime picker (ncnn | ONNX) and unit picker (CPU | GPU | NPU) in Live, Photo and the
+Bench sustained config; measured default per model on first use (ncnn-CPU vs ONNX-NPU mini-bench
+on the bundled probe, parity within 35%, cached per model + app version, hand picks win);
+Bench cells `ncnn·GPU / ncnn·CPU / ONNX·NPU / ONNX·CPU` with a `runtime` column in history and
+CSV; Settings "ONNX Runtime" section (perf mode, prefer quantized, clear NPU cache, measured
+defaults). 27 unit tests.
+
+M3 (quantization, desktop, ORT CPU-EP fake-quant, 200-image smokes, box mAP50-95):
+`scripts/quantize_onnx_qnn.py` (qnn_preprocess_model + get_qnn_qdq_config, u16 activations,
+int8 per-channel weights, MinMax, 256 letterboxed calibration images):
+
+| model | float | A16W8 | delta | notes |
+|---|---|---|---|---|
+| v0.1-seg-N | 0.4613 | 0.4527 | -0.86 | seg-head convs kept int16 (`--w16-match model.25.`); plain a16w8 -1.23; a16w16 lossless |
+| v0.1-N | 0.4700 | 0.4644 | -0.56 | |
+| EsMoE-N VisDrone (200 val) | 0.1688 | 0.1653 | -0.35 | |
+
+A8W8 (MinMax) is dead on all three (0 dets); parked as `model-a8w8.rejected.onnx`. Files 3.7-4.6
+MB. Device certification: `OrtDumpTest` writes `class conf x1 y1 x2 y2` dumps per (runtime, unit,
+precision) row for the 200-image smoke sets; `scripts/score_device_dumps.sh` scores them with
+`eval_map.py`; gate = every NPU row within 1.0 pt of the CPU rows. Pending the phone run.

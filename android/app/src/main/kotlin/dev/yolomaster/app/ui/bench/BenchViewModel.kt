@@ -5,8 +5,12 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.yolomaster.app.YoloMasterApp
 import dev.yolomaster.app.model.BundledModel
+import dev.yolomaster.app.model.Caps
 import dev.yolomaster.app.model.ComputeChoice
+import dev.yolomaster.app.model.runtimesAvailable
+import dev.yolomaster.app.system.Prefs
 import dev.yolomaster.app.system.ThermalMonitor
+import dev.yolomaster.ncnn.Runtime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -24,6 +28,8 @@ import kotlin.math.max
 /** UI-facing state of the Bench tab (`BenchView.swift` @State, lines 116-147). */
 data class BenchUi(
     val models: List<BundledModel> = emptyList(),
+    /** Runtime capability bits of this build/device (probed once, off main); 0 until known. */
+    val caps: Int = 0,
     val mode: BenchMode = BenchMode.Sweep,
     /** The active mode's results; the other mode's set is stashed in the ViewModel. */
     val results: List<BenchResult> = emptyList(),
@@ -33,6 +39,7 @@ data class BenchUi(
     val showAdvanced: Boolean = false,
     // sustained target + settings
     val selectedModel: BundledModel? = null,
+    val selectedRuntime: Runtime = Runtime.NCNN,
     val selectedCompute: ComputeChoice = ComputeChoice.GPU,
     val minutes: Int = 3,
     val iters: Int = 50,
@@ -51,6 +58,13 @@ data class BenchUi(
     val modelsWithResults: List<String> get() = models.map { it.id }.filter { id -> results.any { it.modelId == id } }
     val maxMinutes: Int get() = BenchStats.maxSustainedMinutes(selectedCompute)
     val canStart: Boolean get() = models.isNotEmpty() && (mode == BenchMode.Sweep || selectedModel != null)
+    /** The runtimes the sustained target can be run on (the segmented control hides itself when there is one). */
+    val runtimeChoices: List<Runtime> get() = runtimesAvailable(selectedModel, caps)
+    /** The units of [selectedRuntime] for the sustained target: CPU is ALWAYS offered, the bench measures every unit. */
+    val computeChoices: List<ComputeChoice>
+        get() = selectedModel?.let { m -> BenchStats.cellsFor(m, caps).filter { it.first == selectedRuntime }.map { it.second } }
+            ?.ifEmpty { null } ?: ComputeChoice.available(selectedRuntime, true, selectedModel, caps)
+    val selectedCell: String get() = BenchStats.cellLabel(selectedRuntime, selectedCompute)
 }
 
 /** One-shot events the screen turns into haptics (the ViewModel has no View). */
@@ -71,12 +85,12 @@ class BenchViewModel(app: Application) : AndroidViewModel(app) {
     val history: BenchHistory = YoloMasterApp.from(app).history
     val thermal = ThermalMonitor(app)
 
-    private val _ui = MutableStateFlow(BenchUi())
+    private val _ui = MutableStateFlow(BenchUi(selectedRuntime = Prefs.runtime(app)))
     val ui: StateFlow<BenchUi> = _ui
     private val _events = MutableSharedFlow<BenchEvent>(extraBufferCapacity = 16)
     val events: SharedFlow<BenchEvent> = _events
 
-    private val engine = BenchEngine()
+    private var engine = BenchEngine(app, caps = 0)
     private val benchDispatcher = Executors.newSingleThreadExecutor { r -> Thread(r, "ym-bench") }.asCoroutineDispatcher()
     private var control = BenchControl()
     private var job: Job? = null
@@ -89,8 +103,11 @@ class BenchViewModel(app: Application) : AndroidViewModel(app) {
     init {
         thermal.start()
         viewModelScope.launch {
-            val models = withContext(Dispatchers.IO) { catalog.discover() }
-            _ui.update { it.copy(models = models, selectedModel = it.selectedModel ?: BundledModel.preferred(models)) }
+            // the capability probe dlopens the QNN runtime: off main, together with the asset copy
+            val (models, caps) = withContext(Dispatchers.IO) { catalog.discover() to Caps.device }
+            engine = BenchEngine(app, caps)
+            _ui.update { it.copy(models = models, caps = caps, selectedModel = it.selectedModel ?: BundledModel.preferred(models)) }
+            _ui.update { clampTarget(it) }
         }
         // thermal peak tracked for the run's thermalPeak field (BenchView.swift:192-196)
         viewModelScope.launch { thermal.state.collect { s -> if (_ui.value.running) runThermalPeak = max(runThermalPeak, s.level) } }
@@ -108,16 +125,25 @@ class BenchViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleAdvanced() = _ui.update { it.copy(showAdvanced = !it.showAdvanced) }
 
-    fun selectModel(m: BundledModel) = _ui.update {
-        val c = if (m.cpuOnly) ComputeChoice.CPU else it.selectedCompute
-        it.copy(selectedModel = m, selectedCompute = c, minutes = it.minutes.coerceAtMost(BenchStats.maxSustainedMinutes(c)))
+    /** Keep runtime, unit and duration inside what the selected model offers on this device. */
+    private fun clampTarget(u: BenchUi): BenchUi {
+        val runtimes = runtimesAvailable(u.selectedModel, u.caps)
+        val r = if (u.selectedRuntime in runtimes) u.selectedRuntime else runtimes.first()
+        val units = u.copy(selectedRuntime = r).computeChoices
+        val c = if (u.selectedCompute in units) u.selectedCompute else units.first()
+        return u.copy(selectedRuntime = r, selectedCompute = c, minutes = u.minutes.coerceAtMost(BenchStats.maxSustainedMinutes(c)))
+    }
+
+    fun selectModel(m: BundledModel) = _ui.update { clampTarget(it.copy(selectedModel = m)) }
+
+    /** Switching runtime clamps the unit to the first that runtime offers (ONNX has no GPU, ncnn no NPU). */
+    fun selectRuntime(r: Runtime) {
+        Prefs.setRuntime(getApplication(), r)
+        _ui.update { clampTarget(it.copy(selectedRuntime = r)) }
     }
 
     /** Switching to CPU clamps the duration to the CPU cap (`BenchView.swift:301-304`). */
-    fun selectCompute(c: ComputeChoice) = _ui.update {
-        val unit = if (it.selectedModel?.cpuOnly == true) ComputeChoice.CPU else c
-        it.copy(selectedCompute = unit, minutes = it.minutes.coerceAtMost(BenchStats.maxSustainedMinutes(unit)))
-    }
+    fun selectCompute(c: ComputeChoice) = _ui.update { clampTarget(it.copy(selectedCompute = c)) }
 
     fun setMinutes(n: Int) = _ui.update { it.copy(minutes = n.coerceIn(1, it.maxMinutes)) }
     fun setIters(n: Int) = _ui.update { it.copy(iters = n.coerceIn(20, 200)) }
@@ -127,7 +153,7 @@ class BenchViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshModels() {
         viewModelScope.launch {
             val models = withContext(Dispatchers.IO) { catalog.discover(force = true) }
-            _ui.update { u -> u.copy(models = models, selectedModel = u.selectedModel?.let { s -> models.firstOrNull { it.id == s.id } } ?: BundledModel.preferred(models)) }
+            _ui.update { u -> clampTarget(u.copy(models = models, selectedModel = u.selectedModel?.let { s -> models.firstOrNull { it.id == s.id } } ?: BundledModel.preferred(models))) }
         }
     }
 
@@ -152,22 +178,24 @@ class BenchViewModel(app: Application) : AndroidViewModel(app) {
         _events.tryEmit(BenchEvent.Started)
         val sink = Sink(myGen)
         val ctl = control
+        val eng = engine
         job = viewModelScope.launch(benchDispatcher) {
             if (u.mode == BenchMode.Sweep) {
-                val ok = engine.runSweep(u.models, u.warmup, u.iters, ctl, sink)
+                val ok = eng.runSweep(u.models, u.warmup, u.iters, ctl, sink)
                 if (ok && myGen == gen) finishRun(sustained = false, durationSec = 0)
             } else {
                 val m = u.selectedModel ?: return@launch
+                val r = u.selectedRuntime
                 val c = u.selectedCompute
-                when (val out = engine.runSustained(m, c, u.minutes, u.warmup, u.iters, ctl, sink)) {
+                when (val out = eng.runSustained(m, r, c, u.minutes, u.warmup, u.iters, ctl, sink)) {
                     is SustainedOutcome.Completed -> if (myGen == gen) {
-                        val r = out.result
+                        val res = out.result
                         _ui.update {
                             it.copy(
                                 // smooth transition from the rolling window to the full-run graph
-                                sparkSamples = r.sparkline, sparkThermal = r.thermal, liveMs = r.sustainedMedian ?: it.liveMs,
+                                sparkSamples = res.sparkline, sparkThermal = res.thermal, liveMs = res.sustainedMedian ?: it.liveMs,
                                 runDuration = out.durationSec,
-                                results = it.results.filterNot { x -> x.modelId == r.modelId && x.compute == r.compute } + r,
+                                results = it.results.filterNot { x -> x.modelId == res.modelId && x.runtime == res.runtime && x.compute == res.compute } + res,
                             )
                         }
                         finishRun(sustained = true, durationSec = out.durationSec)
@@ -214,7 +242,7 @@ class BenchViewModel(app: Application) : AndroidViewModel(app) {
         val u = _ui.value
         if (u.results.isNotEmpty()) {
             val name = BenchStats.runName(
-                sustained, u.results.lastOrNull()?.shortID, u.selectedCompute.label, u.minutes, u.modelsWithResults.size,
+                sustained, u.results.lastOrNull()?.shortID, u.selectedCell, u.minutes, u.modelsWithResults.size,
             )
             val end = thermal.state.value.level
             history.add(

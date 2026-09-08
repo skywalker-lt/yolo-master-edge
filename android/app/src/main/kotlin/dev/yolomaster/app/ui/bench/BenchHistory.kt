@@ -14,11 +14,11 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
-/** One model x unit cell of a cold sweep (or the cold baseline of a sustained run). */
+/** One model x runtime x unit cell of a cold sweep (or the cold baseline of a sustained run). */
 @Serializable
 data class BenchResult(
     val modelId: String,
-    val compute: String,            // "GPU" | "CPU"
+    val compute: String,            // "GPU" | "CPU" | "NPU"
     val coldMedian: Double,
     val coldP90: Double,
     val coldMin: Double,
@@ -29,10 +29,14 @@ data class BenchResult(
     val throttlePct: Double? = null,
     val sparkline: List<Double> = emptyList(),
     val thermal: List<Int> = emptyList(),
+    /** "ncnn" | "ONNX". Defaulted so history saved before the ONNX runtime (ncnn-only) still decodes. */
+    val runtime: String = "ncnn",
 ) {
     val fullName: String get() = Naming.fullName(modelId)
     val shortID: String get() = Naming.shortID(modelId)
     val fps: Double get() = if (coldMedian > 0) 1000.0 / coldMedian else 0.0
+    /** The cell label everywhere a unit used to stand alone: "ncnn·GPU", "ONNX·NPU". */
+    val cell: String get() = "$runtime·$compute"
 }
 
 /** A saved run (`BenchHistory`, `BenchView.swift:59-81`). */
@@ -54,7 +58,6 @@ data class BenchRun(
 /** JSON at `filesDir/bench_history.json`, newest first. */
 class BenchHistory(ctx: Context) {
     private val file = File(ctx.filesDir, "bench_history.json")
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val _runs = MutableStateFlow(load())
     val runs: StateFlow<List<BenchRun>> = _runs
 
@@ -70,24 +73,27 @@ class BenchHistory(ctx: Context) {
     fun clear() { _runs.value = emptyList(); persist() }
 
     companion object {
-        /** `buildCSV` (`BenchView.swift:738-766`). */
+        /** The history codec: unknown keys ignored (forward), defaults written (a file always carries `runtime`). */
+        val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+        /** `buildCSV` (`BenchView.swift:738-766`) plus the `runtime` column after `model`. */
         fun resultsCSV(results: List<BenchResult>): String = buildString {
-            append("model,compute,cold_median_ms,cold_p90_ms,cold_min_ms,pre_ms,inf_ms,dec_ms,fps_equiv,sustained_ms,throttle_pct\n")
+            append("model,runtime,compute,cold_median_ms,cold_p90_ms,cold_min_ms,pre_ms,inf_ms,dec_ms,fps_equiv,sustained_ms,throttle_pct\n")
             for (r in results) {
-                append(String.format(Locale.US, "%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.1f,%s,%s\n",
-                    r.fullName, r.compute, r.coldMedian, r.coldP90, r.coldMin, r.preMs, r.infMs, r.decMs, r.fps,
+                append(String.format(Locale.US, "%s,%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.1f,%s,%s\n",
+                    r.fullName, r.runtime, r.compute, r.coldMedian, r.coldP90, r.coldMin, r.preMs, r.infMs, r.decMs, r.fps,
                     r.sustainedMedian?.let { String.format(Locale.US, "%.2f", it) } ?: "",
                     r.throttlePct?.let { String.format(Locale.US, "%.1f", it) } ?: ""))
             }
         }
 
-        /** `runsCSV` (`BenchView.swift:1018-1038`). */
+        /** `runsCSV` (`BenchView.swift:1018-1038`) plus the `runtime` column after `model`. */
         fun runsCSV(runs: List<BenchRun>): String = buildString {
-            append("run,date,mode,model,compute,cold_median_ms,cold_p90_ms,fps_equiv,sustained_ms,throttle_pct,thermal_start,thermal_end,thermal_peak\n")
+            append("run,date,mode,model,runtime,compute,cold_median_ms,cold_p90_ms,fps_equiv,sustained_ms,throttle_pct,thermal_start,thermal_end,thermal_peak\n")
             val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
             for (run in runs) for (r in run.results) {
-                append(String.format(Locale.US, "\"%s\",%s,%s,%s,%s,%.2f,%.2f,%.1f,%s,%s,%d,%d,%d\n",
-                    run.name.replace("\"", "\"\""), iso.format(Date(run.dateMs)), run.mode, r.fullName, r.compute,
+                append(String.format(Locale.US, "\"%s\",%s,%s,%s,%s,%s,%.2f,%.2f,%.1f,%s,%s,%d,%d,%d\n",
+                    run.name.replace("\"", "\"\""), iso.format(Date(run.dateMs)), run.mode, r.fullName, r.runtime, r.compute,
                     r.coldMedian, r.coldP90, r.fps,
                     r.sustainedMedian?.let { String.format(Locale.US, "%.2f", it) } ?: "",
                     r.throttlePct?.let { String.format(Locale.US, "%.1f", it) } ?: "",

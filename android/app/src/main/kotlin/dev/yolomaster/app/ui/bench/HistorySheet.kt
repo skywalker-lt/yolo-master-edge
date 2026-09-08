@@ -278,7 +278,7 @@ private fun HistoryCard(
             if (sustained && run.durationSec > 0) Text("· ${BenchHistory.durationText(run.durationSec)}", style = IosType.caption2.tabular, color = ios.secondaryLabel)
         }
         run.fastest?.let { f ->
-            Text("fastest ${f.shortID} @ ${f.compute} · ${fmt1(f.coldMedian)} ms · ${f.fps.toInt()} FPS", style = IosType.caption.tabular, color = ios.secondaryLabel)
+            Text("fastest ${f.shortID} @ ${f.cell} · ${fmt1(f.coldMedian)} ms · ${f.fps.toInt()} FPS", style = IosType.caption.tabular, color = ios.secondaryLabel)
         }
         if (open) {
             Column(Modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -292,7 +292,7 @@ private fun HistoryCard(
                 val sorted = run.results.sortedWith(compareBy<BenchResult> { it.modelId }.thenBy { it.coldMedian })
                 for (r in sorted) {
                     DetailBar(
-                        unitIcon(r.compute), "${r.shortID} ${r.compute}", r.coldMedian, fullScale = scale, color = HudColors.msColor(r.coldMedian),
+                        unitIcon(r.compute), "${r.shortID} ${r.cell}", r.coldMedian, fullScale = scale, color = HudColors.msColor(r.coldMedian),
                         value = if (asFPS) "${r.fps.toInt()} fps" else "${fmt1(r.coldMedian)} ms", valueWidth = 56.dp,
                         modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onToggleFPS),
                     )

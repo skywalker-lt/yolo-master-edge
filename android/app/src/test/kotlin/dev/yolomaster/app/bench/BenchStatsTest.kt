@@ -71,6 +71,7 @@ class BenchStatsTest {
     @Test fun sustainedCapsAndPresets() {
         assertEquals(3, BenchStats.maxSustainedMinutes(ComputeChoice.CPU))
         assertEquals(60, BenchStats.maxSustainedMinutes(ComputeChoice.GPU))
+        assertEquals(60, BenchStats.maxSustainedMinutes(ComputeChoice.NPU))
         assertEquals(listOf(3, 5, 10, 20), BenchStats.presets(60))
         assertEquals(emptyList<Int>(), BenchStats.presets(3))
     }
@@ -88,11 +89,14 @@ class BenchStatsTest {
             preMs = 1.5, infMs = 12.0, decMs = 0.75, sustainedMedian = 15.5, throttlePct = 25.25,
         )
         val lines = BenchHistory.resultsCSV(listOf(r)).trimEnd().lines()
-        assertEquals("model,compute,cold_median_ms,cold_p90_ms,cold_min_ms,pre_ms,inf_ms,dec_ms,fps_equiv,sustained_ms,throttle_pct", lines[0])
-        assertEquals("YOLO-Master-v0.1-seg-n,GPU,12.25,14.00,11.00,1.50,12.00,0.75,81.6,15.50,25.3", lines[1])
+        assertEquals("model,runtime,compute,cold_median_ms,cold_p90_ms,cold_min_ms,pre_ms,inf_ms,dec_ms,fps_equiv,sustained_ms,throttle_pct", lines[0])
+        assertEquals("YOLO-Master-v0.1-seg-n,ncnn,GPU,12.25,14.00,11.00,1.50,12.00,0.75,81.6,15.50,25.3", lines[1])
         // a cold-only result leaves the sustained columns empty
         val cold = BenchHistory.resultsCSV(listOf(r.copy(sustainedMedian = null, throttlePct = null))).trimEnd().lines()[1]
         assertTrue(cold.endsWith(",81.6,,"))
+        // an NPU cell carries its runtime
+        val npu = BenchHistory.resultsCSV(listOf(r.copy(runtime = "ONNX", compute = "NPU"))).trimEnd().lines()[1]
+        assertTrue(npu.startsWith("YOLO-Master-v0.1-seg-n,ONNX,NPU,"))
     }
 
     @Test fun runsCsvHeaderAndRow() {
@@ -102,8 +106,8 @@ class BenchStatsTest {
             thermalStart = 0, thermalEnd = 1, thermalPeak = 2,
         )
         val lines = BenchHistory.runsCSV(listOf(run)).trimEnd().lines()
-        assertEquals("run,date,mode,model,compute,cold_median_ms,cold_p90_ms,fps_equiv,sustained_ms,throttle_pct,thermal_start,thermal_end,thermal_peak", lines[0])
-        assertEquals("\"Sweep \"\"x\"\"\",1970-01-01T00:00:00Z,Cold Sweep,YOLO-Master-p03_v01n-int8,CPU,20.00,22.00,50.0,,,0,1,2", lines[1])
+        assertEquals("run,date,mode,model,runtime,compute,cold_median_ms,cold_p90_ms,fps_equiv,sustained_ms,throttle_pct,thermal_start,thermal_end,thermal_peak", lines[0])
+        assertEquals("\"Sweep \"\"x\"\"\",1970-01-01T00:00:00Z,Cold Sweep,YOLO-Master-p03_v01n-int8,ncnn,CPU,20.00,22.00,50.0,,,0,1,2", lines[1])
         assertEquals(r, run.fastest)
     }
 }

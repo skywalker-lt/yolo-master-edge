@@ -65,9 +65,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.yolomaster.app.R
 import dev.yolomaster.app.YoloMasterApp
+import dev.yolomaster.app.detect.DefaultPolicy
 import dev.yolomaster.app.model.BundledModel
+import dev.yolomaster.app.model.Caps
+import dev.yolomaster.app.model.Naming
 import dev.yolomaster.app.system.Prefs
 import dev.yolomaster.app.system.rememberBoolPref
+import dev.yolomaster.app.system.rememberStringPref
+import dev.yolomaster.app.ui.common.Segmented
+import dev.yolomaster.app.ui.common.tabular
 import dev.yolomaster.app.ui.theme.IosOrange
 import dev.yolomaster.app.ui.theme.IosRed
 import dev.yolomaster.app.ui.theme.IosType
@@ -75,6 +81,7 @@ import dev.yolomaster.app.ui.theme.LocalIosColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /*
  * The Settings tab (`ContentView.swift:104-425`): About, Licenses & Acknowledgements, Privacy &
@@ -91,6 +98,7 @@ private val baseProjects = listOf(
 private val acknowledgements = listOf(
     Ack("Ultralytics", R.drawable.ack_ultralytics, "The YOLO training and inference framework YOLO-Master builds on. Copyright 2025 Ultralytics, AGPL-3.0.", "https://github.com/ultralytics/ultralytics"),
     Ack("ncnn @ Tencent", null, "The on-device inference runtime. Copyright 2017-2026 THL A29 Limited, BSD-3-Clause.", "https://github.com/Tencent/ncnn"),
+    Ack("ONNX Runtime @ Microsoft", null, "The second runtime: its QNN execution provider drives the Hexagon NPU. Copyright Microsoft Corporation, MIT.", "https://github.com/microsoft/onnxruntime"),
 )
 
 private val licenseNotice = """
@@ -152,10 +160,31 @@ fun SettingsScreen() {
     var confirmErase by remember { mutableStateOf(false) }
     val n = runs.size
 
+    // ONNX Runtime section state: capability bits (native probe, off main), the EPContext cache
+    // size, the perf-mode / quant prefs and the measured-default table.
+    var perfMode by rememberStringPref(Prefs.ORT_PERF_MODE, Prefs.PERF_BURST)
+    var preferQuant by rememberBoolPref(Prefs.ORT_PREFER_QUANT, false)
+    var caps by remember { mutableStateOf(0) }
+    val hasOrt = Caps.hasOrt(caps)
+    val hasQnn = Caps.hasQnn(caps)
+    var cacheBytes by remember { mutableStateOf(0L) }
+    var defaults by remember { mutableStateOf<List<DefaultPolicy.Measured>>(emptyList()) }
+    val ortCtxDir = remember { File(ctx.filesDir, "ort_ctx") }
+
     fun refreshCustom() {
         scope.launch { customModels = withContext(Dispatchers.IO) { app.catalog.discover(force = true).filter { it.isCustom } } }
     }
-    LaunchedEffect(Unit) { refreshCustom() }
+    fun refreshOrt() {
+        scope.launch {
+            val (c, bytes, d) = withContext(Dispatchers.IO) {
+                Triple(Caps.device, ortCtxDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }, DefaultPolicy.all(ctx))
+            }
+            caps = c; cacheBytes = bytes; defaults = d
+        }
+    }
+    fun clearNpuCache() { scope.launch { withContext(Dispatchers.IO) { ortCtxDir.deleteRecursively() }; refreshOrt() } }
+    fun resetDefaults() { DefaultPolicy.resetAll(ctx); Prefs.clearAllChoices(ctx); refreshOrt() }
+    LaunchedEffect(Unit) { refreshCustom(); refreshOrt() }
 
     val treePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) scope.launch {
@@ -191,7 +220,7 @@ fun SettingsScreen() {
             }) {
                 Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("YOLO-Master extends the real-time YOLO detector with Mixture-of-Experts (MoE) routing. Instead of one dense network, lightweight expert branches specialize on different feature patterns, and a learned router activates only the most relevant experts for each image.", style = IosType.footnote, color = ios.secondaryLabel)
-                    Text("That adds capacity where it matters, with clear gains on small and crowded objects, while keeping inference light enough to run in real time. On Android the model runs through ncnn on the GPU (Vulkan) or the CPU, in fp16 or mixed-INT8.", style = IosType.footnote, color = ios.secondaryLabel)
+                    Text("That adds capacity where it matters, with clear gains on small and crowded objects, while keeping inference light enough to run in real time. On Android the model runs through ncnn on the GPU (Vulkan) or the CPU, in fp16 or mixed-INT8, or through ONNX Runtime on the Hexagon NPU (Snapdragon) or the CPU.", style = IosType.footnote, color = ios.secondaryLabel)
                     HorizontalDivider(color = ios.separator)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)) {
                         LinkChip("Paper", Icons.Filled.Article, "https://arxiv.org/pdf/2512.23273")
@@ -238,10 +267,57 @@ fun SettingsScreen() {
         }
 
         // D. Compute
-        FormSection(header = "Compute", footer = "CPU runs the fp16 path and is required for the mixed-INT8 models. Turn off to hide CPU from the Live and Photo compute pickers. The Bench tab always measures CPU.") {
+        FormSection(header = "Compute", footer = "CPU runs the fp16 path and is required for the mixed-INT8 models. Turn off to hide CPU from the Live and Photo compute pickers (ncnn only: the ONNX CPU path is the NPU's fallback and stays). The Bench tab always measures CPU.") {
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Allow CPU inference", style = IosType.body, color = ios.label, modifier = Modifier.weight(1f))
                 Switch(checked = allowCPU, onCheckedChange = { allowCPU = it })
+            }
+        }
+
+        // D2. ONNX Runtime (the second runtime: QNN EP on the Hexagon NPU, CPU EP elsewhere)
+        FormSection(
+            header = "ONNX Runtime",
+            footer = if (hasQnn) "The Hexagon NPU is available on this device. \"burst\" is the Live setting; \"sustained\" holds a lower clock for long runs. The NPU cache holds the compiled graphs (regenerated on the next load, several seconds per model). Measured defaults: the runtime and unit each model opens on when you have not picked one by hand; Reset also forgets your hand picks."
+                     else if (hasOrt) "No Hexagon NPU runtime on this device: ONNX models run on the CPU execution provider. Measured defaults: the runtime and unit each model opens on when you have not picked one by hand; Reset also forgets your hand picks."
+                     else "ONNX Runtime is not part of this build.",
+        ) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("NPU performance mode", style = IosType.body, color = ios.label, modifier = Modifier.weight(1f))
+                Segmented(Prefs.perfModes, perfMode, { it }, enabled = hasQnn, modifier = Modifier.width(160.dp)) { perfMode = it }
+            }
+            HorizontalDivider(color = ios.separator)
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Prefer quantized (A16W8) on NPU", style = IosType.body, color = ios.label, modifier = Modifier.weight(1f))
+                Switch(checked = preferQuant, onCheckedChange = { preferQuant = it }, enabled = hasQnn)
+            }
+            HorizontalDivider(color = ios.separator)
+            Row(
+                Modifier.fillMaxWidth().clickable(enabled = cacheBytes > 0) { clearNpuCache() }.padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(Icons.Filled.Delete, null, tint = if (cacheBytes > 0) IosRed else ios.tertiaryLabel, modifier = Modifier.size(20.dp))
+                Text("Clear NPU cache", style = IosType.body, color = if (cacheBytes > 0) IosRed else ios.tertiaryLabel, modifier = Modifier.weight(1f))
+                Text(if (cacheBytes > 0) String.format("%.1f MB", cacheBytes / 1e6) else "empty", style = IosType.caption.tabular, color = ios.secondaryLabel)
+            }
+            HorizontalDivider(color = ios.separator)
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Measured defaults", style = IosType.body, color = ios.label, modifier = Modifier.weight(1f))
+                TextButton(onClick = { resetDefaults() }, enabled = defaults.isNotEmpty()) { Text("Reset", style = IosType.body) }
+            }
+            if (defaults.isEmpty()) {
+                Text("None yet: each model is measured the first time it is selected in Live or Photo.", style = IosType.caption, color = ios.tertiaryLabel, modifier = Modifier.padding(bottom = 8.dp))
+            }
+            defaults.forEach { m ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(Naming.fullName(m.modelId), style = IosType.callout, color = ios.label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        Text(m.cell, style = IosType.captionSemibold, color = ios.accent, modifier = Modifier.clip(CircleShape).background(ios.accent.copy(alpha = 0.14f)).padding(horizontal = 8.dp, vertical = 2.dp))
+                    }
+                    Text(
+                        "ncnn·CPU ${DefaultPolicy.fmt(m.ncnnCpuMs)} ms  ·  ONNX·NPU ${DefaultPolicy.fmt(m.onnxNpuMs)} ms" + (if (m.note.isNotEmpty()) "  ·  ${m.note}" else ""),
+                        style = IosType.caption.tabular, color = ios.secondaryLabel,
+                    )
+                }
             }
         }
 
@@ -253,16 +329,16 @@ fun SettingsScreen() {
                     Text("BETA", style = IosType.caption2Bold, color = IosOrange, modifier = Modifier.clip(CircleShape).background(IosOrange.copy(alpha = 0.25f)).padding(horizontal = 5.dp, vertical = 1.dp))
                 }
             },
-            footer = "Import a folder or .zip containing model.ncnn.param, model.ncnn.bin and metadata.yaml. Imported models appear in the Live, Photo, and Bench pickers the next time you open that tab. The first load may take a moment.",
+            footer = "Import a folder or .zip containing metadata.yaml plus model.ncnn.param and model.ncnn.bin (ncnn) and / or model.onnx (ONNX Runtime; a model-a16w8.onnx sibling is picked up too). Imported models appear in the Live, Photo, and Bench pickers the next time you open that tab. The first load may take a moment.",
         ) {
             Row(Modifier.fillMaxWidth().clickable { treePicker.launch(null) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(Icons.Filled.AddCircleOutline, null, tint = ios.accent, modifier = Modifier.size(20.dp))
-                Text("Load custom ncnn model (folder)", style = IosType.body, color = ios.accent)
+                Text("Load custom model (folder)", style = IosType.body, color = ios.accent)
             }
             HorizontalDivider(color = ios.separator)
             Row(Modifier.fillMaxWidth().clickable { zipPicker.launch(arrayOf("application/zip")) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(Icons.Filled.AddCircleOutline, null, tint = ios.accent, modifier = Modifier.size(20.dp))
-                Text("Load custom ncnn model (.zip)", style = IosType.body, color = ios.accent)
+                Text("Load custom model (.zip)", style = IosType.body, color = ios.accent)
             }
             customModels.forEach { m ->
                 HorizontalDivider(color = ios.separator)

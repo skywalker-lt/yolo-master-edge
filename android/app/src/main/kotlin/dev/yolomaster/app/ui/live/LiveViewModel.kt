@@ -16,18 +16,24 @@ import androidx.camera.core.ImageProxy
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.yolomaster.app.YoloMasterApp
+import dev.yolomaster.app.detect.DefaultPolicy
 import dev.yolomaster.app.detect.Detector
 import dev.yolomaster.app.model.BundledModel
+import dev.yolomaster.app.model.Caps
 import dev.yolomaster.app.model.ComputeChoice
 import dev.yolomaster.app.system.GallerySaver
+import dev.yolomaster.app.system.Prefs
 import dev.yolomaster.app.system.ThermalMonitor
 import dev.yolomaster.app.ui.common.Tuning
 import dev.yolomaster.app.ui.overlay.Annotate
 import dev.yolomaster.app.ui.overlay.SegOverlayMode
 import dev.yolomaster.ncnn.Detection
+import dev.yolomaster.ncnn.Placement
+import dev.yolomaster.ncnn.Runtime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
@@ -47,9 +53,14 @@ data class FrameResult(
 /** UI-facing state of the Live tab (`LiveView.swift` @State). */
 data class LiveUi(
     val models: List<BundledModel> = emptyList(),
+    /** Runtime capability bits of this build/device (probed once, off main); 0 until known. */
+    val caps: Int = 0,
     val initializing: Boolean = true,
     val selected: BundledModel? = null,
+    val runtime: Runtime = Runtime.NCNN,
     val compute: ComputeChoice = ComputeChoice.GPU,
+    /** The measured-default mini-bench is running for [selected] (the pickers settle when it lands). */
+    val measuring: Boolean = false,
     val wantRun: Boolean = true,
     val running: Boolean = false,
     val loadingModel: Boolean = false,
@@ -57,6 +68,8 @@ data class LiveUi(
     val classNames: List<String> = emptyList(),
     val backend: String = "",
     val backendNote: String = "",
+    /** ONNX graph placement of the loaded model (0/0 for ncnn). */
+    val placement: Placement = Placement(0, 0),
     val capturing: Boolean = false,
     val loadError: String? = null,
 )
@@ -67,7 +80,7 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
     val thermal = ThermalMonitor(app)
     val camera = CameraController(app)
 
-    private val _ui = MutableStateFlow(LiveUi())
+    private val _ui = MutableStateFlow(LiveUi(runtime = Prefs.runtime(app)))
     val ui: StateFlow<LiveUi> = _ui
     private val _frame = MutableStateFlow(FrameResult())
     val frame: StateFlow<FrameResult> = _frame
@@ -106,58 +119,100 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
     init {
         thermal.start()
         viewModelScope.launch {
-            val models = withContext(Dispatchers.IO) { catalog.discover() }
-            val allow = dev.yolomaster.app.system.Prefs.allowCPU(app)
-            _ui.value = _ui.value.copy(models = models, initializing = false, selected = BundledModel.preferred(models))
-            if (!allow && _ui.value.compute == ComputeChoice.CPU) _ui.value = _ui.value.copy(compute = ComputeChoice.GPU)
+            // the capability probe dlopens the QNN runtime: off main, together with the asset copy
+            val (models, caps) = withContext(Dispatchers.IO) { catalog.discover() to Caps.device }
+            _ui.update { it.copy(models = models, caps = caps, initializing = false) }
+            BundledModel.preferred(models)?.let { applySelection(it) }
+            // Settings toggle: CPU hidden -> ncnn snaps to GPU (LiveView.swift:204-206); ONNX has no GPU
+            if (!Prefs.allowCPU(app) && _ui.value.runtime == Runtime.NCNN && _ui.value.compute == ComputeChoice.CPU && _ui.value.selected?.cpuOnly != true) {
+                _ui.update { it.copy(compute = ComputeChoice.GPU) }
+            }
             if (_ui.value.wantRun) startLoop()
         }
     }
 
     // ---- selection ----------------------------------------------------------------------------
 
-    fun selectModel(m: BundledModel) {
-        var c = _ui.value.compute
-        if (m.cpuOnly) c = ComputeChoice.CPU
-        _ui.value = _ui.value.copy(selected = m, compute = c)
+    /**
+     * Select [m] and settle its runtime x unit: the user's remembered pick for it, else the cached
+     * measured default, else measure now on the inference thread (the pickers keep the previous
+     * value and the loading card says "(measuring)" until the verdict lands, 1-2 s per candidate).
+     */
+    private fun applySelection(m: BundledModel) {
+        val app = getApplication<Application>()
+        val allow = Prefs.allowCPU(app)
+        val caps = _ui.value.caps
+        val cached = DefaultPolicy.resolveCached(app, m, allow, caps)
+        if (cached != null) { _ui.update { it.copy(selected = m, runtime = cached.first, compute = cached.second) }; return }
+        _ui.update { it.copy(selected = m, measuring = true) }
+        camera.analysisExecutor.execute {
+            val pick = try { DefaultPolicy.resolve(app, m, allow, caps) } catch (t: Throwable) {
+                Log.w(TAG, "measured default failed for ${m.id}: ${t.message}"); Runtime.NCNN to ComputeChoice.CPU
+            }
+            _ui.update { if (it.selected?.id == m.id) it.copy(runtime = pick.first, compute = pick.second, measuring = false) else it.copy(measuring = false) }
+        }
     }
 
-    fun selectCompute(c: ComputeChoice) { _ui.value = _ui.value.copy(compute = c) }
+    fun selectModel(m: BundledModel) = applySelection(m)
+
+    /** A hand pick is remembered per model and beats the measured default from then on. */
+    fun selectRuntime(r: Runtime) {
+        val app = getApplication<Application>()
+        val u = _ui.value
+        val units = ComputeChoice.available(r, Prefs.allowCPU(app), u.selected, u.caps)
+        val c = if (u.compute in units) u.compute else units.first()
+        Prefs.setRuntime(app, r)
+        u.selected?.let { Prefs.setChoice(app, it.id, r, c) }
+        _ui.update { it.copy(runtime = r, compute = c) }
+    }
+
+    fun selectCompute(c: ComputeChoice) {
+        val u = _ui.value
+        u.selected?.let { Prefs.setChoice(getApplication(), it.id, u.runtime, c) }
+        _ui.update { it.copy(compute = c) }
+    }
 
     fun refreshModels() {
         viewModelScope.launch {
             val models = withContext(Dispatchers.IO) { catalog.discover(force = true) }
-            _ui.value = _ui.value.copy(models = models, selected = _ui.value.selected?.let { s -> models.firstOrNull { it.id == s.id } } ?: BundledModel.preferred(models))
+            _ui.update { it.copy(models = models) }
+            val keep = _ui.value.selected?.let { s -> models.firstOrNull { it.id == s.id } } ?: BundledModel.preferred(models)
+            if (keep != null) applySelection(keep) else _ui.update { it.copy(selected = null) }
         }
     }
 
     // ---- run control ----------------------------------------------------------------------------
 
     fun togglePlay() {
-        if (_ui.value.running || _ui.value.loadingModel) { _ui.value = _ui.value.copy(wantRun = false); suspendLoop() }
-        else { _ui.value = _ui.value.copy(wantRun = true); startLoop() }
+        if (_ui.value.running || _ui.value.loadingModel) { _ui.update { it.copy(wantRun = false) }; suspendLoop() }
+        else { _ui.update { it.copy(wantRun = true) }; startLoop() }
     }
 
     /** Loads the model on the inference thread; frames are only processed once it is loaded. */
     fun startLoop() {
         val model = _ui.value.selected ?: return
         if (running.get() || _ui.value.loadingModel) return
-        _ui.value = _ui.value.copy(loadingModel = true, loadError = null)
+        _ui.update { it.copy(loadingModel = true, loadError = null) }
         camera.analysisExecutor.execute {
             detector?.close(); detector = null
-            val det = Detector.open(model, _ui.value.compute, threads = tuning.threads)
+            // a pending measured-default task ran ahead of this one on the same executor, so the
+            // runtime / unit read here are the settled ones
+            val u = _ui.value
+            val det = Detector.open(model, u.runtime, u.compute, threads = tuning.threads, ctx = getApplication())
             if (det == null) {
-                _ui.value = _ui.value.copy(loadingModel = false, running = false, wantRun = false, loadError = Detector.lastError)
+                _ui.update { it.copy(loadingModel = false, running = false, wantRun = false, loadError = Detector.lastError) }
                 return@execute
             }
             detector = det
             seq = 0; loopFrames = 0; loopWindowStart = 0
             openHint()
             running.set(true)
-            _ui.value = _ui.value.copy(
-                loadingModel = false, running = true, isSeg = det.isSeg, classNames = det.classNames,
-                backend = det.activeBackend, backendNote = det.backendNote,
-            )
+            _ui.update {
+                it.copy(
+                    loadingModel = false, running = true, isSeg = det.isSeg, classNames = det.classNames,
+                    backend = det.activeBackend, backendNote = det.backendNote, placement = det.placement,
+                )
+            }
         }
     }
 
@@ -165,7 +220,7 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
     fun suspendLoop() {
         running.set(false)
         camera.analysisExecutor.execute { closeHint(); detector?.close(); detector = null }
-        _ui.value = _ui.value.copy(running = false, loadingModel = false)
+        _ui.update { it.copy(running = false, loadingModel = false) }
         _frame.value = FrameResult(frameSize = _frame.value.frameSize)
     }
 
@@ -184,7 +239,7 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
     private val pm = app.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
     private fun readInt(path: String): Int = try { val f = java.io.File(path); if (f.canRead()) f.readText().trim().toInt() else -1 } catch (_: Throwable) { -1 }
     private val diagJob = viewModelScope.launch(Dispatchers.IO) {
-        val cpus = Runtime.getRuntime().availableProcessors()
+        val cpus = java.lang.Runtime.getRuntime().availableProcessors()
         // cluster = group of cpus sharing cpuinfo_max_freq, represented by its first cpu
         val maxOf = (0 until cpus).map { it to readInt("/sys/devices/system/cpu/cpu$it/cpufreq/cpuinfo_max_freq") }
         val clusters = maxOf.filter { it.second > 0 }.groupBy { it.second }.entries.sortedByDescending { it.key }
@@ -296,7 +351,7 @@ class LiveViewModel(app: Application) : AndroidViewModel(app), ImageAnalysis.Ana
                 // re-arm >= 1.0 s after the tap (the shutter sound is about that long)
                 val wait = 1000 - (SystemClock.elapsedRealtime() - t0)
                 if (wait > 0) kotlinx.coroutines.delay(wait)
-                _ui.value = _ui.value.copy(capturing = false)
+                _ui.update { it.copy(capturing = false) }
                 shutterArmed.set(true)
                 withContext(Dispatchers.Main) { onDone(ok) }
             }

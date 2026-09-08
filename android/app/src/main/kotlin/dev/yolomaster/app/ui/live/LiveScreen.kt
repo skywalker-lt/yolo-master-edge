@@ -75,6 +75,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.yolomaster.app.model.ComputeChoice
+import dev.yolomaster.app.model.runtimesAvailable
 import dev.yolomaster.app.system.Haptics
 import dev.yolomaster.app.system.Prefs
 import dev.yolomaster.app.system.ShutterSound
@@ -84,7 +85,9 @@ import dev.yolomaster.app.ui.common.ComputeMenu
 import dev.yolomaster.app.ui.common.LocalHazeState
 import dev.yolomaster.app.ui.common.ModelMenu
 import dev.yolomaster.app.ui.common.ProminentIconButton
+import dev.yolomaster.app.ui.common.RuntimeMenu
 import dev.yolomaster.app.ui.common.TuningPanel
+import dev.yolomaster.ncnn.Runtime
 import dev.yolomaster.app.ui.common.hazeBackdrop
 import dev.yolomaster.app.ui.common.materialCard
 import dev.yolomaster.app.ui.common.rememberHazeState
@@ -139,8 +142,8 @@ fun LiveScreen(vm: LiveViewModel = viewModel()) {
     var zoomBase by remember { mutableStateOf(1f) }
     var showHud by remember { mutableStateOf(vm.tuning.showHUD) }
 
-    // Settings toggle: CPU hidden -> snap back to GPU (LiveView.swift:204-206).
-    LaunchedEffect(allowCPU) { if (!allowCPU && ui.compute == ComputeChoice.CPU && ui.selected?.cpuOnly != true) vm.selectCompute(ComputeChoice.GPU) }
+    // Settings toggle: CPU hidden -> ncnn snaps back to GPU (LiveView.swift:204-206); ONNX has no GPU, its CPU EP stays.
+    LaunchedEffect(allowCPU) { if (!allowCPU && ui.runtime == Runtime.NCNN && ui.compute == ComputeChoice.CPU && ui.selected?.cpuOnly != true) vm.selectCompute(ComputeChoice.GPU) }
     LaunchedEffect(Unit) { if (!hasCamera) permission.launch(Manifest.permission.CAMERA) }
 
     // Camera + loop lifecycle: bind while visible, suspend when hidden (onDisappear / scenePhase).
@@ -223,7 +226,7 @@ fun LiveScreen(vm: LiveViewModel = viewModel()) {
                 when {
                     ui.initializing -> CenterCard { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = ios.label); Text("Initializing...", style = IosType.caption, color = ios.label) } }
                     ui.models.isEmpty() -> EmptyState("No models bundled", Icons.Filled.Videocam, "Copy ncnn model folders into android/app/src/main/assets/models/, rebuild.")
-                    ui.loadingModel -> CenterCard { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = ios.label); Text("Loading the model to ${ui.compute.label}", style = IosType.caption, color = ios.label) } }
+                    ui.loadingModel || ui.measuring -> CenterCard { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = ios.label); Text("Loading the model to ${ui.compute.label}${if (ui.measuring) " (measuring)" else ""}", style = IosType.caption, color = ios.label) } }
                     ui.loadError != null -> CenterCard { Text("ERROR: ${ui.loadError}", style = IosType.caption, color = IosRed) }
                 }
 
@@ -256,7 +259,9 @@ fun LiveScreen(vm: LiveViewModel = viewModel()) {
                                     "camera" to String.format("%.1f fps", cam.cameraHz),
                                     "loop" to String.format("%.1f fps", frame.loopHz),
                                     "frame age" to if (cam.ageReliable) String.format("%.0f ms", cam.frameAgeMs) else "--",
+                                    "runtime" to ui.runtime.label,
                                     "backend" to ui.backend,
+                                ) + (if (ui.runtime == Runtime.ONNX) listOf("placement" to "${ui.placement.onAccelerator}/${ui.placement.total} HTP") else emptyList()) + listOf(
                                     "threads" to "${vm.tuning.threads.let { if (it == 0) "all" else it }}",
                                     "headroom" to if (diag.headroom >= 0f) String.format("%.2f", diag.headroom) else "--",
                                     "prime clk" to if (diag.primeMHz > 0) "${diag.primeMHz} MHz" else "--",
@@ -284,8 +289,12 @@ fun LiveScreen(vm: LiveViewModel = viewModel()) {
                     Modifier.padding(horizontal = 16.dp).materialCard(12.dp).padding(8.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    ModelMenu(ui.models, ui.selected, enabled = !ui.wantRun) { vm.selectModel(it) }
-                    ComputeMenu(ComputeChoice.available(allowCPU, ui.selected), ui.compute, enabled = !ui.wantRun) { vm.selectCompute(it) }
+                    val pickersOn = !ui.wantRun && !ui.measuring
+                    ModelMenu(ui.models, ui.selected, enabled = pickersOn) { vm.selectModel(it) }
+                    // runtime left of the unit; hidden while the model has a single runtime (nothing to pick)
+                    val runtimes = runtimesAvailable(ui.selected, ui.caps)
+                    if (runtimes.size > 1) RuntimeMenu(runtimes, ui.runtime, enabled = pickersOn) { vm.selectRuntime(it) }
+                    ComputeMenu(ComputeChoice.available(ui.runtime, allowCPU, ui.selected, ui.caps), ui.compute, enabled = pickersOn) { vm.selectCompute(it) }
                     Spacer(Modifier.weight(1f))
                     BorderedIconButton(
                         icon = if (cam.torchOn) Icons.Filled.FlashlightOn else Icons.Filled.FlashlightOff,

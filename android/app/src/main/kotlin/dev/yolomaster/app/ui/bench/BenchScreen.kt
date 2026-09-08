@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -98,8 +99,12 @@ import kotlin.math.roundToInt
  * colour-ramp bars, the thermal tach, a live throttle sparkline, haptics and the export toast.
  */
 
-/** Unit icons (`benchUnitIcon`, `BenchView.swift:84-90`): GPU = layered squares, CPU = chip. */
-internal fun unitIcon(compute: String): ImageVector = if (compute == ComputeChoice.GPU.label) Icons.Filled.Layers else Icons.Filled.Memory
+/** Unit icons (`benchUnitIcon`, `BenchView.swift:84-90`): GPU = layered squares, NPU = bolt, CPU = chip. */
+internal fun unitIcon(compute: String): ImageVector = when (compute) {
+    ComputeChoice.GPU.label -> Icons.Filled.Layers
+    ComputeChoice.NPU.label -> Icons.Filled.Bolt
+    else -> Icons.Filled.Memory
+}
 
 internal fun fmt1(v: Double): String = String.format(java.util.Locale.US, "%.1f", v)
 
@@ -191,7 +196,7 @@ private fun EmptyBench() {
         Spacer(Modifier.height(10.dp))
         Text("No benchmarks yet", style = IosType.title3Bold, color = ios.label)
         Spacer(Modifier.height(4.dp))
-        Text("Run a cold sweep across every model and compute unit.", style = IosType.subheadline, color = ios.secondaryLabel)
+        Text("Run a cold sweep across every model, runtime and compute unit.", style = IosType.subheadline, color = ios.secondaryLabel)
     }
 }
 
@@ -239,8 +244,14 @@ private fun SustainedConfig(ui: BenchUi, haptics: Haptics, vm: BenchViewModel) {
     Column(Modifier.fillMaxWidth().innerCard(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ModelMenu(ui.models, ui.selectedModel, enabled = enabled) { vm.selectModel(it) }
-            // CPU is ALWAYS offered here: the bench measures every unit regardless of the Settings toggle
-            Segmented(ComputeChoice.entries, ui.selectedCompute, { it.label }, enabled = enabled, modifier = Modifier.weight(1f)) {
+            // runtime first (hidden for single-runtime models), then its units. CPU is ALWAYS offered
+            // here: the bench measures every unit regardless of the Settings toggle
+            if (ui.runtimeChoices.size > 1) {
+                Segmented(ui.runtimeChoices, ui.selectedRuntime, { it.label }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                    if (it != ui.selectedRuntime) { haptics.light(); vm.selectRuntime(it) }
+                }
+            }
+            Segmented(ui.computeChoices, ui.selectedCompute, { it.label }, enabled = enabled, modifier = Modifier.weight(1f)) {
                 if (it != ui.selectedCompute) { haptics.light(); vm.selectCompute(it) }
             }
         }
@@ -367,7 +378,7 @@ private fun HeroCard(r: BenchResult) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text("FASTEST", style = IosType.caption2, color = ios.secondaryLabel)
             Text(r.fullName, style = IosType.headline, color = ios.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${r.compute}  ·  ${fmt1(r.coldMedian)} ms  ·  ${r.fps.toInt()} FPS", style = IosType.caption.tabular, color = ios.secondaryLabel)
+            Text("${r.cell}  ·  ${fmt1(r.coldMedian)} ms  ·  ${r.fps.toInt()} FPS", style = IosType.caption.tabular, color = ios.secondaryLabel)
         }
     }
 }
@@ -389,14 +400,14 @@ private fun ModelCard(mid: String, ui: BenchUi, onToggle: () -> Unit) {
             Text(title, style = IosType.subheadlineBold, color = ios.label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             rows.firstOrNull()?.let { f ->
                 Text(
-                    "fastest ${f.compute}", style = IosType.caption2, color = ios.label,
+                    "fastest ${f.cell}", style = IosType.caption2, color = ios.label,
                     modifier = Modifier.background(IosGreen.copy(alpha = 0.2f), CircleShape).padding(horizontal = 6.dp, vertical = 2.dp),
                 )
             }
             Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null, tint = ios.tertiaryLabel, modifier = Modifier.size(14.dp))
         }
         for (r in rows) {
-            DetailBar(unitIcon(r.compute), r.compute, r.coldMedian, fullScale = 50.0, color = HudColors.msColor(r.coldMedian), value = fmt1(r.coldMedian))
+            DetailBar(unitIcon(r.compute), r.cell, r.coldMedian, fullScale = 50.0, color = HudColors.msColor(r.coldMedian), value = fmt1(r.coldMedian))
             val s = r.sustainedMedian; val tp = r.throttlePct
             if (s != null && tp != null) {
                 DetailBar(Icons.Filled.LocalFireDepartment, "sustained", s, fullScale = 50.0, color = HudColors.msColor(s), value = "+${tp.toInt()}%")
@@ -405,7 +416,7 @@ private fun ModelCard(mid: String, ui: BenchUi, onToggle: () -> Unit) {
         if (expanded) {
             Divider(color = ios.separator, thickness = 0.5.dp)
             for (r in rows) {
-                Text("${r.compute} · ${r.fps.toInt()} FPS · p90 ${fmt1(r.coldP90)}", style = IosType.caption2, color = ios.secondaryLabel)
+                Text("${r.cell} · ${r.fps.toInt()} FPS · p90 ${fmt1(r.coldP90)}", style = IosType.caption2, color = ios.secondaryLabel)
                 DetailBar(StageIcons.preprocess, "preprocess", r.preMs)
                 DetailBar(StageIcons.inference, "inference", r.infMs)
                 DetailBar(StageIcons.decode, "decode", r.decMs)
