@@ -339,3 +339,17 @@ INT8 siblings regenerated from the SDPA graphs (ACIQ 1024): seg-N 153/164 layers
 (0.27x), 200-image COCO smoke -0.81 pt mAP50-95 (0.4573 -> 0.4492, passes the 1.0-pt gate; box
 match 0.844 as before); v0.1-N 139/145 layers, 3.5 MB. Full-val certification of the new
 siblings is still to be run; the app (asset version 5) ships them.
+
+### S26 table for the shipped (SDPA) seg-N graph (MEASURED 2026-09-08, `ncnn_bench`, medians ms)
+
+| unit | 2T | 4T | 8T | note |
+|---|---|---|---|---|
+| CPU fp16 | **34.8** | 46.2 | 39.4 (32-33 in an earlier run) | fastest path, ~30 fps model time |
+| CPU int8+fp16 | 42.0 | 43.8 | 38.8 | slower than fp16 at every thread count |
+| Vulkan (Adreno 840) | 50.1 (first frame 74) | | | stock graph was 54.4 |
+
+Consequences: (1) the mixed-INT8 win measured on the stock export (sections 3-5) does NOT carry
+over: with the glue removed the graph is convolution-bound and fp16 NEON beats int8 convs plus
+their quantize/requantize passes; INT8 keeps only the 0.27x size at its accuracy cost.
+(2) CPU fp16 beats Vulkan 1.5x on this graph, so the GPU is no longer the fastest unit for the
+dense models on the S26. (3) Thread scaling is flat; 2 pinned threads is as fast as 8 and cooler.

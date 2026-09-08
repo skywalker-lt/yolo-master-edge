@@ -6,9 +6,10 @@
 #   scripts/stage_models.sh --module app    # -> android/app/src/main/assets/models     (the app)
 #
 # Models are NOT committed (they ship as GitHub Release assets); this copies your local
-# working-tree copies into assets/. Only the three runtime files are copied (param, bin,
-# metadata.yaml): quantizer leftovers (quant/, quant_manifest.json, __pycache__/, model_ncnn.py)
-# must never land in an APK.
+# working-tree copies into assets/. Only the runtime files are copied: the three ncnn files
+# (param, bin, metadata.yaml) plus, when present, the ONNX Runtime files that live in the same
+# dir (model.onnx, model-a16w8.onnx, model-a8w8.onnx). Quantizer leftovers (quant/,
+# quant_manifest.json, __pycache__/, model_ncnn.py) must never land in an APK.
 set -euo pipefail
 
 MODULE=runtime
@@ -48,6 +49,9 @@ STAGE_INT8=(
   "v0.1-n-int8_ncnn:v0.1-n-int8_ncnn"
 )
 FILES=(model.ncnn.param model.ncnn.bin metadata.yaml)
+# ONNX Runtime siblings (scripts/export_onnx_dense.py / quantize_onnx_qnn.py): optional, copied
+# when the source dir has them, so an ncnn-only dir stages exactly as before.
+OPTIONAL_FILES=(model.onnx model-a16w8.onnx model-a8w8.onnx)
 
 stage_one() {  # name-in-assets  path-under-repo/models  kind
   local name="$1" rel="$2" kind="$3" src="$REPO/models/$2"
@@ -57,7 +61,11 @@ stage_one() {  # name-in-assets  path-under-repo/models  kind
       [ -f "$src/$f" ] || { echo "ERROR: $src/$f missing" >&2; exit 1; }
       cp "$src/$f" "$DST/$name/$f"
     done
-    echo "staged  $name  ($kind)"
+    local extra=""
+    for f in "${OPTIONAL_FILES[@]}"; do
+      [ -f "$src/$f" ] && { cp "$src/$f" "$DST/$name/$f"; extra="$extra +$f"; }
+    done
+    echo "staged  $name  ($kind$extra)"
   elif [ "$kind" = int8 ]; then
     echo "WARN: $src not found - build it with scripts/quantize_ncnn_int8.py (INT8 rows will be skipped)" >&2
   else

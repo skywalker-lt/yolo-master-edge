@@ -6,11 +6,12 @@ import java.nio.ByteBuffer
 import kotlin.math.abs
 
 /**
- * On-device YOLO-Master inference on ncnn.
+ * On-device YOLO-Master inference on ncnn or ONNX Runtime.
  *
- * Wraps the shared C++ core (the same letterbox -> ncnn -> decode -> NMS path as the
- * desktop runners). Detection and segmentation, CPU by default with an opt-in Vulkan
- * fast path. Not thread-safe: use one instance per thread, or serialize calls.
+ * Wraps the shared C++ core (the same letterbox -> forward -> decode -> NMS path as the
+ * desktop runners). Detection and segmentation; ncnn on the CPU by default with an opt-in
+ * Vulkan fast path, or ONNX Runtime on the CPU EP / the Hexagon NPU (QNN EP) when the device
+ * has it ([hasQnn]). Not thread-safe: use one instance per thread, or serialize calls.
  *
  * CPU precision is decided PER MODEL by native code (see [Precision]): fp16-safe (dense)
  * models run fp16 on armv8.2 CPUs; the emulated-router mixture models are pinned fp32
@@ -50,11 +51,28 @@ class YoloMasterNcnn : AutoCloseable {
     val isLoaded: Boolean get() = handle != 0L
 
     /**
-     * The precision that actually resolved, reported by native code (never the requested flag):
-     * "ncnn-CPU-fp32", "ncnn-CPU-fp16", "ncnn-CPU-int8+fp32", "ncnn-CPU-int8+fp16",
-     * "ncnn-Vulkan" (GPU fp16), "ncnn-Vulkan-fp32" (GPU, fp16 declined by the model), or "none".
+     * The precision / execution provider that actually resolved, reported by native code (never
+     * the requested flag): ncnn -> "ncnn-CPU-fp32", "ncnn-CPU-fp16", "ncnn-CPU-int8+fp32",
+     * "ncnn-CPU-int8+fp16", "ncnn-Vulkan" (GPU fp16), "ncnn-Vulkan-fp32" (GPU, fp16 declined by
+     * the model); ONNX -> "ort-CPU-fp32|a16w8|a8w8", "ort-QNN-htp-fp16|a16w8|a8w8" (NPU, plus
+     * "-mixed" when some nodes fell back to the CPU EP); "none" when not loaded.
      */
     val activeBackend: String get() = if (handle != 0L) nativeActiveBackend(handle) else "none"
+
+    /** The runtime this instance was loaded with ([Runtime.NCNN] until [init] says otherwise). */
+    var runtime: Runtime = Runtime.NCNN
+        private set
+
+    /** True when the model runs on the Hexagon NPU (the ONNX QNN EP), fully or in part. */
+    val onNpu: Boolean get() = activeBackend.startsWith("ort-QNN")
+
+    /** ONNX graph placement at init ("N/M HTP" for the HUD); 0/0 for ncnn. */
+    val placement: Placement
+        get() {
+            if (handle == 0L) return Placement(0, 0)
+            val p = nativePlacement(handle)
+            return Placement(p[0], p[1])
+        }
 
     /** Why a requested precision was downgraded (e.g. "fp32 pinned: emulated-router ..."); "" if it was honoured. */
     val backendNote: String get() = if (handle != 0L) nativeBackendNote(handle) else ""
@@ -91,10 +109,41 @@ class YoloMasterNcnn : AutoCloseable {
         useVulkan: Boolean = false,
         threads: Int = 0,
         precision: Precision = Precision.AUTO,
+    ): Boolean = init(modelDir, Runtime.NCNN, if (useVulkan) Unit.GPU else Unit.CPU, threads, precision)
+
+    /**
+     * Load a model directory on [runtime] / [unit]. ncnn needs `model.ncnn.param/.bin` +
+     * `metadata.yaml`; ONNX needs `model.onnx` beside them (a QDQ `model-a16w8.onnx` /
+     * `model-a8w8.onnx` sibling for [Precision.INT8], missing = failure, like the ncnn int8 rule).
+     *
+     * A [unit] the runtime cannot honour on this device (ncnn/NPU, ONNX/GPU, ONNX/NPU without
+     * [hasQnn]) falls back to the CPU with a [backendNote] - except when [strictNpu] is set: then
+     * the NPU must take the WHOLE graph (`session.disable_cpu_ep_fallback`) or init fails with the
+     * reason in [lastError]. That is the verification switch, not a Live setting.
+     *
+     * [cacheDir] (ONNX/NPU) holds the pre-compiled HTP context `<stem>_ctx.onnx`: generated at the
+     * first init (slow: seconds of graph finalization), opened directly afterwards. The caller
+     * owns the dir and must wipe it when the SoC, ORT or the model file changes. [perfMode] is the
+     * QNN `htp_performance_mode` ("burst" for Live, "sustained_high_performance" for a bench).
+     * Returns true on success.
+     */
+    fun init(
+        modelDir: String,
+        runtime: Runtime,
+        unit: Unit,
+        threads: Int = 0,
+        precision: Precision = Precision.AUTO,
+        cacheDir: String = "",
+        perfMode: String = "burst",
+        strictNpu: Boolean = false,
     ): Boolean {
         close()
-        handle = nativeInit(modelDir, useVulkan, threads, precision.native)
-        if (handle != 0L) names = nativeMetaNames(handle)
+        val options = "perf=$perfMode;strict=${if (strictNpu) 1 else 0}"
+        handle = nativeInit2(modelDir, runtime.native, unit.native, threads, precision.native, cacheDir, options)
+        if (handle != 0L) {
+            names = nativeMetaNames(handle)
+            this.runtime = runtime
+        }
         return handle != 0L
     }
 
@@ -238,6 +287,7 @@ class YoloMasterNcnn : AutoCloseable {
             nativeRelease(handle)
             handle = 0L
             names = emptyArray()
+            runtime = Runtime.NCNN
         }
     }
 
@@ -245,6 +295,10 @@ class YoloMasterNcnn : AutoCloseable {
         if (config == Bitmap.Config.ARGB_8888) this else copy(Bitmap.Config.ARGB_8888, false)
 
     private external fun nativeInit(modelDir: String, useVulkan: Boolean, threads: Int, precision: Int): Long
+    private external fun nativeInit2(
+        modelDir: String, runtime: Int, unit: Int, threads: Int, precision: Int, cacheDir: String, options: String,
+    ): Long
+    private external fun nativePlacement(handle: Long): IntArray
     private external fun nativeSetConfig(handle: Long, conf: Float, iou: Float, maxDet: Int)
     private external fun nativeInfer(handle: Long, bitmap: Bitmap): FloatArray?
     private external fun nativeSegOverlay(handle: Long, dimsOut: IntArray): ByteArray?
@@ -276,6 +330,19 @@ class YoloMasterNcnn : AutoCloseable {
         fun setPowersave(mode: Int): Boolean = nativeSetPowersave(mode) == 0
 
         /**
+         * Runtime capability bits of THIS build on THIS device, probed once: 1 = ncnn, 2 = ONNX
+         * Runtime compiled in, 4 = the QNN (Hexagon NPU) runtime is loadable. The app builds its
+         * runtime / unit menus from these instead of guessing from the SoC name.
+         */
+        val capabilities: Int by lazy { nativeCapabilities() }
+
+        /** ONNX Runtime is part of this build (both ABIs of the current packaging). */
+        val hasOrt: Boolean get() = (capabilities and 2) != 0
+
+        /** The Hexagon NPU can be requested ([Runtime.ONNX] + [Unit.NPU]); false on x86_64 and non-Qualcomm SoCs. */
+        val hasQnn: Boolean get() = (capabilities and 4) != 0
+
+        /**
          * The 10-color class palette (index = classId % 10) as 30 floats `[r, g, b] * 10` in
          * 0..1 - the same table the native mask overlay and the CLI draw use.
          */
@@ -293,5 +360,6 @@ class YoloMasterNcnn : AutoCloseable {
         // Static natives (no model handle). The raw handle natives live on RawOutput itself.
         @JvmStatic private external fun nativeSetPowersave(mode: Int): Int
         @JvmStatic private external fun nativePalette(): FloatArray
+        @JvmStatic private external fun nativeCapabilities(): Int
     }
 }
