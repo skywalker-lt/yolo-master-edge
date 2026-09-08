@@ -353,3 +353,27 @@ over: with the glue removed the graph is convolution-bound and fp16 NEON beats i
 their quantize/requantize passes; INT8 keeps only the 0.27x size at its accuracy cost.
 (2) CPU fp16 beats Vulkan 1.5x on this graph, so the GPU is no longer the fastest unit for the
 dense models on the S26. (3) Thread scaling is flat; 2 pinned threads is as fast as 8 and cooler.
+
+## 6. ONNX Runtime + QNN on the Hexagon NPU (MEASURED, S26, 2026-09-09, M0 gate)
+
+`OrtQnnSmokeTest` (runtime test APK, ORT 1.29.0 + QNN 2.42.0, V81 skel, fp32 ONNX run as
+fp16 on HTP, `htp_performance_mode=burst`, 30 timed frames), model time medians in ms:
+
+| model | ORT CPU | NPU fp16 | ncnn CPU fp16 (best) | HTP placement | dets NPU vs CPU |
+|---|---|---|---|---|---|
+| yolo11n | 54.6 | **9.1** | ~28 | 331/331 | 13 = 13 |
+| v0.1-N (SDPA export) | 95.3 | **11.0** | 30 | 629/629 | 14 = 14 |
+| v0.1-seg-N (SDPA export) | 143.9 | **19.6** | 33 | 674/674 | 11 vs 15 |
+| esmoe_n_visdrone | 111.2 | **12.3** | 35 | 596/596 | 19 vs 43 |
+
+Every graph is placed entirely on the HTP (strict sessions succeed); first inference 15-25 ms
+with the EPContext cache (7-9 MB per model) created at first session. GO: the NPU is 2.7x the
+best ncnn path for the detect model and 1.7x for seg. Open issue: fp16 precision on the HTP
+drops detections on seg-N (11/15) and EsMoE (19/43) while the det model is exact; A16W8
+quantization (16-bit activations) and the 200-image dump certification are the next step.
+Packaging lesson: the Hexagon loader opens the skel by file path; `extractNativeLibs=true`
+(`jniLibs.useLegacyPackaging = true`) plus the `libcdsprpc.so` `uses-native-library` entry must
+be set in the module that builds the APK (the runtime module for the test APK), otherwise
+`QNN SetupBackend failed ... Failed to create device` and everything silently runs on the CPU.
+Reference (Qualcomm AI Hub) for YOLO11n on this SoC is ~3 ms graph time, so ~3x of session
+overhead remains to chase (perf mode, I/O conversions, context priority).
