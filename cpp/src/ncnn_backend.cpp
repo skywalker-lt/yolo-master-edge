@@ -80,6 +80,7 @@ NcnnBackend::NcnnBackend(const std::string& param_path, const std::string& bin_p
         throw std::runtime_error("ncnn: failed to load param " + param_path);
     if (net_.load_model(bin_path.c_str()) != 0)
         throw std::runtime_error("ncnn: failed to load bin " + bin_path);
+    for (const char* n : net_.output_names()) if (out_proto_ == n) has_proto_ = true;
 
     // auto-read ultralytics metadata sidecar (class names + imgsz)
     const std::string dir = std::filesystem::path(param_path).parent_path().string();
@@ -108,7 +109,7 @@ std::vector<Detection> NcnnBackend::infer(const cv::Mat& bgr, const Config& cfg)
     ex.input(in_blob_.c_str(), in);
     ncnn::Mat out, pm;
     ex.extract(out_blob_.c_str(), out);
-    ex.extract(out_proto_.c_str(), pm);        // proto (empty on detection models)
+    if (has_proto_) ex.extract(out_proto_.c_str(), pm);   // proto (seg models only; avoids ncnn's per-frame "find_blob_index_by_name out1 failed" log on detection models)
     infer_ms = ms_since(t1);
 
     // ---- reshape to channel-major [feat_dim x num_anchors] then decode ----

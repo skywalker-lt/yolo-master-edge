@@ -73,7 +73,7 @@ run_cell() {   # $1 model $2 backend
     [ -f "$cell/api_c$c.json" ] && continue
     local workers=1; is_gpu "$b" || workers=$API_WORKERS_CPU; [ $c -eq 1 ] && workers=1
     log "API  $m/$b c=$c workers=$workers"
-    "$SERVER" -p "$PORT" --loop-threads 2 --max-queue 64 --timeout-ms 60000 --engine-cache "$MODELS/.trt_cache" \
+    "$SERVER" -p "$PORT" --loop-threads 2 --max-queue 64 --timeout-ms 60000 \
       -m "m=$path,backend=$be,device=$dev,precision=$prec,threads=$thr,workers=$workers" > "$cell/server_c$c.log" 2>&1 &
     local spid=$!
     for i in $(seq 1 600); do curl -sf "localhost:$PORT/readyz" >/dev/null && break; sleep 0.5; done

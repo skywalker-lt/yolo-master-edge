@@ -12,7 +12,8 @@ namespace yolomaster {
 class MnnBackend : public Backend {
 public:
     // forward: "cpu" (default) | "cuda" (requires an MNN built with CUDA)
-    MnnBackend(const std::string& model_path, int threads = 4, const std::string& forward = "cpu");
+    MnnBackend(const std::string& model_path, int threads = 4, const std::string& forward = "cpu",
+               Precision precision = Precision::Auto);
     ~MnnBackend() override;
     std::vector<Detection> infer(const cv::Mat& bgr, const Config& cfg) override;
 

@@ -44,12 +44,13 @@ if ! ls /usr/local/cuda-${CUDA_DOT}/lib64/libcudart.so.12 >/dev/null 2>&1; then
   log "CUDA ${CUDA_DOT} runtime libs beside the existing toolkit"
   apt-get install -y -qq --no-install-recommends cuda-cudart-${CUDA_MM} libcublas-${CUDA_MM} cuda-nvrtc-${CUDA_MM} \
     cuda-cudart-dev-${CUDA_MM} cuda-crt-${CUDA_MM} cuda-nvcc-${CUDA_MM} cuda-cccl-${CUDA_MM} \
-    libcusolver-dev-${CUDA_MM} libcublas-dev-${CUDA_MM} libcusparse-dev-${CUDA_MM} libcurand-dev-${CUDA_MM} >/dev/null   # headers + nvcc + cuSOLVER (MNN CUDA backend)
+    libcusolver-dev-${CUDA_MM} libcublas-dev-${CUDA_MM} libcusparse-dev-${CUDA_MM} libcurand-dev-${CUDA_MM} cuda-nvrtc-dev-${CUDA_MM} >/dev/null   # headers + nvcc + cuSOLVER (MNN CUDA backend)
 fi
 echo "/usr/local/cuda-${CUDA_DOT}/lib64" > /etc/ld.so.conf.d/cuda-trt.conf && ldconfig
 
 log "pip tools"
-pip install -q --upgrade "cmake>=3.27" ninja onnx onnxconverter-common "onnxruntime>=1.18,<1.21" websocket-client requests pyyaml >/dev/null
+pip install -q --upgrade "cmake>=3.27" ninja onnx onnxconverter-common "onnxruntime>=1.18,<1.21" websocket-client requests pyyaml \
+  opencv-python-headless pytest psutil >/dev/null   # scoring (eval_map.py via ultralytics), server tests
 
 if ! command -v bazel >/dev/null; then
   log "bazelisk -> /usr/local/bin/bazel"

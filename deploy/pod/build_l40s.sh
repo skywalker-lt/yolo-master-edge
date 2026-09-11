@@ -50,7 +50,10 @@ for variant in cpu cuda; do
   MROOT="$MNN_ROOT"; MLIB="$MNN_ROOT/build/libMNN.so"
   if [ "$variant" = cuda ]; then
     [ -f "$MNN_ROOT/build_cuda/libMNN.so" ] || { log "skip cuda variant (no MNN cuda lib)"; continue; }
-    MLIB="$MNN_ROOT/build_cuda/libMNN.so"
+    # separate root so the rpath resolves the CUDA-enabled libMNN.so (same soname as the CPU one)
+    MROOT="$TP/mnn-cuda"; mkdir -p "$MROOT/lib"
+    ln -sfn "$MNN_ROOT/include" "$MROOT/include"; ln -sf "$MNN_ROOT/build_cuda/libMNN.so" "$MROOT/lib/libMNN.so"
+    MLIB="$MROOT/lib/libMNN.so"
   fi
   log "configure $variant -> $B"
   cmake -S "$REPO/cpp" -B "$B" -G Ninja -DCMAKE_BUILD_TYPE=Release \
