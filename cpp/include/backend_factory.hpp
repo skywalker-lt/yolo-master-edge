@@ -99,7 +99,7 @@ inline std::unique_ptr<Backend> make_backend(std::string model, std::string back
             if (device == "vulkan") fwd = "vulkan";
             else if (device == "cuda") fwd = "cuda";
             else if (want_gpu) fwd = "opencl";
-            return std::make_unique<MnnBackend>(model, threads, fwd);
+            return std::make_unique<MnnBackend>(model, threads, fwd, precision);
 #else
             err = "built without MNN backend (rebuild with -DUSE_MNN=ON)"; return nullptr;
 #endif

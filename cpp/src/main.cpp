@@ -154,7 +154,7 @@ int main(int argc, char** argv) {
 #endif
         } else if (backend == "mnn") {
 #ifdef USE_MNN
-            be = std::make_unique<MnnBackend>(model, threads, device == "cuda" ? "cuda" : "cpu");
+            be = std::make_unique<MnnBackend>(model, threads, device == "cuda" ? "cuda" : "cpu", precision);
 #else
             std::cerr << "built without MNN backend (rebuild with -DUSE_MNN=ON)\n"; return 2;
 #endif

@@ -28,6 +28,7 @@ private:
     std::string in_blob_ = "in0";
     std::string out_blob_ = "out0";
     std::string out_proto_ = "out1";   // segmentation proto (absent on detection models)
+    bool has_proto_ = false;           // "out1" present among the net's output blobs
 };
 
 } // namespace yolomaster

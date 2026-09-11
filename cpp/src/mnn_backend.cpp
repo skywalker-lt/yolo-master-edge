@@ -12,7 +12,7 @@ static double ms_since(const clk::time_point& t) {
     return std::chrono::duration<double, std::milli>(clk::now() - t).count();
 }
 
-MnnBackend::MnnBackend(const std::string& model_path, int threads, const std::string& forward)
+MnnBackend::MnnBackend(const std::string& model_path, int threads, const std::string& forward, Precision precision)
     : threads_(threads) {
     interp_ = std::shared_ptr<MNN::Interpreter>(
         MNN::Interpreter::createFromFile(model_path.c_str()),
@@ -28,8 +28,12 @@ MnnBackend::MnnBackend(const std::string& model_path, int threads, const std::st
     sc.backupType = MNN_FORWARD_CPU;   // fall back to CPU if the GPU backend is unavailable at runtime
     const bool gpu = (sc.type != MNN_FORWARD_CPU);
     MNN::BackendConfig bc;
-    // fp16 on GPU (OpenCL/Vulkan/CUDA) for a large speedup; fp32 on CPU for accuracy/parity.
-    bc.precision = gpu ? MNN::BackendConfig::Precision_Low : MNN::BackendConfig::Precision_High;
+    // Precision_Low = fp16 compute on GPU backends (OpenCL/Vulkan/CUDA). Only when asked for
+    // (--precision fp16): the emulated MoE routers carry 1e30-class constants that overflow fp16
+    // (same policy as the ncnn backend), so Auto/fp32 keeps fp32 compute everywhere.
+    bc.precision = (gpu && precision == Precision::Fp16) ? MNN::BackendConfig::Precision_Low
+                                                         : MNN::BackendConfig::Precision_High;
+    (void)gpu;
     bc.power     = MNN::BackendConfig::Power_High;
     sc.backendConfig = &bc;
 
@@ -41,6 +45,7 @@ MnnBackend::MnnBackend(const std::string& model_path, int threads, const std::st
     active_ep = forward == "opencl" ? "MNN-OpenCL"
               : forward == "vulkan" ? "MNN-Vulkan"
               : forward == "cuda"   ? "MNN-CUDA" : "MNN-CPU";
+    if (gpu) active_ep += (precision == Precision::Fp16) ? "-fp16" : "-fp32";
 
     // YOLO-Master graphs bake the attention token counts at the training size -> fixed input.
     auto ishape = input_->shape();   // NCHW, e.g. {1,3,640,640}

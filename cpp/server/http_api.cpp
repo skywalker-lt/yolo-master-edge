@@ -108,21 +108,22 @@ InferParams params_from(Req* req, const std::string& ret) {
 }
 
 // Collect the request body (bounded), then call `cb(body)` on the loop thread.
+// Oversized bodies are drained (discarded) to the end and then answered 413: ending the response
+// while the client is still uploading makes the kernel RST the socket and the client never sees
+// the status.
 void read_body(const std::shared_ptr<Pending>& p, size_t max_bytes, std::function<void(std::string&&)> cb) {
     auto buf = std::make_shared<std::string>();
-    // Content-Length is known up-front for most clients: reject early
+    auto too_big = std::make_shared<bool>(false);
     p->res->onAborted([p] { p->aborted = true; });
-    p->res->onData([p, buf, max_bytes, cb = std::move(cb)](std::string_view chunk, bool last) mutable {
+    p->res->onData([p, buf, too_big, max_bytes, cb = std::move(cb)](std::string_view chunk, bool last) mutable {
         if (p->aborted) return;
-        if (buf->size() + chunk.size() > max_bytes) {
-            p->aborted = true;   // stop handling further chunks
-            p->aborted = false;  // but we still own the response: answer 413 now
-            send_error(*p, 413, "body exceeds max_body_mb=" + std::to_string(p->st->cfg.max_body_mb));
-            p->aborted = true;
-            return;
+        if (!*too_big) {
+            if (buf->size() + chunk.size() > max_bytes) { *too_big = true; std::string().swap(*buf); }
+            else buf->append(chunk.data(), chunk.size());
         }
-        buf->append(chunk.data(), chunk.size());
-        if (last) cb(std::move(*buf));
+        if (!last) return;
+        if (*too_big) send_error(*p, 413, "body exceeds max_body_mb=" + std::to_string(p->st->cfg.max_body_mb));
+        else cb(std::move(*buf));
     });
 }
 
