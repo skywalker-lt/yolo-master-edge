@@ -14,8 +14,11 @@ IMAGES="${IMAGES:-/data/datasets/coco/val2017}"
 LABELS="${LABELS:-/data/datasets/coco/labels/val2017}"
 OUT="${1:-${OUT:-/data/results/api_bench}}"
 PORT="${PORT:-18090}"
-CPU_THREADS="${CPU_THREADS:-8}"
-API_WORKERS_CPU="${API_WORKERS_CPU:-8}"     # c8 throughput cells: 8 workers x 8 threads on the 128-vCPU pod
+# The RunPod L40S container shows 128 vCPUs but is capped by a cgroup quota of 13.6 cores
+# (/sys/fs/cgroup/cpu.max = 1360000/100000): CPU cells use 6 threads per worker and at most
+# 2 workers (12 threads) so the c=8 cells measure the server, not quota thrashing.
+CPU_THREADS="${CPU_THREADS:-6}"
+API_WORKERS_CPU="${API_WORKERS_CPU:-2}"
 LIMIT="${LIMIT:-0}"                         # 0 = full val (5000)
 REPEATS="${REPEATS:-1}"
 PY="${PY:-python3}"
@@ -40,7 +43,7 @@ model_path() {   # $1 model-cell, $2 backend -> echo "path|backend|device|precis
     trt)      echo "$dir/model.onnx|trt|cuda|$prec|$CPU_THREADS";;
     ncnn-cpu) [ $prec = fp16 ] && return 2 || echo "$dir/ncnn|ncnn|cpu|fp32|$CPU_THREADS";;   # x86 ncnn has no fp16 arithmetic
     mnn-cpu)  [ $prec = fp16 ] && echo "$dir/model-fp16.mnn|mnn|cpu|auto|$CPU_THREADS" || echo "$dir/model.mnn|mnn|cpu|auto|$CPU_THREADS";;
-    mnn-cuda) [ $prec = fp16 ] && echo "$dir/model-fp16.mnn|mnn|cuda|auto|$CPU_THREADS" || echo "$dir/model.mnn|mnn|cuda|auto|$CPU_THREADS";;
+    mnn-cuda) [ $prec = fp16 ] && echo "$dir/model-fp16.mnn|mnn|cuda|fp16|$CPU_THREADS" || echo "$dir/model.mnn|mnn|cuda|fp32|$CPU_THREADS";;
     *) return 1;;
   esac
 }
@@ -61,7 +64,7 @@ run_cell() {   # $1 model $2 backend
   if [ ! -f "$cell/cli.summary" ]; then
     log "CLI  $m/$b"
     local t0=$(date +%s.%N)
-    "$CLI" -m "$path" -b "$be" -d "$dev" --precision "$prec" --threads "$thr" -s "$IMAGES" "${limit_arg[@]}" \
+    "$CLI" -m "$path" -b "$be" -d "$dev" --precision "$prec" --threads "$thr" -s "$IMAGES" "${limit_arg[@]}" --warmup 20 \
       --conf $CONF --iou $IOU --no-save --quiet --save-txt "$cell/cli_txt" > "$cell/cli.log" 2>&1
     local rc=$? t1=$(date +%s.%N)
     grep -E "^\[model\]|^\[summary\]" "$cell/cli.log" > "$cell/cli.summary"
@@ -93,8 +96,7 @@ run_cell() {   # $1 model $2 backend
   if [ ! -f "$cell/score.txt" ]; then
     log "score $m/$b"
     { echo "cli: $(score "$cell/cli_txt")"; echo "api: $(score "$cell/api_txt")"; } > "$cell/score.txt"
-    local nd; nd=$(diff -rq "$cell/cli_txt" "$cell/api_txt" 2>/dev/null | wc -l)
-    echo "txt_diff_files=$nd" >> "$cell/score.txt"
+    echo "parity: $($PY "$REPO/scripts/server/parity_txt.py" "$cell/cli_txt" "$cell/api_txt" --tol 0.01)" >> "$cell/score.txt"
     cat "$cell/score.txt" | tee -a "$OUT/run.log"
   fi
 }

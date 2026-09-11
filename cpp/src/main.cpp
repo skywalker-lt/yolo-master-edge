@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
     CLI::App app{"yolomaster_edge - universal YOLO-Master edge runner (ONNX / ncnn / MNN)"};
     std::string model, source, backend = "auto", classes_opt = "auto", outdir = "runs_edge";
     std::string device = "cpu", savetxt;
-    int imgsz = 0, threads = 4, limit = 0, max_det = 300;
+    int imgsz = 0, threads = 4, limit = 0, max_det = 300, warmup = 0;
     float conf = 0.25f, iou = 0.50f;
     bool no_save = false, quiet = false, multilabel = false, stretch = false;
     std::string slicing = "off", label_format = "yolo", sampling = "1s", export_labels;
@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
                    "fp32 pinned for emulated-router mixture graphs; int8 = load the <name>-int8_ncnn sibling)")
         ->default_str("auto");
     app.add_option("--limit", limit, "cap #inputs (0 = all)");
+    app.add_option("--warmup", warmup, "run the first input N extra times before timing starts (0 = off)");
     app.add_option("--out", outdir, "output dir for annotated results")->capture_default_str();
     app.add_option("--save-txt", savetxt, "dir to write per-image predictions ('class conf x1 y1 x2 y2')");
     app.add_flag("--multi-label", multilabel, "one detection per class>conf per anchor (matches ultralytics val mAP)");
@@ -382,6 +383,10 @@ int main(int argc, char** argv) {
     } else {
         auto imgs = gather_images(source, limit);
         if (imgs.empty()) { std::cerr << "no inputs resolved from source: " << source << "\n"; return 4; }
+        if (warmup > 0) {   // untimed forwards on the first input (lazy allocations, cuDNN autotune, TRT context)
+            cv::Mat w = imread_bgr(imgs.front());
+            for (int i = 0; i < warmup && !w.empty(); ++i) { try { (void)be->infer(w, cfg); } catch (...) { break; } }
+        }
         for (const auto& p : imgs) run_one(imread_bgr(p), p);
     }
 

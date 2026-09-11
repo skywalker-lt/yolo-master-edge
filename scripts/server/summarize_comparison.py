@@ -34,9 +34,9 @@ def parse_score(p: Path):
         m = re.match(r"(cli|api): images=(\d+)\s+mAP50=([\d.]+)\s+mAP50-95=([\d.]+)", line)
         if m:
             d[m.group(1)] = {"images": int(m.group(2)), "map50": float(m.group(3)), "map5095": float(m.group(4))}
-        m = re.match(r"txt_diff_files=(\d+)", line)
+        m = re.match(r"parity: (.*)", line)
         if m:
-            d["txt_diff_files"] = int(m.group(1))
+            d["parity"] = m.group(1)
     return d
 
 
@@ -51,16 +51,17 @@ def main():
         sc = parse_score(cell / "score.txt")
         rows.append({"model": model, "backend": backend, "cli": cli, "api_c1": c1, "api_c8": c8, "score": sc})
     (out / "summary.json").write_text(json.dumps(rows, indent=2))
-    lines = ["| model | backend | ep | CLI img/s | CLI infer ms | API c=1 img/s | API c=1 client p50 / p95 ms | API c=1 infer ms | API overhead p50 ms | API c=8 img/s | mAP50-95 CLI | mAP50-95 API |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| model | backend | ep | CLI img/s | CLI infer ms | API c=1 img/s | API c=1 client p50 / p95 ms | API c=1 infer ms | API overhead p50 ms | API c=8 img/s | mAP50-95 CLI | mAP50-95 API | parity |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         cli, c1, c8, sc = r["cli"], r["api_c1"], r["api_c8"], r["score"]
         f = lambda v, n=1: ("%.*f" % (n, v)) if isinstance(v, (int, float)) else "-"
-        lines.append("| %s | %s | %s | %s | %s | %s | %s / %s | %s | %s | %s | %s | %s |" % (
+        par = sc.get("parity", "-"); par = "OK" if "parity=OK" in par else ("FAIL" if par != "-" else "-")
+        lines.append("| %s | %s | %s | %s | %s | %s | %s / %s | %s | %s | %s | %s | %s | %s |" % (
             r["model"], r["backend"], cli.get("ep", "-"), f(cli.get("img_s")), f(cli.get("infer"), 2),
             f(c1.get("throughput_img_s")), f(c1.get("client_ms", {}).get("p50"), 2), f(c1.get("client_ms", {}).get("p95"), 2),
             f(c1.get("server_ms", {}).get("infer", {}).get("p50"), 2), f(c1.get("api_overhead_ms_p50"), 2),
-            f(c8.get("throughput_img_s")), f(sc.get("cli", {}).get("map5095"), 4), f(sc.get("api", {}).get("map5095"), 4)))
+            f(c8.get("throughput_img_s")), f(sc.get("cli", {}).get("map5095"), 4), f(sc.get("api", {}).get("map5095"), 4), par))
     (out / "summary.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
