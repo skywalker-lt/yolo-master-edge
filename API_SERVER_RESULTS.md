@@ -31,7 +31,7 @@ CPU backends therefore run 6 threads per worker, and the concurrency-8 API cells
 | id | source | fp32 | fp16 |
 |---|---|---|---|
 | v01n | `runs/a3/v01n/YOLO-Master-v0.1-N.onnx` (A3 P0 export, opset 17, static 640) | ONNX / TRT / ncnn (`models/v0.1-n_ncnn`, dense SDPA export) / MNN | fp16 ONNX (routing subgraph kept fp32), TRT fp16 flag, MNN fp16 weights |
-| v01n-pruned | `runs/project03/trt/v01-n-coco-pruned-surgery/YOLO-Master-v0.1-N_pruned_t0.10.onnx` (MoEPruner t=0.10 + BN-router surgery) | ONNX / TRT / ncnn (`models/p03_v01n_ncnn`) / MNN | not part of the grid |
+| v01n-pruned | `runs/project03/trt/v01-n-coco-pruned-surgery/YOLO-Master-v0.1-N_pruned_t0.10.onnx` (MoEPruner t=0.10 + BN-router surgery) | ONNX / TRT / ncnn (dense SDPA export of `pod-prune/v01-n-coco/..._pruned_t0.10.pt`) / MNN | not part of the grid |
 | esmoen | `runs/a3/esmoen/YOLO-Master-EsMoE-N.onnx` | ONNX / TRT / ncnn (`scripts/export_ncnn_dense.py` on the COCO checkpoint) / MNN | fp16 ONNX, TRT fp16 flag, MNN fp16 weights |
 
 fp16 preparation (`scripts/server/prepare_models.py`): `onnxconverter_common` with fp32 I/O,

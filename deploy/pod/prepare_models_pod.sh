@@ -30,7 +30,7 @@ done
 # ncnn dirs: v0.1-N (shipped SDPA export), pruned (p03), EsMoE-N (dense export from prepare step)
 rm -rf "$OUT/v01n/ncnn" "$OUT/v01n-pruned/ncnn" "$OUT/esmoen/ncnn"
 cp -r "$SRC/v0.1-n_ncnn" "$OUT/v01n/ncnn"
-cp -r "$SRC/p03_v01n_ncnn" "$OUT/v01n-pruned/ncnn"
+cp -r "$SRC/api/v01n-pruned_ncnn" "$OUT/v01n-pruned/ncnn"   # dense (SDPA) export of the pruned checkpoint, same rewrite as v01n
 cp -r "$SRC/api/esmoen_ncnn" "$OUT/esmoen/ncnn"
 rm -f "$OUT"/*/ncnn/*.onnx "$OUT"/*/ncnn/*.npz
 log "layout:"; find "$OUT" -maxdepth 2 | sort | sed 's#^#  #'

@@ -19,6 +19,7 @@ PORT="${PORT:-18090}"
 # 2 workers (12 threads) so the c=8 cells measure the server, not quota thrashing.
 CPU_THREADS="${CPU_THREADS:-6}"
 API_WORKERS_CPU="${API_WORKERS_CPU:-2}"
+API_WORKERS_GPU="${API_WORKERS_GPU:-1}"     # c=8 GPU cells: >1 lets JPEG decode/pre/post overlap across workers (one TRT/ORT context each)
 LIMIT="${LIMIT:-0}"                         # 0 = full val (5000)
 REPEATS="${REPEATS:-1}"
 PY="${PY:-python3}"
@@ -74,7 +75,7 @@ run_cell() {   # $1 model $2 backend
   # ---- API server: c1 latency, c8 throughput ----
   for c in 1 8; do
     [ -f "$cell/api_c$c.json" ] && continue
-    local workers=1; is_gpu "$b" || workers=$API_WORKERS_CPU; [ $c -eq 1 ] && workers=1
+    local workers=$API_WORKERS_GPU; is_gpu "$b" || workers=$API_WORKERS_CPU; [ $c -eq 1 ] && workers=1
     log "API  $m/$b c=$c workers=$workers"
     "$SERVER" -p "$PORT" --loop-threads 2 --max-queue 64 --timeout-ms 60000 \
       -m "m=$path,backend=$be,device=$dev,precision=$prec,threads=$thr,workers=$workers" > "$cell/server_c$c.log" 2>&1 &
