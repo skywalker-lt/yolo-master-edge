@@ -160,7 +160,10 @@ int main(int argc, char** argv) {
 #endif
         } else if (backend == "trt") {
 #ifdef USE_TRT
-            be = std::make_unique<TrtBackend>(model);
+            // .engine loads as-is; .onnx is built (fp32, or fp16 with --precision fp16) and cached
+            TrtOptions topt;
+            topt.fp16 = (precision == Precision::Fp16);
+            be = std::make_unique<TrtBackend>(model, topt);
 #else
             std::cerr << "built without TensorRT backend (rebuild with -DUSE_TRT=ON)\n"; return 2;
 #endif

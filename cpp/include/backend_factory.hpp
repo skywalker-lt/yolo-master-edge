@@ -62,10 +62,13 @@ inline bool resolve_ncnn_paths(const std::string& model, Precision precision,
 // Construct a backend. On failure returns nullptr and fills `err`. `backend` may be
 // "auto" (detected from the path). `device` is onnx-only ("cpu|cuda|coreml|trt").
 // `precision` is honoured by the ncnn backend only (see Precision in yolomaster.hpp).
+// `precision` is honoured by ncnn (int8 sibling) and TensorRT (.onnx -> fp16/fp32 engine build,
+// cached under `trt_cache_dir` or next to the .onnx).
 inline std::unique_ptr<Backend> make_backend(std::string model, std::string backend,
                                              int threads, const std::string& device,
                                              std::string& resolved, std::string& err,
-                                             Precision precision = Precision::Auto) {
+                                             Precision precision = Precision::Auto,
+                                             const std::string& trt_cache_dir = "") {
     namespace fs = std::filesystem;
     if (backend == "auto") {
         backend = detect_backend(model);
@@ -102,7 +105,10 @@ inline std::unique_ptr<Backend> make_backend(std::string model, std::string back
 #endif
         } else if (backend == "trt") {
 #ifdef USE_TRT
-            return std::make_unique<TrtBackend>(model);
+            TrtOptions topt;
+            topt.fp16 = (precision == Precision::Fp16);
+            topt.cache_dir = trt_cache_dir;
+            return std::make_unique<TrtBackend>(model, topt);
 #else
             err = "built without TensorRT backend"; return nullptr;
 #endif
