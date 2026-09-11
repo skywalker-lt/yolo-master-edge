@@ -20,8 +20,9 @@ nlohmann::json result_json(const InferResult& r, const std::string& model_id, co
                            bool include_names) {
     nlohmann::json dets = nlohmann::json::array();
     for (const auto& d : r.dets) {
-        nlohmann::json o = {{"class_id", d.class_id}, {"conf", r3(d.conf)},
-                            {"box", {r3(d.box.x), r3(d.box.y), r3(d.box.x + d.box.width), r3(d.box.y + d.box.height)}}};
+        // full float precision: the JSON must round-trip to the CLI's txt numbers for parity checks
+        nlohmann::json o = {{"class_id", d.class_id}, {"conf", d.conf},
+                            {"box", {d.box.x, d.box.y, d.box.x + d.box.width, d.box.y + d.box.height}}};
         if (include_names && d.class_id >= 0 && d.class_id < int(r.cfg_used.class_names.size()))
             o["name"] = r.cfg_used.class_names[d.class_id];
         if (!d.mask_coeffs.empty()) o["mask_coeffs"] = d.mask_coeffs;
@@ -53,7 +54,7 @@ nlohmann::json result_coco(const InferResult& r, int image_id, bool coco91) {
     nlohmann::json a = nlohmann::json::array();
     for (const auto& d : r.dets)
         a.push_back({{"image_id", image_id}, {"category_id", coco91 ? coco80_to_91(d.class_id) : d.class_id},
-                     {"bbox", {r3(d.box.x), r3(d.box.y), r3(d.box.width), r3(d.box.height)}}, {"score", r3(d.conf)}});
+                     {"bbox", {r3(d.box.x), r3(d.box.y), r3(d.box.width), r3(d.box.height)}}, {"score", r3(double(d.conf))}});
     return a;
 }
 
