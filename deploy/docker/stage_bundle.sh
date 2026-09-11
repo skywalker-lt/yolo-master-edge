@@ -27,8 +27,16 @@ closure "$ROOT/bin/yolomaster_server"; closure "$ROOT/bin/yolomaster_edge"
 # ORT loads its EP libraries with dlopen: copy them explicitly, and the TensorRT builder resource
 ORT_LIB="$(dirname "$(ldd "$ROOT/bin/yolomaster_server" | awk '/libonnxruntime\.so/ {print $3}')")"
 cp -L "$ORT_LIB"/libonnxruntime_providers_*.so "$ROOT/lib/" 2>/dev/null || true
-for f in /usr/lib/x86_64-linux-gnu/libnvinfer_builder_resource.so.10* /usr/lib/x86_64-linux-gnu/libnvinfer_plugin.so.10 /usr/lib/x86_64-linux-gnu/libnvonnxparser.so.10; do
+for f in /usr/lib/x86_64-linux-gnu/libnvinfer_plugin.so.10 /usr/lib/x86_64-linux-gnu/libnvonnxparser.so.10; do
   [ -e "$f" ] && cp -L "$f" "$ROOT/lib/$(basename "$f")"
+done
+# TensorRT 10.16 builder resources are per SM (libnvinfer_builder_resource_sm89.so.10.x, 165-670 MB
+# each) and are only needed to BUILD engines (first start). Default set: Ampere/Ada/Hopper data-center
+# and workstation parts; override with YM_TRT_SMS="80 86 89 90 ptx" (ptx = any other GPU, 490 MB).
+for sm in ${YM_TRT_SMS:-80 86 89 90}; do
+  for f in /usr/lib/x86_64-linux-gnu/libnvinfer_builder_resource_${sm}.so.10* /usr/lib/x86_64-linux-gnu/libnvinfer_builder_resource_sm${sm}.so.10*; do
+    [ -e "$f" ] && cp -L "$f" "$ROOT/lib/$(basename "$f")"
+  done
 done
 for so in "$ROOT"/lib/*.so*; do closure "$so"; done   # second-level deps (ffmpeg, x264, ...)
 for so in "$ROOT"/lib/*.so*; do closure "$so"; done   # third level
