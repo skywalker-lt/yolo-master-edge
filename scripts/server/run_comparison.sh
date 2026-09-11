@@ -24,6 +24,7 @@ LIMIT="${LIMIT:-0}"                         # 0 = full val (5000)
 REPEATS="${REPEATS:-1}"
 PY="${PY:-python3}"
 CELLS="${CELLS:-}"                          # optional "model:backend model:backend ..." subset
+PATHS="${PATHS:-cli c1 c8}"                 # which paths to run per cell (e.g. PATHS=c8 for a scaling run)
 export PYTHONPATH="${PYTHONPATH:-/data/YOLO-Master}"
 mkdir -p "$OUT"
 log() { echo "[cmp $(date +%H:%M:%S)] $*" | tee -a "$OUT/run.log"; }
@@ -62,7 +63,7 @@ run_cell() {   # $1 model $2 backend
   local cell="$OUT/${m}__${b}"; mkdir -p "$cell"
   local limit_arg=(); [ "$LIMIT" -gt 0 ] && limit_arg=(--limit "$LIMIT")
   # ---- bare CLI (sequential, same stb decoder, txt dump) ----
-  if [ ! -f "$cell/cli.summary" ]; then
+  if [[ " $PATHS " == *" cli "* ]] && [ ! -f "$cell/cli.summary" ]; then
     log "CLI  $m/$b"
     local t0=$(date +%s.%N)
     "$CLI" -m "$path" -b "$be" -d "$dev" --precision "$prec" --threads "$thr" -s "$IMAGES" "${limit_arg[@]}" --warmup 20 \
@@ -74,6 +75,7 @@ run_cell() {   # $1 model $2 backend
   fi
   # ---- API server: c1 latency, c8 throughput ----
   for c in 1 8; do
+    [[ " $PATHS " == *" c$c "* ]] || continue
     [ -f "$cell/api_c$c.json" ] && continue
     local workers=$API_WORKERS_GPU; is_gpu "$b" || workers=$API_WORKERS_CPU; [ $c -eq 1 ] && workers=1
     log "API  $m/$b c=$c workers=$workers"
@@ -94,7 +96,7 @@ run_cell() {   # $1 model $2 backend
     kill -INT $spid; wait $spid
   done
   # ---- scoring + parity ----
-  if [ ! -f "$cell/score.txt" ]; then
+  if [[ " $PATHS " == *" cli "* ]] && [ ! -f "$cell/score.txt" ]; then
     log "score $m/$b"
     { echo "cli: $(score "$cell/cli_txt")"; echo "api: $(score "$cell/api_txt")"; } > "$cell/score.txt"
     echo "parity: $($PY "$REPO/scripts/server/parity_txt.py" "$cell/cli_txt" "$cell/api_txt" --tol 0.01)" >> "$cell/score.txt"
