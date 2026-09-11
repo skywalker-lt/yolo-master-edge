@@ -1,8 +1,16 @@
 #include "trt_backend.hpp"
+#ifdef USE_TRT_ONNXPARSER
+#include <NvOnnxParser.h>
+#endif
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 namespace yolomaster {
@@ -22,7 +30,141 @@ static TrtLogger g_logger;
 #define CUDA_CHECK(x) do { cudaError_t e_ = (x); if (e_ != cudaSuccess) \
     throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(e_)); } while (0)
 
-TrtBackend::TrtBackend(const std::string& engine_path) {
+// ---- engine building (nvonnxparser) ----
+namespace {
+// tiny SHA-1 (public-domain style) for cache keys: content-addressed engines
+struct Sha1 {
+    uint32_t h[5] = {0x67452301u, 0xEFCDAB89u, 0x98BADCFEu, 0x10325476u, 0xC3D2E1F0u};
+    uint64_t len = 0; uint8_t buf[64]; size_t blen = 0;
+    static uint32_t rol(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
+    void block(const uint8_t* p) {
+        uint32_t w[80];
+        for (int i = 0; i < 16; ++i) w[i] = (uint32_t(p[4*i]) << 24) | (uint32_t(p[4*i+1]) << 16) | (uint32_t(p[4*i+2]) << 8) | p[4*i+3];
+        for (int i = 16; i < 80; ++i) w[i] = rol(w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1);
+        uint32_t a=h[0],b=h[1],c=h[2],d=h[3],e=h[4];
+        for (int i = 0; i < 80; ++i) {
+            uint32_t f,k;
+            if (i<20){f=(b&c)|(~b&d);k=0x5A827999u;} else if(i<40){f=b^c^d;k=0x6ED9EBA1u;}
+            else if(i<60){f=(b&c)|(b&d)|(c&d);k=0x8F1BBCDCu;} else {f=b^c^d;k=0xCA62C1D6u;}
+            uint32_t t = rol(a,5)+f+e+k+w[i]; e=d; d=c; c=rol(b,30); b=a; a=t;
+        }
+        h[0]+=a;h[1]+=b;h[2]+=c;h[3]+=d;h[4]+=e;
+    }
+    void update(const uint8_t* p, size_t n) {
+        len += n;
+        while (n) { size_t k = std::min(n, 64 - blen); memcpy(buf + blen, p, k); blen += k; p += k; n -= k;
+                    if (blen == 64) { block(buf); blen = 0; } }
+    }
+    std::string hex() {
+        uint64_t bits = len * 8; uint8_t pad = 0x80; update(&pad, 1);
+        uint8_t z = 0; while (blen != 56) update(&z, 1);
+        uint8_t lb[8]; for (int i = 0; i < 8; ++i) lb[i] = uint8_t(bits >> (56 - 8*i)); update(lb, 8);
+        char out[41]; for (int i = 0; i < 5; ++i) std::snprintf(out + 8*i, 9, "%08x", h[i]); return std::string(out, 40);
+    }
+};
+std::string file_sha1(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("cannot open: " + path);
+    Sha1 s; std::vector<uint8_t> b(1 << 20);
+    while (f) { f.read(reinterpret_cast<char*>(b.data()), b.size()); s.update(b.data(), size_t(f.gcount())); }
+    return s.hex();
+}
+std::string gpu_slug() {
+    cudaDeviceProp p{}; int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess) return "gpu";
+    std::string s(p.name); std::string o;
+    for (char c : s) o += (std::isalnum(static_cast<unsigned char>(c)) ? char(std::tolower(c)) : '_');
+    return o;
+}
+bool ends_with(const std::string& a, const std::string& suf) {
+    return a.size() >= suf.size() && a.compare(a.size() - suf.size(), suf.size(), suf) == 0;
+}
+} // namespace
+
+std::string TrtBackend::cached_engine_path(const std::string& onnx_path, const TrtOptions& opt) {
+    namespace fs = std::filesystem;
+    const fs::path op(onnx_path);
+    const fs::path dir = opt.cache_dir.empty() ? op.parent_path() : fs::path(opt.cache_dir);
+    std::ostringstream n;
+    n << op.stem().string() << "-" << file_sha1(onnx_path).substr(0, 12) << "-" << gpu_slug()
+      << "-trt" << NV_TENSORRT_MAJOR << "." << NV_TENSORRT_MINOR << "." << NV_TENSORRT_PATCH
+      << "-" << (opt.fp16 ? "fp16" : "fp32") << ".engine";
+    return (dir / n.str()).string();
+}
+
+std::string TrtBackend::build_engine(const std::string& onnx_path, const std::string& engine_path,
+                                     const TrtOptions& opt) {
+#ifndef USE_TRT_ONNXPARSER
+    (void)onnx_path; (void)engine_path; (void)opt;
+    throw std::runtime_error("engine building needs nvonnxparser (rebuild with TensorRT's onnx parser); "
+                             "pass a prebuilt .engine instead");
+#else
+    namespace fs = std::filesystem;
+    auto t0 = clk::now();
+    std::unique_ptr<nvinfer1::IBuilder> builder(nvinfer1::createInferBuilder(g_logger));
+    if (!builder) throw std::runtime_error("TensorRT builder init failed");
+    std::unique_ptr<nvinfer1::INetworkDefinition> net(builder->createNetworkV2(0));
+    std::unique_ptr<nvonnxparser::IParser> parser(nvonnxparser::createParser(*net, g_logger));
+    if (!parser->parseFromFile(onnx_path.c_str(),
+                               int(opt.verbose ? nvinfer1::ILogger::Severity::kVERBOSE : nvinfer1::ILogger::Severity::kWARNING))) {
+        std::string msg = "ONNX parse failed: " + onnx_path;
+        for (int i = 0; i < parser->getNbErrors(); ++i) msg += std::string("\n  ") + parser->getError(i)->desc();
+        throw std::runtime_error(msg);
+    }
+    std::unique_ptr<nvinfer1::IBuilderConfig> cfg(builder->createBuilderConfig());
+    cfg->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, size_t(opt.workspace_mb) << 20);
+    if (opt.fp16) {
+        if (!builder->platformHasFastFp16()) std::cerr << "[trt] warn: platform has no fast fp16; building fp16 anyway\n";
+        cfg->setFlag(nvinfer1::BuilderFlag::kFP16);
+    }
+    std::unique_ptr<nvinfer1::IHostMemory> plan(builder->buildSerializedNetwork(*net, *cfg));
+    if (!plan) throw std::runtime_error("TensorRT engine build failed for " + onnx_path);
+    std::error_code ec;
+    fs::create_directories(fs::path(engine_path).parent_path(), ec);
+    const std::string tmp = engine_path + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary);
+        if (!f) throw std::runtime_error("cannot write engine: " + tmp);
+        f.write(static_cast<const char*>(plan->data()), std::streamsize(plan->size()));
+    }
+    fs::rename(tmp, engine_path, ec);
+    if (ec) throw std::runtime_error("cannot move engine into place: " + engine_path);
+    std::cerr << "[trt] built " << (opt.fp16 ? "fp16" : "fp32") << " engine in " << ms_since(t0) / 1000.0
+              << "s -> " << engine_path << " (" << plan->size() / (1024 * 1024) << " MB)\n";
+    return engine_path;
+#endif
+}
+
+TrtBackend::TrtBackend(const std::string& model_path, const TrtOptions& opt) {
+    namespace fs = std::filesystem;
+    if (ends_with(model_path, ".onnx")) {
+        const std::string ep = cached_engine_path(model_path, opt);
+        std::error_code ec;
+        if (!fs::exists(ep, ec)) build_engine(model_path, ep, opt);
+        else std::cerr << "[trt] cached engine: " << ep << "\n";
+        // sidecar metadata for the engine (names/imgsz/end2end) comes from the onnx's siblings:
+        // <onnx-minus-ext>.metadata.yaml or metadata.yaml next to the onnx. Copy it next to the
+        // engine once so the engine dir is self-describing.
+        const fs::path eng(ep);
+        const fs::path side = fs::path(eng).replace_extension(".metadata.yaml");
+        if (!fs::exists(side, ec)) {
+            for (const fs::path& p : { fs::path(model_path).replace_extension(".metadata.yaml"),
+                                       fs::path(model_path).parent_path() / "metadata.yaml" }) {
+                if (fs::exists(p, ec)) { fs::copy_file(p, side, fs::copy_options::overwrite_existing, ec); break; }
+            }
+        }
+        load_engine(ep);
+        active_ep = opt.fp16 ? "TRT-CUDA-fp16" : "TRT-CUDA-fp32";
+    } else {
+        load_engine(model_path);
+    }
+}
+
+TrtBackend::TrtBackend(const std::string& engine_path) { load_engine(engine_path); }
+
+void TrtBackend::load_engine(const std::string& engine_path_) {
+    const std::string& engine_path = engine_path_;
+    this->engine_path = engine_path;
     std::ifstream f(engine_path, std::ios::binary);
     if (!f) throw std::runtime_error("cannot open engine: " + engine_path);
     std::vector<char> blob((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
