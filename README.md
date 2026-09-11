@@ -13,6 +13,29 @@ This project provides a universal inference runtime for [YOLO-Master](https://gi
 
 ---
 
+## 🌐 Update (11-09-2026): YOLO-Master Edge API Server v1.2.0 (REST + WebSocket, four backends)
+
+`yolomaster_server` turns the v1.1.0 runtime into a production inference service: one C++ process,
+any number of models, each on **ONNX Runtime (CPU/CUDA), TensorRT, ncnn or MNN**, in fp32, fp16 or
+int8, batch 1 per request by design. It ships with a Docker image built with Bazel + rules_oci
+(no Docker daemon needed on the build pod), a one-click `deploy/run.sh`, Prometheus metrics and a
+Python client.
+
+- `POST /v1/infer` (JSON, YOLO txt, COCO JSON or annotated JPEG), `POST /v1/infer/batch`,
+  `POST /v1/video` (NDJSON stream), `WS /v1/stream` (keep-latest frame backpressure),
+  `GET /metrics`, `GET /v1/stats`, `/healthz`, `/readyz`, model load/unload at runtime
+- One `Backend` per worker thread, bounded queues (503 + Retry-After), request deadlines (504),
+  graceful drain on SIGTERM, TensorRT engines built from `.onnx` and cached per GPU
+- Measured on an L40S over the full COCO val2017 (5000 images), API vs bare CLI on every backend:
+  see [`API_SERVER_RESULTS.md`](API_SERVER_RESULTS.md)
+- Docs: [`docs/API.md`](docs/API.md), [`deploy/README.md`](deploy/README.md);
+  build: `cmake -DBUILD_SERVER=ON` (run `scripts/server/fetch_uws.sh` once for uWebSockets)
+
+```bash
+yolomaster_server -p 8080 -m v01n=/models/v01n/model.onnx,backend=trt,device=cuda,precision=fp16
+curl -X POST 'localhost:8080/v1/infer?model=v01n&conf=0.3' --data-binary @image.jpg
+```
+
 ## 📱 Update (27-08-2026): YOLO-Master for iPhone v1.1.0 Beta Build 1
 
 <img width="4812" height="2291" alt="screnshots-framed" src="https://github.com/user-attachments/assets/e858e07b-eeff-40c2-b11a-dcb4dba44577" />
