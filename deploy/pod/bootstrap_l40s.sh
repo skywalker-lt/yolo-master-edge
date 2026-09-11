@@ -10,13 +10,15 @@ CUDA_MM="$(echo "$TRT_VER" | sed -nE 's/.*\+cuda([0-9]+)\.([0-9]+)$/\1-\2/p')"
 CUDA_DOT="${CUDA_MM/-/.}"
 export DEBIAN_FRONTEND=noninteractive
 log() { echo "[bootstrap $(date +%H:%M:%S)] $*"; }
+echo $$ > /root/bootstrap.pid; trap 'rm -f /root/bootstrap.pid' EXIT
 
 log "apt update"
 apt-get update -qq
 log "apt base tools"
 apt-get install -y -qq --no-install-recommends \
   build-essential ninja-build patchelf zlib1g-dev pkg-config rsync unzip wget curl ca-certificates \
-  libssl-dev git python3-dev python3-pip jq bc >/dev/null
+  libssl-dev git python3-dev python3-pip jq bc \
+  libavcodec58 libavformat58 libavutil56 libswscale5 libswresample3 >/dev/null   # opencv-lean videoio (ffmpeg 4.4 ABI)
 
 if ! dpkg -s libnvinfer-dev >/dev/null 2>&1; then
   log "TensorRT ${TRT_VER}"
@@ -24,7 +26,7 @@ if ! dpkg -s libnvinfer-dev >/dev/null 2>&1; then
   grep -q "${TRT_VER}" /tmp/trt_versions.txt || { log "pinned TRT version not in repo; available 10.x:"; grep -E " 10\." /tmp/trt_versions.txt | head -5; exit 3; }
   apt-get install -y -qq --no-install-recommends \
     "libnvinfer10=${TRT_VER}" "libnvinfer-plugin10=${TRT_VER}" "libnvonnxparsers10=${TRT_VER}" \
-    "libnvinfer-headers-dev=${TRT_VER}" "libnvinfer-headers-plugin-dev=${TRT_VER}" \
+    "libnvinfer-headers-dev=${TRT_VER}" "libnvinfer-headers-plugin-dev=${TRT_VER}" "libnvinfer-safe-headers-dev=${TRT_VER}" \
     "libnvinfer-dev=${TRT_VER}" "libnvinfer-plugin-dev=${TRT_VER}" "libnvonnxparsers-dev=${TRT_VER}" \
     "libnvinfer-dispatch10=${TRT_VER}" "libnvinfer-lean10=${TRT_VER}" "libnvinfer-vc-plugin10=${TRT_VER}" >/dev/null
   apt-mark hold libnvinfer10 libnvinfer-dev libnvinfer-headers-dev >/dev/null
@@ -40,7 +42,9 @@ fi
 # CUDA runtime libs matching the TensorRT build (cudart/cublas/nvrtc), beside the pod toolkit.
 if ! ls /usr/local/cuda-${CUDA_DOT}/lib64/libcudart.so.12 >/dev/null 2>&1; then
   log "CUDA ${CUDA_DOT} runtime libs beside the existing toolkit"
-  apt-get install -y -qq --no-install-recommends cuda-cudart-${CUDA_MM} libcublas-${CUDA_MM} cuda-nvrtc-${CUDA_MM} cuda-cudart-dev-${CUDA_MM} >/dev/null
+  apt-get install -y -qq --no-install-recommends cuda-cudart-${CUDA_MM} libcublas-${CUDA_MM} cuda-nvrtc-${CUDA_MM} \
+    cuda-cudart-dev-${CUDA_MM} cuda-crt-${CUDA_MM} cuda-nvcc-${CUDA_MM} cuda-cccl-${CUDA_MM} \
+    libcusolver-dev-${CUDA_MM} libcublas-dev-${CUDA_MM} libcusparse-dev-${CUDA_MM} libcurand-dev-${CUDA_MM} >/dev/null   # headers + nvcc + cuSOLVER (MNN CUDA backend)
 fi
 echo "/usr/local/cuda-${CUDA_DOT}/lib64" > /etc/ld.so.conf.d/cuda-trt.conf && ldconfig
 
