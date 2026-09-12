@@ -11,6 +11,10 @@ struct Detection {
     float conf = 0.f;
     cv::Rect2f box;               // original-image pixel coords (float, sub-pixel precise)
     std::vector<float> mask_coeffs; // segmentation mask coefficients (empty for detection models)
+    // Index into the RawDet pool nms_and_cap() was run on (-1 when not produced by it). Lets a
+    // cached-raw consumer (the Android RawOutput) re-render masks for a chosen subset by index
+    // instead of shipping mask_coeffs across the JNI boundary; the CLI ignores it.
+    int cand_index = -1;
 };
 
 // Pre-NMS candidate (decoded to original-image px, unclipped). The GUI caches these after one forward
@@ -106,6 +110,14 @@ void draw(cv::Mat& img, const std::vector<Detection>& dets, const Config& cfg);
 cv::Mat seg_overlay(const std::vector<Detection>& dets, const std::vector<float>& proto,
                     int pc, int ph, int pw, const LetterboxInfo& lb, int imgsz,
                     int orig_w, int orig_h, int mask_alpha = 165);
+// Sized variant: same masks rendered into an `out_h x out_w` RGBA overlay (the Live/Photo
+// screens draw at display size, not image size). Box bounds are scaled by fx = out_w/orig_w
+// (fy likewise) and the mask is sampled at the un-scaled position (ox/fx, oy/fy), so the
+// per-box clipping and the smoothstep edge are unchanged; out == orig reproduces the overload
+// above bit-for-bit. `dets` stay in original-image px.
+cv::Mat seg_overlay(const std::vector<Detection>& dets, const std::vector<float>& proto,
+                    int pc, int ph, int pw, const LetterboxInfo& lb, int imgsz,
+                    int orig_w, int orig_h, int out_w, int out_h, int mask_alpha);
 // The 10-color class palette (RGB 0..1, indexed cls%10) shared by draw/overlay/GUI.
 const float* class_color(int class_id);   // returns pointer to 3 floats
 
@@ -173,7 +185,20 @@ std::vector<std::string> gather_images(const std::string& src, int limit);
 class Backend {
 public:
     virtual ~Backend() = default;
-    virtual std::vector<Detection> infer(const cv::Mat& bgr, const Config& cfg) = 0;
+    // The "forward once, tune cheap" seam, shared by every runtime the app can host (ncnn, ORT):
+    // preprocess -> one forward -> candidate decode, filling candidates/cand_lb/cand_orig_*/proto*
+    // and pre_ms/infer_ms/post_ms (post_ms = decode only; infer() adds the NMS time on top).
+    // `decode = false` is the bench path (iOS `inferOnly`, Android nativeInferOnly): the forward
+    // still runs, but the output is not decoded, so infer_ms is the pure kernel time and the
+    // cached candidates are CLEARED (stale candidates must never pass for this frame's).
+    // Backends that only implement infer() (MNN, TensorRT) keep the default, which throws.
+    virtual void forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode = true);
+    // infer() == forward_raw(bgr, cfg) + nms_and_cap(candidates, ...). The default is the
+    // contract every backend is expected to keep; overriding is for runtimes without a
+    // forward_raw (they must then fill the cache themselves).
+    virtual std::vector<Detection> infer(const cv::Mat& bgr, const Config& cfg);
+    // Short runtime tag ("ncnn", "ort", ...): the runtime, not the device (that is active_ep).
+    virtual const char* runtime_name() const { return "unknown"; }
     std::vector<std::string> meta_names;   // auto-read from the model (may be empty)
     int meta_imgsz = 0;                    // auto-read (0 = unknown)
     int fixed_imgsz = 0;                   // hard input constraint (0 = flexible)

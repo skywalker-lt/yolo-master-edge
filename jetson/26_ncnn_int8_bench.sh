@@ -5,7 +5,8 @@
 # from a real VisDrone image with the runtime letterbox, then runs the p03 pair
 # (models/p03_v01n_ncnn + models/p03_v01n-int8_ncnn) and the EsMoE pair
 # (models/esmoe_n_visdrone_ncnn + models/esmoe_n_visdrone-int8_ncnn) at 1/2/6 threads,
-# 3 interleaved rounds, all four variants (fp32, fp16, int8+fp32, int8+fp16).
+# 3 interleaved rounds, all four CPU variants (fp32, fp16, int8+fp32, int8+fp16) plus the Vulkan GPU
+# variant (jetson/24_build_ncnn.sh builds ncnn with NCNN_VULKAN=ON; runs once per model, threads=gpu).
 # Everything is tee'd to results/int8_bench/<hostname>.log (+ one JSON per model).
 #
 # Usage:  bash jetson/26_ncnn_int8_bench.sh            # from any cwd
@@ -68,7 +69,7 @@ echo "  probe: $PROBE"
     [ -f "$INT8/model.ncnn.param" ] || echo "  note: int8 sibling $INT8 absent - int8 variants will be skipped"
     "$BENCH" "$M" --input "$PROBE" --shape 3,640,640 \
       --threads "$THREADS" --iters "$ITERS" --warmup "$WARMUP" --rounds "$ROUNDS" \
-      --variants fp32,fp16,int8+fp32,int8+fp16 --powersave 2 \
+      --variants fp32,fp16,int8+fp32,int8+fp16,vulkan --powersave 2 \
       --label "$LABEL" --json "$OUT/$LABEL-$NAME.json" --conf 0.25
   done
   echo

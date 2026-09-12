@@ -1,6 +1,10 @@
-# ncnn_bench - standalone ncnn CPU latency bench (Workstream B4). Independent of cpp/ so
-# nothing clashes with the runner build: links ncnn (+OpenMP), no OpenCV, C++17.
-# Point NCNN_INSTALL at an ncnn install prefix (include/ncnn/net.h + lib/libncnn.*).
+# ncnn_bench - standalone ncnn latency bench (Workstream B4 CPU matrix + R5 Vulkan variants).
+# Independent of cpp/ so nothing clashes with the runner build: links ncnn (+OpenMP), no OpenCV,
+# C++17. Point NCNN_INSTALL at an ncnn install prefix (include/ncnn/net.h + lib/libncnn.*).
+# The `vulkan` / `vulkan-fp32` variants exist only when that install was built with NCNN_VULKAN=ON
+# (platform.h `#define NCNN_VULKAN 1`: the Android SDK at /data/android/ncnn-*-android-vulkan and
+# the Jetson build from jetson/24_build_ncnn.sh); ncnn-x86-* is NCNN_VULKAN=OFF and prints a skip
+# line. ncnn's simplevk dlopens libvulkan.so at runtime, so no Vulkan link dependency is needed.
 #
 # x86 dev box (load smoke ONLY - fp16 flags are inert without asimdhp and AVX int8 says nothing
 # about ARM sdot/i8mm; never report x86 timings as speed). Host cmake 3.16 is too old:
@@ -24,10 +28,11 @@
 #            models/p03_v01n_ncnn models/p03_v01n-int8_ncnn /data/local/tmp/ymbench/
 #   adb shell "cd /data/local/tmp/ymbench && chmod +x ncnn_bench && \
 #       ./ncnn_bench p03_v01n_ncnn --input probe_640.f32 --threads 1,2,4,big --iters 100 \
-#       --warmup 20 --rounds 3 --variants fp32,fp16,int8+fp32,int8+fp16 --powersave 2 \
+#       --warmup 20 --rounds 3 --variants fp32,fp16,int8+fp32,int8+fp16,vulkan --powersave 2 \
 #       --label \$(getprop ro.product.model | tr ' ' _) --json p03_v01n.json"
-#   (the Android SDK ships a static libncnn.a whose OpenMP/Vulkan deps come from its
-#    ncnnConfig.cmake - hence the config-file route below is preferred over find_library)
+#   (the Android SDK ships a static libncnn.a whose OpenMP/glslang deps come from its
+#    ncnnConfig.cmake - hence the config-file route below is preferred over find_library;
+#    the resulting binary NEEDs only libc/libm/libdl/liblog/libandroid/libjnigraphics)
 cmake_minimum_required(VERSION 3.16)
 project(ncnn_bench CXX)
 
