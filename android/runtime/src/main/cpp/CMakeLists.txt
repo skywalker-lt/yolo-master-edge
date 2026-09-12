@@ -7,7 +7,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # The C++ inference core is reused verbatim from the repo's cpp/ (the same sources
 # the Linux/Windows/Jetson runners compile). This CMakeLists lives at
 # android/runtime/src/main/cpp/ -> the repo root is five levels up.
-set(CORE ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../cpp)
+# Precedence: -DYOLOMASTER_CORE_DIR=<path>, then a vendored snapshot at ./core (used when
+# the module is shipped on its own, e.g. inside the upstream example), then the repo's cpp/.
+if(YOLOMASTER_CORE_DIR)
+  set(CORE ${YOLOMASTER_CORE_DIR})
+elseif(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/core/src/common.cpp)
+  set(CORE ${CMAKE_CURRENT_SOURCE_DIR}/core)
+else()
+  set(CORE ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../cpp)
+endif()
+message(STATUS "yolomaster core: ${CORE}")
 
 # ---- ncnn (official Android prebuilt, per-ABI; tag 20260526 for .param/.bin parity) ----
 if(NOT NCNN_ANDROID_ROOT)
