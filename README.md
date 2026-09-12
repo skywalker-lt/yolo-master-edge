@@ -1,8 +1,8 @@
 # YOLO-Master Cross-Platform Edge Inference Runtime
 
-<img alt="C++" src="https://img.shields.io/badge/C++-17-blue.svg?style=flat&logo=c%2B%2B"> <img alt="Onnx-runtime" src="https://img.shields.io/badge/OnnxRuntime-717272.svg?logo=Onnx&logoColor=white"> <img alt="NCNN" src="https://img.shields.io/badge/NCNN-Tencent-blue.svg"> <img alt="MNN" src="https://img.shields.io/badge/MNN-Alibaba-orange.svg"> <img alt="TensorRT" src="https://img.shields.io/badge/TensorRT-NVIDIA-76B900.svg"> <img alt="Core ML" src="https://img.shields.io/badge/CoreML-Apple-black.svg"> <img alt="Linux" src="https://img.shields.io/badge/Linux-FCC624.svg?logo=linux&logoColor=black"> <img alt="Windows" src="https://img.shields.io/badge/Windows-0078D6.svg?logo=windows&logoColor=white"> <img alt="Jetson" src="https://img.shields.io/badge/Jetson%20Orin-76B900.svg?logo=nvidia&logoColor=white"> <img alt="macOS" src="https://img.shields.io/badge/macOS-000000.svg?logo=apple&logoColor=white"> <img alt="iOS" src="https://img.shields.io/badge/iOS-000000.svg?logo=apple&logoColor=white"> 
+<img alt="Docker" src="https://img.shields.io/badge/Docker-yolomaster--api-2496ED.svg?logo=docker&logoColor=white"> <img alt="C++" src="https://img.shields.io/badge/C++-17-blue.svg?style=flat&logo=c%2B%2B"> <img alt="Onnx-runtime" src="https://img.shields.io/badge/OnnxRuntime-717272.svg?logo=Onnx&logoColor=white"> <img alt="NCNN" src="https://img.shields.io/badge/NCNN-Tencent-blue.svg"> <img alt="MNN" src="https://img.shields.io/badge/MNN-Alibaba-orange.svg"> <img alt="TensorRT" src="https://img.shields.io/badge/TensorRT-NVIDIA-76B900.svg"> <img alt="Core ML" src="https://img.shields.io/badge/CoreML-Apple-black.svg">  <img alt="Linux" src="https://img.shields.io/badge/Linux-FCC624.svg?logo=linux&logoColor=black"> <img alt="Windows" src="https://img.shields.io/badge/Windows-0078D6.svg?logo=windows&logoColor=white"> <img alt="Jetson" src="https://img.shields.io/badge/Jetson%20Orin-76B900.svg?logo=nvidia&logoColor=white"> <img alt="macOS" src="https://img.shields.io/badge/macOS-000000.svg?logo=apple&logoColor=white"> <img alt="iOS" src="https://img.shields.io/badge/iOS-000000.svg?logo=apple&logoColor=white"> <img alt="Android" src="https://img.shields.io/badge/Android-3DDC84.svg?logo=android&logoColor=white"> 
 
-This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, MacOS, and **iOS (NEW!)**; supports CPU, [CUDA](https://developer.nvidia.com/cuda-toolkit), [MPS](https://developer.apple.com/documentation/metalperformanceshaders), and [ANE (on Apple devices）](https://machinelearning.apple.com). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
+This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, MacOS, iOS, and **Android (NEW!)**; supports CPU, [CUDA](https://developer.nvidia.com/cuda-toolkit), [MPS](https://developer.apple.com/documentation/metalperformanceshaders), and NPU (on Android and Apple devices). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
 
 <p align="left">
   <picture>
@@ -15,26 +15,83 @@ This project provides a universal inference runtime for [YOLO-Master](https://gi
 
 ## 🌐 Update (11-09-2026): YOLO-Master Edge API Server v1.2.0 (REST + WebSocket, four backends)
 
-`yolomaster_server` turns the v1.1.0 runtime into a production inference service: one C++ process,
-any number of models, each on **ONNX Runtime (CPU/CUDA), TensorRT, ncnn or MNN**, in fp32, fp16 or
-int8, batch 1 per request by design. It ships with a Docker image built with Bazel + rules_oci
-(no Docker daemon needed on the build pod), a one-click `deploy/run.sh`, Prometheus metrics and a
+[Click here](https://hub.docker.com/repository/docker/skywalker0501/yolomaster-api/general) to check the image on DockerHub!
+
+`yolomaster_server` turns the v1.1.0 runtime into a production inference service: one C++ process, any number of models, each on **ONNX Runtime (CPU/CUDA), TensorRT, ncnn or MNN**, in fp32, fp16 or int8, batch 1 per request by design. It ships with a Docker image built with Bazel + rules_oci (no Docker daemon needed on the build pod), a one-click `deploy/run.sh`, Prometheus metrics and a
 Python client.
 
-- `POST /v1/infer` (JSON, YOLO txt, COCO JSON or annotated JPEG), `POST /v1/infer/batch`,
-  `POST /v1/video` (NDJSON stream), `WS /v1/stream` (keep-latest frame backpressure),
-  `GET /metrics`, `GET /v1/stats`, `/healthz`, `/readyz`, model load/unload at runtime
-- One `Backend` per worker thread, bounded queues (503 + Retry-After), request deadlines (504),
-  graceful drain on SIGTERM, TensorRT engines built from `.onnx` and cached per GPU
-- Measured on an L40S over the full COCO val2017 (5000 images), API vs bare CLI on every backend:
-  see [`API_SERVER_RESULTS.md`](API_SERVER_RESULTS.md)
-- Docs: [`docs/API.md`](docs/API.md), [`deploy/README.md`](deploy/README.md);
-  build: `cmake -DBUILD_SERVER=ON` (run `scripts/server/fetch_uws.sh` once for uWebSockets)
+- `POST /v1/infer` (JSON, YOLO txt, COCO JSON or annotated JPEG), `POST /v1/infer/batch`, `POST /v1/video` (NDJSON stream), `WS /v1/stream` (keep-latest frame backpressure), `GET /metrics`, `GET /v1/stats`, `/healthz`, `/readyz`, model load/unload at runtime
+- One `Backend` per worker thread, bounded queues (503 + Retry-After), request deadlines (504), graceful drain on SIGTERM, TensorRT engines built from `.onnx` and cached per GPU
+- Measured on an L40S over the full COCO val2017 (5000 images), API vs bare CLI on every backend: see [`API_SERVER_RESULTS.md`](API_SERVER_RESULTS.md)
+- Docs: [`docs/API.md`](docs/API.md), [`deploy/README.md`](deploy/README.md); build: `cmake -DBUILD_SERVER=ON` (run `scripts/server/fetch_uws.sh` once for uWebSockets)
 
 ```bash
 yolomaster_server -p 8080 -m v01n=/models/v01n/model.onnx,backend=trt,device=cuda,precision=fp16
 curl -X POST 'localhost:8080/v1/infer?model=v01n&conf=0.3' --data-binary @image.jpg
 ```
+
+---
+
+## 🤳 Update (11-09-2026): YOLO-Master Edge for Android preliminary build
+
+**The 6th platform of YOLO-Master Edge, and the first with two runtimes side by side.**
+
+Native Android app (Kotlin, Jetpack Compose) for on-device YOLO-Master detection and segmentation. It is a function-for-function port of the iOS app on top of the shared C++ core (the same letterbox, decode and NMS code as the Linux, Windows,Jetson and macOS runners) behind a JNI bridge, with the runtime and the compute unit selectable per model:
+
+- **ncnn** on the CPU (per-model fp16 policy, mixed-INT8 siblings) or the GPU through Vulkan
+- **ONNX Runtime with the Qualcomm QNN execution provider** on the Hexagon NPU (Snapdragon 8 Elite Gen 5 and other HTP-capable SoCs), with A16W8 quantized models and a measured per-model default that picks the faster runtime on first launch
+
+Everything runs on the phone; nothing you capture leaves it. Requires Android 7.0 (API 24) or later, arm64; the NPU path needs a Snapdragon SoC with a Hexagon HTP. Preliminary build: sideload only, no store listing yet.
+
+### Features
+
+- **📹 Live** - Real-time CameraX detection with an async overlay, FPS tachometer, per-stage latency and thermal state, lens switching, tap-to-focus, torch, live conf/IoU tuning without pausing inference, pause/resume, and a full-resolution
+shutter that bakes the boxes and masks into the saved photo (`Pictures/YOLO-Master`). The HUD shows the resolved backend (`ncnn-CPU-fp16`, `ncnn-Vulkan`, `ort-QNN-htp-fp16`, ...) and, on the NPU, how many graph nodes run on the HTP.
+- **📸 Photo** - Batch detection over up to 100 library images, 3-up gallery and zoomable pager, per-image and batch stats, segmentation masks, conf/IoU retune from cached raw outputs (one forward, many decodes), export of annotated images.
+- **🎛️  Bench** - Cold sweep of every bundled model across runtime and unit (ncnn CPU, ncnn GPU, ONNX CPU, ONNX NPU) with pre/inference/decode breakdowns, sustained thermal runs with a latency sparkline and thermal timeline, run history with
+per-run graphs, CSV share.
+- **⚙️  Settings** - About, licenses, privacy, CPU-inference toggle, ONNX Runtime section (NPU performance mode, prefer-quantized switch, NPU cache reset, the measured-default table), custom model import (ncnn dirs or ONNX), erase history.
+
+### Models
+
+Seven bundled models: YOLO-Master v0.1-N and v0.1-seg-N (COCO), YOLO-Master-EsMoE-N (VisDrone), the MoEPruner-pruned v0.1-N, their mixed-INT8 ncnn siblings, and YOLO11n as a control. The ncnn graphs are exported with a dense rewrite (fused
+SDPA attention, native gate broadcast) that removes the MatMul/Permute/Tile glue the stock export produced; on the S26 that took seg-N from 76 ms to 33 ms on the CPU.
+
+### Performance
+
+MEASURED on a Samsung Galaxy S26 (Snapdragon 8 Elite Gen 5, Hexagon V81, Adreno 840), model time per frame, medians, 2026-09-08/09.
+
+| model | ncnn CPU fp16 | ncnn GPU (Vulkan) | ONNX NPU fp16 | HTP placement |
+|---|---|---|---|---|
+| YOLO11n (control) | 28 ms | | 9.1 ms | 331/331 nodes |
+| YOLO-Master v0.1-N | 30 ms | | 11.0 ms | 629/629 |
+| YOLO-Master v0.1-seg-N | 33 to 35 ms | 50 ms | 19.6 ms | 674/674 |
+| YOLO-Master-EsMoE-N (VisDrone) | 35 ms | | 12.3 ms | 596/596 |
+
+Two things to know before reading the table. On this graph the CPU fp16 path beats Vulkan and beats the mixed-INT8 siblings, so INT8 is kept for its size only. And while the camera is open the SoC's power policy clamps the prime cores to
+about 1.4 GHz even when the phone is cool, which is why the NPU path matters: it is the unit that holds its speed in Live mode. fp16 on the HTP is exact for v0.1-N and YOLO11n; seg-N and EsMoE-N lose detections in fp16 on the HTP, which is
+what the A16W8 models are for (v0.1-N -0.56 mAP, seg-N -0.86 with the seg head kept int16, EsMoE-N -0.35, MEASURED on Linux; device certification of the A16W8 dumps is the open item).
+
+### Build from source
+ 
+```bash
+cd android
+scripts/stage_models.sh --module app         # copies the bundled models into app assets
+gradle :app:assembleRelease                  # -> app/build/outputs/apk/release/app-release.apk
+adb install -r -g app/build/outputs/apk/release/app-release.apk
+```
+
+Needs the Android SDK (API 34), NDK r29 and a prebuilt ncnn for Android under android/sdk-paths.properties; the ONNX Runtime QNN package and the Qualcomm QNN runtime are pulled from Maven by the runtime module's extractOrt task. See
+android/README.md for the runtime API, the precision policy and the on-device test harness.
+ 
+Privacy & License (Android App Update)
+ 
+The app has no internet permission. No data leaves the device, and we don't collect anything. See PRIVACY.md.
+ 
+The app is licensed under AGPL-3.0, consistent with YOLO-Master and Ultralytics; ncnn is BSD-3-Clause, ONNX Runtime is MIT. The Qualcomm QNN runtime libraries bundled in test builds are proprietary (Qualcomm Technologies license, "not a
+contribution"); this preliminary build is for research and personal experience only, and public distribution of an NPU-enabled build is pending a license review. Any direct commercial use of this app is prohibited.
+
+---
 
 ## 📱 Update (27-08-2026): YOLO-Master for iPhone v1.1.0 Beta Build 1
 
