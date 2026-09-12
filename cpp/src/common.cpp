@@ -2,6 +2,7 @@
 // drawing, model-metadata parsing, and versatile source resolution.
 #include "yolomaster.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -320,17 +321,75 @@ void draw(cv::Mat& img, const std::vector<Detection>& dets, const Config& cfg) {
 namespace meta {
 
 std::vector<std::string> parse_names_dict(const std::string& s) {
-    // keys are unquoted ints, values are quoted strings -> extract quoted tokens in order
-    std::vector<std::string> names;
-    for (size_t i = 0; i < s.size();) {
-        const char q = s[i];
-        if (q == '\'' || q == '"') {
-            size_t j = i + 1; std::string tok;
-            while (j < s.size() && s[j] != q) tok += s[j++];
-            names.push_back(tok);
-            i = j + 1;
-        } else ++i;
+    // Ultralytics has emitted all of the following forms over time:
+    //   {0: 'person', 1: 'car'}  (Python repr)
+    //   {"0": "person", "1": "car"} (JSON object)
+    //   ["person", "car"] (JSON list)
+    // Extract key/value pairs rather than every quoted token: the latter
+    // mistakenly turns JSON's numeric keys into class names and shifts the
+    // class ABI by one position.
+    std::map<int, std::string> keyed;
+    std::vector<std::string> listed;
+    const auto skip_ws = [&](size_t& p) {
+        while (p < s.size() && std::isspace(static_cast<unsigned char>(s[p]))) ++p;
+    };
+    const auto quoted = [&](size_t& p, std::string& value) -> bool {
+        skip_ws(p);
+        if (p >= s.size() || (s[p] != '\'' && s[p] != '"')) return false;
+        const char q = s[p++];
+        value.clear();
+        while (p < s.size()) {
+            const char c = s[p++];
+            if (c == '\\' && p < s.size()) { value.push_back(s[p++]); continue; }
+            if (c == q) return true;
+            value.push_back(c);
+        }
+        return false;
+    };
+    size_t p = 0;
+    skip_ws(p);
+    if (p < s.size() && s[p] == '[') {
+        ++p;
+        while (p < s.size()) {
+            skip_ws(p);
+            if (p < s.size() && s[p] == ']') break;
+            std::string value;
+            if (!quoted(p, value)) break;
+            listed.push_back(std::move(value));
+            skip_ws(p);
+            if (p < s.size() && s[p] == ',') ++p;
+        }
+        return listed;
     }
+    if (p >= s.size() || s[p] != '{') return {};
+    ++p;
+    while (p < s.size()) {
+        skip_ws(p);
+        if (p < s.size() && s[p] == '}') break;
+        int key = -1;
+        size_t key_start = p;
+        if (p < s.size() && (s[p] == '\'' || s[p] == '"')) {
+            std::string key_text;
+            if (!quoted(p, key_text)) break;
+            try { key = std::stoi(key_text); } catch (...) { key = -1; }
+        } else {
+            while (p < s.size() && (std::isdigit(static_cast<unsigned char>(s[p])) || s[p] == '-')) ++p;
+            if (p == key_start) break;
+            try { key = std::stoi(s.substr(key_start, p - key_start)); } catch (...) { key = -1; }
+        }
+        skip_ws(p);
+        if (p >= s.size() || s[p] != ':') break;
+        ++p;
+        std::string value;
+        if (!quoted(p, value)) break;
+        if (key >= 0) keyed[key] = std::move(value);
+        skip_ws(p);
+        if (p < s.size() && s[p] == ',') ++p;
+    }
+    if (keyed.empty()) return {};
+    const int max_key = keyed.rbegin()->first;
+    std::vector<std::string> names(static_cast<size_t>(max_key + 1));
+    for (const auto& item : keyed) names[static_cast<size_t>(item.first)] = item.second;
     return names;
 }
 

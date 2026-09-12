@@ -150,6 +150,7 @@ void App::folder_preinfer(std::vector<std::string> paths, Config c, SliceConfig 
         cv::Mat bgr = cv::imread(paths[i], cv::IMREAD_COLOR);
         if (!bgr.empty()) {
             try {
+                double model_ms = 0.0;
                 if (sc.mode != SliceMode::Off) {
                     // postcondition restores be_->candidates/lb/proto -> snapshot below unchanged
                     const SliceOutput so = sliced_candidates(*be_, bgr, c, sc, kConfFloor,
@@ -158,20 +159,22 @@ void App::folder_preinfer(std::vector<std::string> paths, Config c, SliceConfig 
                     model_is_seg_ = so.model_is_seg;
                     tstats_.add(so.tiles_run, so.tiles_total, so.tile_size_used,
                                 so.used_fallback, so.capped);
+                    model_ms = so.infer_ms;
                 } else {
                     be_->infer(bgr, c);
+                    model_ms = be_->infer_ms;
                 }
                 FolderItem it;
                 it.cands = be_->candidates; it.lb = be_->cand_lb;
                 it.ow = be_->cand_orig_w;   it.oh = be_->cand_orig_h;
                 if (be_->is_seg()) { it.proto = be_->proto; it.pc = be_->proto_c;
                                      it.ph = be_->proto_h; it.pw = be_->proto_w; }
-                it.ms = be_->infer_ms;
+                it.ms = model_ms;   // sliced: global pass + all tiles (not the last tile's time)
                 it.done = true;
                 fcache_[i] = std::move(it);
-                sum += be_->infer_ms; ++n;
-                if (n == 1 || be_->infer_ms < lo) lo = be_->infer_ms;
-                if (n == 1 || be_->infer_ms > hi) hi = be_->infer_ms;
+                sum += model_ms; ++n;
+                if (n == 1 || model_ms < lo) lo = model_ms;
+                if (n == 1 || model_ms > hi) hi = model_ms;
                 fmean_ms_ = sum / n;              // publish live so the UI can show progress stats
                 fmin_ms_ = lo; fmax_ms_ = hi; fcount_ = n;
                 fwall_s_ = std::chrono::duration<double>(clk::now() - t_start).count();
@@ -480,7 +483,7 @@ void App::run_inference() {
             // run, so recompute_nms/rebuild_overlay below work unchanged.
             sstats_ = sliced_candidates(*be_, img_bgr_, c, slice_config(), kConfFloor);
             sliced_run_ = true;
-            pre_ms_ = 0; inf_ms_ = be_->infer_ms; post_ms_ = 0;   // sum of all forwards
+            pre_ms_ = sstats_.pre_ms; inf_ms_ = sstats_.infer_ms; post_ms_ = sstats_.post_ms;   // sums of all forwards
         } else {
             dets_ = be_->infer(img_bgr_, c);
             sliced_run_ = false;

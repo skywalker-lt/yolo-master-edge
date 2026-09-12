@@ -2,7 +2,7 @@
 # Build the C++ edge runner on aarch64 (ONNX backend, CPU) and run it.
 # The GPU ceiling is measured by trtexec (10_trt_bench.sh); this proves the portable
 # runner builds+runs unchanged on the Jetson (same source as Linux/Windows).
-set -e
+set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"                      # edge repo root (cpp/ lives here)
 ORT_VER=1.20.1
@@ -48,10 +48,12 @@ else
   MODE_ARGS="-DPORTABLE=ON"
   echo "  portable build (image-only): no cached lean OpenCV"
 fi
+# full logs land in build_jetson/{configure,build}.log; the console shows the backend lines only
 cmake .. -DCMAKE_BUILD_TYPE=Release $MODE_ARGS $NCNN_ARGS $MNN_ARGS \
-         -DONNXRUNTIME_ROOT="$ORT_DIR" 2>&1 | grep -iE "backend:|error" || true
-make -j"$(nproc)" 2>&1 | grep -iE "error|Built target" | tail -1
+         -DONNXRUNTIME_ROOT="$ORT_DIR" 2>&1 | tee configure.log | grep -iE "backend:|error" || true
+cmake --build . --parallel "$(nproc)" 2>&1 | tee build.log | grep -iE "error|Built target" | tail -1 || true
 BIN="$ROOT/cpp/build_jetson/yolomaster_edge"
+[ -x "$BIN" ] || { echo "build completed without an executable: $BIN (see build_jetson/build.log)" >&2; exit 1; }
 echo "  binary: $BIN"
 
 echo "==================== run ===================="

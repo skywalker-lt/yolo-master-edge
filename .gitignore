@@ -51,3 +51,8 @@ tempo-ncnn/
 
 # standalone ncnn bench build trees (cpp/tools/CMakeLists.txt)
 cpp/tools/build*/
+
+# never commit local data/SDK dirs (or symlinks named like them)
+/models
+/third_party
+/visdrone50
