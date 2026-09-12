@@ -14,3 +14,8 @@ runtime/src/main/assets/models/*/
 runtime/src/main/assets/probe.jpg
 runtime/src/main/assets/probe_visdrone.jpg
 runtime/src/androidTest/assets/
+app/src/main/assets/models/*/
+app/release/
+app/debug/
+app/src/main/assets/probe.jpg
+app/src/main/assets/probe_visdrone.jpg

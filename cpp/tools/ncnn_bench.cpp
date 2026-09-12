@@ -1,4 +1,5 @@
-// ncnn_bench - standalone ncnn CPU latency bench for the mixed-INT8-vs-fp16 question.
+// ncnn_bench - standalone ncnn latency bench for the mixed-INT8-vs-fp16 question (CPU) plus
+// the Vulkan GPU path measured by the same protocol.
 //
 // Port of tempo-ncnn/bench.cpp (commit 9d0f537): deliberately independent of the
 // yolomaster runner (no shared headers, no metadata, no NMS, no OpenCV) - pure
@@ -9,33 +10,48 @@
 //
 //   ncnn_bench <model_dir | model.param model.bin> --input probe_640.f32
 //              [--shape 3,640,640] [--threads 1,2,4,big] [--iters 100] [--warmup 20]
-//              [--rounds 3] [--variants fp32,fp16,int8+fp32,int8+fp16] [--powersave 2]
-//              [--label <device>] [--json out.json] [--conf 0.25] [--nc N] [--idle-ms 2000]
+//              [--rounds 3] [--variants fp32,fp16,int8+fp32,int8+fp16[,vulkan,vulkan-fp32]]
+//              [--powersave 2] [--label <device>] [--json out.json] [--conf 0.25] [--nc N]
+//              [--idle-ms 2000]
 //
-// Variants (always CPU, use_vulkan_compute=false, use_bf16_storage=false):
+// CPU variants (use_vulkan_compute=false, use_bf16_storage=false):
 //   fp32      float model, fp16 packed/storage/arithmetic OFF
 //   fp16      float model, fp16 packed/storage/arithmetic ON  (needs asimdhp; else "fp16(inert)")
 //   int8+fp32 int8 sibling model, float remainder in fp32     (use_int8_packed/storage ON)
 //   int8+fp16 int8 sibling model, float remainder in fp16
+// GPU variants (use_vulkan_compute=true, Vulkan device 0; only in an NCNN_VULKAN build):
+//   vulkan      float model, fp16 packed/storage/arithmetic ON  = what NcnnBackend calls ncnn-Vulkan
+//   vulkan-fp32 float model, all fp16 flags OFF                 = ncnn-Vulkan-fp32 (router-emulated)
 // An int8 model is a property of the .param (Convolution / ConvolutionDepthWise /
 // InnerProduct lines carrying a non-zero `8=`); ncnn dispatches int8 and float layers in
-// one graph, the float remainder runs in whatever fp16/fp32 mode the flags select.
+// one graph, the float remainder runs in whatever fp16/fp32 mode the flags select. There are
+// no Vulkan int8 kernels, so the GPU variants are float-only (skipped on an int8 model).
 //
 // Sibling rule: <name>_ncnn -> <name>-int8_ncnn (a bare x.ncnn.param -> x-int8.param). A given
 // model whose .param already carries int8 layers (any -int8*_ncnn dir) is used as-is for the
 // int8 variants and its float variants are skipped. Missing sibling -> int8 variants skipped.
 // Router-emulated params (literal 1.000000e30 or a layer named amax_*) -> fp16 variants
-// skipped: their 1e-9 / 1e30 constants flush / overflow under ARM FZ16.
+// skipped: their 1e-9 / 1e30 constants flush / overflow under ARM FZ16. The same rule skips
+// `vulkan` (fp16 shaders) and runs `vulkan-fp32` in its place.
 //
-// Protocol: per thread count, per round, variants run INTERLEAVED (reload if needed,
+// Protocol: per thread count, per round, CPU variants run INTERLEAVED (reload if needed,
 // --warmup untimed infers, --iters timed infers, round median recorded), --idle-ms between
 // variants. Reported per (variant, threads): median of round medians, min round median,
-// p90 of the last round. Exit code is non-zero only on load / input failures.
+// p90 of the last round. Threads are irrelevant on the GPU: the Vulkan variants run ONCE
+// per model after the CPU sweep (same warmup/iters/rounds, threads=gpu) and the summary line
+// carries the first inference after load separately as first_ms= (pipeline / shader compile,
+// which the warmup otherwise absorbs). CPU output lines are unchanged by the GPU variants.
+// Exit code is non-zero only on load / input failures.
 //
 // x86 builds are load-smoke only: fp16 flags are inert without asimdhp and AVX-VNNI int8
-// says nothing about ARM sdot/i8mm. Only an arm64 device yields the latency verdict.
+// says nothing about ARM sdot/i8mm, and third_party/ncnn-x86-* is built with NCNN_VULKAN=OFF
+// (the Vulkan variants print a skip line there). Only an arm64 device yields the verdict.
 #include "cpu.h"
 #include "net.h"
+#include "platform.h"
+#if NCNN_VULKAN
+#include "gpu.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -61,7 +77,12 @@ struct Args {
     std::string input;
     std::string shape = "3,640,640";
     std::string threads = "1,2,4,big";
+#if NCNN_VULKAN
+    // Vulkan-enabled ncnn (Android SDK, Jetson): the GPU path is part of the default sweep.
+    std::string variants = "fp32,fp16,int8+fp32,int8+fp16,vulkan";
+#else
     std::string variants = "fp32,fp16,int8+fp32,int8+fp16";
+#endif
     std::string label = "unknown";
     std::string json;
     int iters = 100;
@@ -91,10 +112,11 @@ struct Caps {
 };
 
 struct Variant {
-    std::string name;          // as requested: fp32 / fp16 / int8+fp32 / int8+fp16
+    std::string name;          // as requested: fp32 / fp16 / int8+fp32 / int8+fp16 / vulkan / vulkan-fp32
     std::string label;         // printed: may carry "(inert)"
     bool int8 = false;
     bool fp16 = false;
+    bool vulkan = false;       // GPU variant: runs once per model, not per thread count
     ModelFiles files;
     ParamScan scan;
 };
@@ -116,15 +138,22 @@ struct ConfigResult {
     bool valid = false;
     std::string out_shape, param;
     std::vector<double> round_medians;
+    bool vulkan = false;       // threads is printed as "gpu" and first_ms is reported
+    double first_ms = 0;       // first inference after load (Vulkan pipeline compile)
+    std::string gpu;           // Vulkan device name
 };
 
 void usage(const char* argv0) {
     fprintf(stderr,
             "usage: %s <model_dir | model.param model.bin> --input probe.f32 [--shape 3,640,640]\n"
             "          [--threads 1,2,4,big] [--iters 100] [--warmup 20] [--rounds 3]\n"
-            "          [--variants fp32,fp16,int8+fp32,int8+fp16] [--powersave 2] [--label dev]\n"
-            "          [--json out.json] [--conf 0.25] [--nc N] [--idle-ms 2000]\n",
-            argv0);
+            "          [--variants fp32,fp16,int8+fp32,int8+fp16,vulkan,vulkan-fp32] [--powersave 2]\n"
+            "          [--label dev] [--json out.json] [--conf 0.25] [--nc N] [--idle-ms 2000]\n"
+            "variants: fp32 fp16 int8+fp32 int8+fp16 run on the CPU per --threads entry;\n"
+            "          vulkan (fp16 shaders) and vulkan-fp32 run once per model on Vulkan device 0\n"
+            "          (threads=gpu, first_ms= reported); skipped when ncnn is built without\n"
+            "          Vulkan (%s) or no device is present. Default variants: %s\n",
+            argv0, NCNN_VULKAN ? "not the case here" : "this build", Args().variants.c_str());
 }
 
 bool parse_args(int argc, char** argv, Args& a) {
@@ -338,11 +367,15 @@ double median_sorted(const std::vector<double>& v) {
     return n % 2 ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
 }
 
+// threads <= 0 leaves ncnn's default team (CPU-side layers of a Vulkan net still use it).
 std::unique_ptr<ncnn::Net> load_net(const Variant& v, int threads, bool fp16_effective) {
     auto net = std::make_unique<ncnn::Net>();
     ncnn::Option& o = net->opt;
-    o.num_threads = threads;
-    o.use_vulkan_compute = false;
+    if (threads > 0) o.num_threads = threads;
+    o.use_vulkan_compute = v.vulkan;
+#if NCNN_VULKAN
+    if (v.vulkan) net->set_vulkan_device(0);   // after create_gpu_instance(), before load_param
+#endif
     o.use_bf16_storage = false;
     o.use_fp16_packed = fp16_effective;
     o.use_fp16_storage = fp16_effective;
@@ -414,8 +447,11 @@ int main(int argc, char** argv) {
     if (!load_input(a, in, C, H, W, input_note)) return 1;
     printf("[ncnn_bench] input=%s shape=%d,%d,%d conf=%.3f\n", input_note.c_str(), C, H, W, a.conf);
 
-    // Variant plan.
+    // Variant plan. The GPU instance is created once, on the first Vulkan variant, and destroyed
+    // at exit (after every Net is gone).
     std::vector<Variant> plan;
+    bool gpu_ready = false;
+    std::string gpu_name;
     for (const std::string& vn : split(a.variants, ',')) {
         Variant v;
         v.name = vn;
@@ -423,7 +459,31 @@ int main(int argc, char** argv) {
         else if (vn == "fp16") { v.int8 = false; v.fp16 = true; }
         else if (vn == "int8+fp32") { v.int8 = true; v.fp16 = false; }
         else if (vn == "int8+fp16") { v.int8 = true; v.fp16 = true; }
+        else if (vn == "vulkan") { v.vulkan = true; v.fp16 = true; }
+        else if (vn == "vulkan-fp32") { v.vulkan = true; v.fp16 = false; }
         else { printf("[ncnn_bench] skip variant=%s reason=unknown variant name\n", vn.c_str()); continue; }
+
+        if (v.vulkan) {
+#if NCNN_VULKAN
+            if (!gpu_ready) {
+                if (ncnn::create_gpu_instance() != 0 || ncnn::get_gpu_count() <= 0) {
+                    printf("[ncnn_bench] skip variant=%s reason=no Vulkan device (create_gpu_instance failed or get_gpu_count()==0)\n", vn.c_str());
+                    continue;
+                }
+                gpu_ready = true;
+                gpu_name = ncnn::get_gpu_info(0).device_name();
+                printf("[ncnn_bench] vulkan gpu_count=%d gpu=%s\n", ncnn::get_gpu_count(), gpu_name.c_str());
+            }
+            // Dedupe: `vulkan` on a router-emulated model is re-issued as `vulkan-fp32` below, which
+            // may also have been requested explicitly.
+            bool dup = false;
+            for (const Variant& p : plan) dup = dup || (p.vulkan && p.fp16 == v.fp16);
+            if (dup) continue;
+#else
+            printf("[ncnn_bench] skip variant=%s reason=ncnn built without Vulkan\n", vn.c_str());
+            continue;
+#endif
+        }
 
         if (v.int8) {
             if (!int8.exists) {
@@ -444,18 +504,88 @@ int main(int argc, char** argv) {
             v.scan = given_scan;
         }
         if (v.fp16 && v.scan.router_emulated()) {
-            printf("[ncnn_bench] skip variant=%s reason=router-emulated param (%d x 1.000000e30, %d x amax_ layers): 1e-9/1e30 constants flush/overflow under fp16, fp16 is invalid for %s\n",
-                   vn.c_str(), v.scan.e30_literals, v.scan.amax_layers, v.files.display.c_str());
-            continue;
+            printf("[ncnn_bench] skip variant=%s reason=router-emulated param (%d x 1.000000e30, %d x amax_ layers): 1e-9/1e30 constants flush/overflow under fp16, fp16 is invalid for %s%s\n",
+                   vn.c_str(), v.scan.e30_literals, v.scan.amax_layers, v.files.display.c_str(),
+                   v.vulkan ? "; running vulkan-fp32 instead" : "");
+            if (!v.vulkan) continue;
+            bool dup = false;
+            for (const Variant& p : plan) dup = dup || (p.vulkan && !p.fp16);
+            if (dup) continue;
+            v.name = "vulkan-fp32";
+            v.fp16 = false;
         }
         v.label = v.name;
-        if (v.fp16 && !caps.asimdhp) v.label += "(inert)";
+        if (v.fp16 && !v.vulkan && !caps.asimdhp) v.label += "(inert)";
         plan.push_back(v);
     }
-    if (plan.empty()) {
+    std::vector<Variant> gpu_plan;
+    {
+        std::vector<Variant> cpu_plan;
+        for (const Variant& v : plan) (v.vulkan ? gpu_plan : cpu_plan).push_back(v);
+        plan.swap(cpu_plan);
+    }
+    if (plan.empty() && gpu_plan.empty()) {
         printf("[ncnn_bench] nothing to run (all variants skipped)\n");
+#if NCNN_VULKAN
+        if (gpu_ready) ncnn::destroy_gpu_instance();
+#endif
         return 0;
     }
+
+    // One (variant, model, threads) measurement: --warmup untimed infers then --iters timed ones.
+    // first_ms (the very first inference after load) is only recorded when the caller asks.
+    auto measure = [&](ncnn::Net& net, double* first_ms) -> RoundResult {
+        ncnn::Mat out;
+        if (first_ms) {
+            auto t0 = std::chrono::steady_clock::now();
+            ncnn::Extractor ex = net.create_extractor();
+            ex.input("in0", in);
+            ex.extract("out0", out);
+            *first_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        }
+        for (int i = 0; i < a.warmup; i++) {
+            ncnn::Extractor ex = net.create_extractor();
+            ex.input("in0", in);
+            ex.extract("out0", out);
+        }
+        std::vector<double> ms(a.iters);
+        for (int i = 0; i < a.iters; i++) {
+            auto t0 = std::chrono::steady_clock::now();
+            ncnn::Extractor ex = net.create_extractor();
+            ex.input("in0", in);
+            ex.extract("out0", out);
+            ms[i] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        }
+        std::sort(ms.begin(), ms.end());
+        RoundResult rr;
+        rr.median_ms = median_sorted(ms);
+        rr.p90_ms = percentile_sorted(ms, 0.90);
+        score_output(out, a.conf, a.nc, rr);
+        return rr;
+    };
+    auto summarize = [&](const Variant& v, const std::vector<RoundResult>& rounds, int T) -> ConfigResult {
+        ConfigResult c;
+        c.variant = v.label;
+        c.model = given.display;
+        c.param = v.files.param;
+        c.threads = T;
+        c.vulkan = v.vulkan;
+        std::vector<double> meds;
+        for (const RoundResult& rr : rounds) meds.push_back(rr.median_ms);
+        c.round_medians = meds;
+        std::sort(meds.begin(), meds.end());
+        c.median_ms = median_sorted(meds);
+        c.min_median_ms = meds.front();
+        const RoundResult& last = rounds.back();
+        c.p90_ms = last.p90_ms;
+        c.dets = last.dets;
+        c.checksum = last.checksum;
+        c.out_shape = last.out_shape;
+        bool finite = true;
+        for (const RoundResult& rr : rounds) finite = finite && rr.finite;
+        c.valid = finite && c.dets > 0;
+        return c;
+    };
 
     // Thread list.
     std::vector<int> thread_list;
@@ -482,26 +612,7 @@ int main(int argc, char** argv) {
                         return 1;
                     }
                 }
-                ncnn::Net& net = *nets[vi];
-                ncnn::Mat out;
-                for (int i = 0; i < a.warmup; i++) {
-                    ncnn::Extractor ex = net.create_extractor();
-                    ex.input("in0", in);
-                    ex.extract("out0", out);
-                }
-                std::vector<double> ms(a.iters);
-                for (int i = 0; i < a.iters; i++) {
-                    auto t0 = std::chrono::steady_clock::now();
-                    ncnn::Extractor ex = net.create_extractor();
-                    ex.input("in0", in);
-                    ex.extract("out0", out);
-                    ms[i] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-                }
-                std::sort(ms.begin(), ms.end());
-                RoundResult rr;
-                rr.median_ms = median_sorted(ms);
-                rr.p90_ms = percentile_sorted(ms, 0.90);
-                score_output(out, a.conf, a.nc, rr);
+                RoundResult rr = measure(*nets[vi], nullptr);
                 per_round[vi].push_back(rr);
                 printf("[ncnn_bench]   round=%d variant=%s threads=%d median_ms=%.3f p90_ms=%.3f dets=%d checksum=%.4f out0=%s\n",
                        r + 1, v.label.c_str(), T, rr.median_ms, rr.p90_ms, rr.dets, rr.checksum, rr.out_shape.c_str());
@@ -511,26 +622,7 @@ int main(int argc, char** argv) {
             }
         }
         for (size_t vi = 0; vi < plan.size(); vi++) {
-            const Variant& v = plan[vi];
-            ConfigResult c;
-            c.variant = v.label;
-            c.model = given.display;
-            c.param = v.files.param;
-            c.threads = T;
-            std::vector<double> meds;
-            for (const RoundResult& rr : per_round[vi]) meds.push_back(rr.median_ms);
-            c.round_medians = meds;
-            std::sort(meds.begin(), meds.end());
-            c.median_ms = median_sorted(meds);
-            c.min_median_ms = meds.front();
-            const RoundResult& last = per_round[vi].back();
-            c.p90_ms = last.p90_ms;
-            c.dets = last.dets;
-            c.checksum = last.checksum;
-            c.out_shape = last.out_shape;
-            bool finite = true;
-            for (const RoundResult& rr : per_round[vi]) finite = finite && rr.finite;
-            c.valid = finite && c.dets > 0;
+            ConfigResult c = summarize(plan[vi], per_round[vi], T);
             results.push_back(c);
             printf("[ncnn_bench] device=%s model=%s variant=%s threads=%d iters=%d rounds=%d median_ms=%.3f min_median_ms=%.3f p90_ms=%.3f dets=%d checksum=%.4f valid=%d caps=%s big=%d\n",
                    a.label.c_str(), c.model.c_str(), c.variant.c_str(), T, a.iters, a.rounds, c.median_ms, c.min_median_ms, c.p90_ms,
@@ -538,6 +630,55 @@ int main(int argc, char** argv) {
             fflush(stdout);
         }
     }
+
+    // GPU variants: once per model (thread count is meaningless on Vulkan), same rounds protocol,
+    // nets loaded once; the first inference after load (pipeline / shader compile) is timed on
+    // its own and reported as first_ms= on the summary line, before the warmup absorbs it.
+    if (!gpu_plan.empty()) {
+        std::vector<std::unique_ptr<ncnn::Net>> nets(gpu_plan.size());
+        std::vector<std::vector<RoundResult>> per_round(gpu_plan.size());
+        std::vector<double> first_ms(gpu_plan.size(), 0.0);
+        if (!plan.empty() && a.idle_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(a.idle_ms));
+        for (int r = 0; r < a.rounds; r++) {
+            for (size_t vi = 0; vi < gpu_plan.size(); vi++) {
+                const Variant& v = gpu_plan[vi];
+                const bool fresh = !nets[vi];
+                if (fresh) {
+                    nets[vi] = load_net(v, 0, v.fp16);
+                    if (!nets[vi]) {
+                        fprintf(stderr, "[ncnn_bench] ERROR: load failed variant=%s param=%s bin=%s\n", v.label.c_str(),
+                                v.files.param.c_str(), v.files.bin.c_str());
+                        nets.clear();
+#if NCNN_VULKAN
+                        ncnn::destroy_gpu_instance();
+#endif
+                        return 1;
+                    }
+                }
+                RoundResult rr = measure(*nets[vi], fresh ? &first_ms[vi] : nullptr);
+                per_round[vi].push_back(rr);
+                printf("[ncnn_bench]   round=%d variant=%s threads=gpu median_ms=%.3f p90_ms=%.3f dets=%d checksum=%.4f out0=%s\n",
+                       r + 1, v.label.c_str(), rr.median_ms, rr.p90_ms, rr.dets, rr.checksum, rr.out_shape.c_str());
+                fflush(stdout);
+                const bool last = (r == a.rounds - 1) && (vi + 1 == gpu_plan.size());
+                if (!last && a.idle_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(a.idle_ms));
+            }
+        }
+        for (size_t vi = 0; vi < gpu_plan.size(); vi++) {
+            ConfigResult c = summarize(gpu_plan[vi], per_round[vi], 0);
+            c.first_ms = first_ms[vi];
+            c.gpu = gpu_name;
+            results.push_back(c);
+            printf("[ncnn_bench] device=%s model=%s variant=%s threads=gpu iters=%d rounds=%d median_ms=%.3f min_median_ms=%.3f p90_ms=%.3f dets=%d checksum=%.4f valid=%d first_ms=%.3f gpu=%s caps=%s big=%d\n",
+                   a.label.c_str(), c.model.c_str(), c.variant.c_str(), a.iters, a.rounds, c.median_ms, c.min_median_ms, c.p90_ms,
+                   c.dets, c.checksum, c.valid ? 1 : 0, c.first_ms, c.gpu.c_str(), capstr, caps.big);
+            fflush(stdout);
+        }
+        nets.clear();   // Vulkan nets must be gone before destroy_gpu_instance()
+    }
+#if NCNN_VULKAN
+    if (gpu_ready) ncnn::destroy_gpu_instance();
+#endif
 
     if (!a.json.empty()) {
         std::ofstream j(a.json);
@@ -565,7 +706,10 @@ int main(int argc, char** argv) {
                   << ", \"checksum\": " << c.checksum << ", \"valid\": " << (c.valid ? "true" : "false") << ", \"out0\": \""
                   << c.out_shape << "\", \"round_medians\": [";
                 for (size_t k = 0; k < c.round_medians.size(); k++) j << (k ? ", " : "") << c.round_medians[k];
-                j << "]}" << (i + 1 < results.size() ? "," : "") << "\n";
+                j << "]";
+                // GPU rows only (CPU rows keep the exact key set of the CPU-only bench).
+                if (c.vulkan) j << ", \"first_ms\": " << c.first_ms << ", \"gpu\": \"" << json_escape(c.gpu) << "\"";
+                j << "}" << (i + 1 < results.size() ? "," : "") << "\n";
             }
             j << "  ]\n}\n";
             printf("[ncnn_bench] json=%s\n", a.json.c_str());

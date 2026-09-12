@@ -13,7 +13,12 @@ public:
     // callers select the "-int8_ncnn" sibling (meta::ncnn_int8_sibling) and pass Int8 here.
     NcnnBackend(const std::string& param_path, const std::string& bin_path, int threads = 4,
                 bool use_vulkan = false, Precision precision = Precision::Auto);
-    std::vector<Detection> infer(const cv::Mat& bgr, const Config& cfg) override;
+    // The Backend::forward_raw contract (preprocess + extractor + candidate decode; infer() is the
+    // shared default = forward_raw + nms_and_cap). `decode = false`: the extractor still runs
+    // (ncnn computes on extract) but the output is not reshaped/decoded, so infer_ms is the pure
+    // kernel time and the cached candidates are cleared.
+    void forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode = true) override;
+    const char* runtime_name() const override { return "ncnn"; }
     Precision requested_precision() const { return requested_; }
     bool fp16_active() const { return fp16_; }   // what net_.opt actually runs with
     bool int8_model() const { return int8_; }     // the loaded .param carries int8 layers

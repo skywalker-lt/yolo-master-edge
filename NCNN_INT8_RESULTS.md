@@ -161,6 +161,14 @@ mixed-INT8 beat fp16 there - need the arm64 device:
    high thread counts (LPDDR-bandwidth bound, as on Orin: +8.1% @1T, +6.5% @2T, tie @6T) is a
    legitimate result.
 
+### The app (2026-09-08)
+
+`android/app` is the Android port of the iOS app (Live / Photo / Bench / Settings), built on the
+pod as `android/app/build/outputs/apk/release/app-release.apk` and shipped in the S26 bundle with
+`run_s26_app_install.sh`. Its Bench tab sweeps every bundled model over GPU (Vulkan) and CPU with
+the same warmup/iters protocol, so the GPU-vs-CPU-fp16-vs-INT8 comparison on the phone comes
+straight out of the app (History + CSV share). Default unit = GPU; INT8 entries force CPU.
+
 ## 5. Samsung S26 results (MEASURED, 2026-09-08)
 
 Device: Samsung S26, arm64, ncnn caps asimdhp/asimddp/i8mm all present, `get_big_cpu_count()=2`
@@ -205,5 +213,189 @@ App-process harness (`LatencyBenchTest`, 50 frames, medians): at 1 thread seg fp
 and "big" threads every row ran 2-4x slower (500-680 ms) because the instrumentation process
 has no core affinity and its OpenMP team migrates off the prime cores. This is the reason the
 app runtime must call `ncnn::set_cpu_powersave(2)` and default to 2 threads (done in the app
-milestone). Vulkan latency was not measured by these harnesses (CPU-only by design); the app's
-Bench tab measures GPU vs CPU.
+milestone). Vulkan latency was not part of this run (both harnesses were CPU-only at the time);
+they now carry a `vulkan` variant / row (`ncnn_bench --variants ...,vulkan`, `LatencyBenchTest`
+`useVulkan=true`, both reporting `first_ms=` for the pipeline-compile first inference), pending a
+device run; until then the app's Bench tab is the only GPU-vs-CPU measurement.
+
+### GPU (Vulkan) vs CPU, from the app's Bench tab (MEASURED on the S26, 2026-09-08, cold sweep,
+warmup 10 / 50 timed, pure model time, medians)
+
+| model | GPU (ncnn-Vulkan) | CPU fp16 | CPU int8+fp16 |
+|---|---|---|---|
+| v0.1-seg-n | **54.4** | 84.9 | 74.4 |
+| p03_v01n | **47.1** | 71.9 | 52.6 |
+| esmoe_n_visdrone | 43.4 | 52.6 | **36.7** |
+| moa-n (fp32 pinned on both) | **80.4** | 140.8 | n/a |
+
+Vulkan beats CPU fp16 on every float model (1.2-1.75x) despite the 16-40 MatMul/Tile layers
+that fall back to CPU inside the graph; mixed-INT8 on CPU still beats the GPU on esmoe. The
+CPU rows match the standalone `ncnn_bench` numbers (seg 84.9 vs 87.0, p03 71.9 vs 71.5), so the
+app's thread pinning works. GPU is therefore the right default unit for the float models. A
+first Live-tab run on GPU showed 222 ms model time for seg-n, i.e. 4x the bench number: a
+Live-path contention effect (camera pipeline + real-time backdrop blur on the same GPU), under
+investigation; it is not a Vulkan property of the SoC.
+
+### Live-tab speed on the S26 is thermal, not runtime (MEASURED, 2026-09-08)
+
+With the camera open, the app's Live tab ran seg-N at 222-280 ms model time on CPU fp16 (4-7 fps)
+and about 8 fps on Vulkan, for every thread setting (1/2/4/all), while the same models bench at
+85 ms (CPU) / 54 ms (GPU). The HUD diagnostics explain it: thermal headroom 0.98 (1.0 = the
+severe-throttling threshold) and the prime-core clock at 1382-1497 MHz against
+`cpuinfo_max_freq` = 4,742,400 kHz, i.e. the cores were clamped to ~30% of their ceiling.
+85 ms x (4.74 / 1.45) = 278 ms, which is the Live number. Camera pipeline + continuous inference
++ screen + USB charging push a Samsung flagship into its clamp within a minute; the bench's
+cold-sweep numbers are the first-seconds performance only. Consequences: (1) under the clamp the
+GPU is the most efficient unit (8 vs 5-7 fps), so GPU stays the default; (2) the Sustained bench
+mode (3 min, last-quarter median + throttle %) is the number to quote for this device; (3) the
+Live HUD now flags `throttled` (headroom >= 0.9, red tachometer) so a slow reading is never
+mistaken for a runtime defect. Also measured: moa-n (VisDrone-trained mixture model) fires ~287
+boxes at conf 0.25 on an indoor scene on every platform (CLI 287, EsMoE 0, seg-N 15): out-of-domain
+model behaviour, not an app bug.
+
+Update (same day): a 3-minute Sustained bench of seg-N on Vulkan holds 63.4 ms flat (cold 70.8),
+thermal bar nominal throughout, so continuous inference alone does NOT clamp this SoC. The clamp
+(prime cores at 1.4-1.5 GHz of 4.74) appears only with the camera pipeline running: the trigger
+is the camera path (Samsung's camera power policy and/or the two 720p 30 fps streams + RGBA
+conversion), not the model. Under investigation with the Live tab's `cam lite` switch (640x480
+analysis, 15-30 fps) and the SoC rows shown while paused.
+
+Final reading (2026-09-08): with per-cluster clocks in the HUD, Live on CPU (seg-N, 2 threads,
+inference thread confirmed on prime cpu6): first 3 s prime 3648/4742 MHz -> 5 fps; after 30 s
+prime 1497, performance cluster 787 -> 4 fps; `cam lite` (640x480, 15-30 fps) changes nothing;
+paused with the camera open the clusters idle at 883/787. Conclusions: (1) thread pinning works;
+(2) a camera + sustained-CPU clamp is real but only explains 5 -> 4 fps; (3) the base speed is
+the runtime ceiling: seg-N at 640 is 85 ms pure inference on CPU and 54 ms on Vulkan at full
+clock, i.e. ~11 / ~15 fps before overheads. The iPhone's 30 fps comes from the ANE (~10 ms);
+ncnn has no Hexagon NPU path. Levers: a 416/320 re-export for Live (2-4x), and ONNX Runtime with
+the QNN execution provider on the NPU (the ANE-class path) as the next milestone.
+
+CPU scaling across all cores (`ncnn_bench --powersave 0`, seg-N fp16, S26): 2T 97.0, 4T 88.8,
+6T 87.1, 8T 75.7 ms. All eight cores buy 13% over the 2-prime-core pin (87 ms): the NEON path
+bottoms out near 75 ms (~13 fps) for this model. The iPhone Air's ~25 fps on Core ML "CPU" is the
+AMX matrix engine via BNNS, which has no ncnn counterpart on Snapdragon. Runtime ceiling confirmed
+on both units; levers = smaller input export, NPU via ORT QNN.
+
+seg-N re-exported at imgsz 416 (`yolo export format=ncnn imgsz=416`, 5.27 GFLOPs vs ~12 at 640;
+`models/v0.1-seg-n-416_ncnn`, shipped in the app as an opt-in entry): 200-image COCO val smoke
+mAP50/50-95 0.641/0.473 (640) -> 0.581/0.413 (416), i.e. -6.0 pt box mAP for ~2.3x fewer FLOPs.
+Not the default. p03 (pruned v0.1-N) cannot be re-exported from `tempo-ncnn/models/p03_v01n.pt`
+(a TorchScript trace at 640); EsMoE-N VisDrone's checkpoint is not on this pod.
+
+Reframed (user observation: the phone is not warm, and games run hot yet fast): the Live clock
+drop is a vendor camera-scenario POWER POLICY (pre-emptive CPU cap while the camera HAL is
+active), not reactive thermal throttling. The app now opens an ADPF performance-hint session
+(API 31+, 33 ms target, every frame reported) for its threads, the sanctioned way to ask the
+power HAL for the clocks a deadline needs; `adb shell dumpsys thermalservice` during Live is the
+check that temperatures are nominal while the cap is on.
+
+ADPF result: the hint session lifts Live to ~11 fps for the first seconds, then the cap returns
+and behaviour is unchanged. Control experiment in flight: stock YOLO11n / YOLO11n-seg exported
+to ncnn (6.7 / 10.0 GFLOPs; on the pod's x86 CPU, ratio only: yolo11n 48 ms vs p03 83 ms,
+yolo11n-seg 62 ms vs seg-N 104 ms, ~1.7x). If YOLO11n reaches ~20 fps on the S26 the gap is
+YOLO-Master's graph on ncnn; if not, ncnn on this phone is the limit and the ONNX Runtime + QNN
+NPU path replaces it.
+
+CONTROL RESULT (S26, MEASURED by the user, 2026-09-08): stock YOLO11n on the same ncnn runtime
+runs ~35 fps at normal clocks and still ~19 fps under the camera cap (prime at 1267 MHz).
+YOLO-Master's graphs are therefore 3-4x slower than a YOLO11n of comparable FLOPs on the same
+runtime and phone: the runtime is not the limit, the lowering of the MoE/attention blocks is
+(MatMul x16-36, Permute/Reshape churn, Tile, Reduction, Softmax; several without Vulkan kernels).
+Next: per-layer profile with an NCNN_BENCHMARK build (x86 CPU ratios as the guide), then an
+export-side rewrite of the hot blocks, re-measured on the S26.
+
+Per-layer profile (NCNN_BENCHMARK build `third_party/ncnn-x86-bench`, x86 CPU 4T fp32, per forward):
+seg-N 61 ms vs yolo11n-seg 34 ms. Gap by layer type: MatMul +5.9 ms (16 vs 2 layers), ConvDW +4.5
+(26 vs 7), BinaryOp +4.1 (68 vs 21), Permute +3.5 (57 vs 2), Reshape +2.9 (45 vs 15), Convolution
++2.9 (135 vs 90), Softmax +2.1 (13 vs 2), Slice +1.1. p03 vs yolo11n has the same shape. Real
+convolutions are 11% of the gap; the rest is memory-bound glue from how pnnx lowers the MoE
+gating and attention blocks (worse on a phone's memory bus: 3-4x there vs 1.8x on x86).
+`ncnnoptimize` fuses none of it (696 -> 696 layers, 68.7 ms). The fix is export-side: fused
+attention (MultiHeadAttention/SDPA layers instead of MatMul+Permute chains), expert mixing folded
+into convolutions, reshape churn removed; mapping in progress.
+
+Export-side fix (`scripts/export_ncnn_dense.py`, 2026-09-08): export-time forward swaps under
+tracing (the fork is untouched): the attention scale folded into the qkv conv, `AAttn` re-expressed
+as `F.scaled_dot_product_attention` with the area folded into the heads axis (one fused ncnn SDPA
+layer per block, `pe` fed from the same conv's v channels), and the router's `.repeat` dropped so
+the gate broadcasts natively. Numerics: class scores agree with the stock export to ~1e-5, boxes
+to the stock export's own 2e-2 px conv noise, identical detection counts (seg 15/15, det 14/14).
+Layers: MatMul 16 -> 0, Tile 4 -> 0, Softmax 13 -> 5, Permute 57 -> 33, SDPA 0 -> 8. x86 CPU:
+seg-N 69.0 -> 53.4 ms (-23%), v0.1-N 61.3 -> 54.9 ms (-10%); yolo11n(-seg) 30-32 ms on the same
+box, the remaining gap being plain and depthwise convolutions (7x7 `pe`, MoE experts), i.e.
+architecture. New dirs: `models/{v0.1-seg-n-sdpa,v0.1-n-sdpa,v0.1-n}_ncnn` (the released v0.1-N
+needs the coco_eval repair shim and a trace-time top-k dispatch shim to lower at all; documented in
+the script). Shipped to the S26 bundle and the app (asset version 4).
+
+S26 RESULT of the export fix (MEASURED 2026-09-08, `ncnn_bench`, CPU fp16, 8 threads, all cores):
+v0.1-seg-N stock export 76 ms -> SDPA export **33.2 ms** (2.3x, ~30 fps model time); v0.1-N stock
+35.5 ms -> SDPA 30.2 ms. seg-N is now in the same class as stock yolo11n-seg on the same runtime,
+with identical weights and identical mAP. The SDPA graphs are now the shipped `v0.1-seg-n_ncnn`
+and `v0.1-n_ncnn` (stock exports archived under `models/archive/*-stock_ncnn`); INT8 siblings are
+regenerated from them with the same ACIQ recipe. Section 1-3 numbers above were measured on the
+stock exports and remain valid for those files.
+
+INT8 siblings regenerated from the SDPA graphs (ACIQ 1024): seg-N 153/164 layers, 3.1 MB
+(0.27x), 200-image COCO smoke -0.81 pt mAP50-95 (0.4573 -> 0.4492, passes the 1.0-pt gate; box
+match 0.844 as before); v0.1-N 139/145 layers, 3.5 MB. Full-val certification of the new
+siblings is still to be run; the app (asset version 5) ships them.
+
+### S26 table for the shipped (SDPA) seg-N graph (MEASURED 2026-09-08, `ncnn_bench`, medians ms)
+
+| unit | 2T | 4T | 8T | note |
+|---|---|---|---|---|
+| CPU fp16 | **34.8** | 46.2 | 39.4 (32-33 in an earlier run) | fastest path, ~30 fps model time |
+| CPU int8+fp16 | 42.0 | 43.8 | 38.8 | slower than fp16 at every thread count |
+| Vulkan (Adreno 840) | 50.1 (first frame 74) | | | stock graph was 54.4 |
+
+Consequences: (1) the mixed-INT8 win measured on the stock export (sections 3-5) does NOT carry
+over: with the glue removed the graph is convolution-bound and fp16 NEON beats int8 convs plus
+their quantize/requantize passes; INT8 keeps only the 0.27x size at its accuracy cost.
+(2) CPU fp16 beats Vulkan 1.5x on this graph, so the GPU is no longer the fastest unit for the
+dense models on the S26. (3) Thread scaling is flat; 2 pinned threads is as fast as 8 and cooler.
+
+## 6. ONNX Runtime + QNN on the Hexagon NPU (MEASURED, S26, 2026-09-09, M0 gate)
+
+`OrtQnnSmokeTest` (runtime test APK, ORT 1.29.0 + QNN 2.42.0, V81 skel, fp32 ONNX run as
+fp16 on HTP, `htp_performance_mode=burst`, 30 timed frames), model time medians in ms:
+
+| model | ORT CPU | NPU fp16 | ncnn CPU fp16 (best) | HTP placement | dets NPU vs CPU |
+|---|---|---|---|---|---|
+| yolo11n | 54.6 | **9.1** | ~28 | 331/331 | 13 = 13 |
+| v0.1-N (SDPA export) | 95.3 | **11.0** | 30 | 629/629 | 14 = 14 |
+| v0.1-seg-N (SDPA export) | 143.9 | **19.6** | 33 | 674/674 | 11 vs 15 |
+| esmoe_n_visdrone | 111.2 | **12.3** | 35 | 596/596 | 19 vs 43 |
+
+Every graph is placed entirely on the HTP (strict sessions succeed); first inference 15-25 ms
+with the EPContext cache (7-9 MB per model) created at first session. GO: the NPU is 2.7x the
+best ncnn path for the detect model and 1.7x for seg. Open issue: fp16 precision on the HTP
+drops detections on seg-N (11/15) and EsMoE (19/43) while the det model is exact; A16W8
+quantization (16-bit activations) and the 200-image dump certification are the next step.
+Packaging lesson: the Hexagon loader opens the skel by file path; `extractNativeLibs=true`
+(`jniLibs.useLegacyPackaging = true`) plus the `libcdsprpc.so` `uses-native-library` entry must
+be set in the module that builds the APK (the runtime module for the test APK), otherwise
+`QNN SetupBackend failed ... Failed to create device` and everything silently runs on the CPU.
+Reference (Qualcomm AI Hub) for YOLO11n on this SoC is ~3 ms graph time, so ~3x of session
+overhead remains to chase (perf mode, I/O conversions, context priority).
+
+M1 (app): runtime picker (ncnn | ONNX) and unit picker (CPU | GPU | NPU) in Live, Photo and the
+Bench sustained config; measured default per model on first use (ncnn-CPU vs ONNX-NPU mini-bench
+on the bundled probe, parity within 35%, cached per model + app version, hand picks win);
+Bench cells `ncnn·GPU / ncnn·CPU / ONNX·NPU / ONNX·CPU` with a `runtime` column in history and
+CSV; Settings "ONNX Runtime" section (perf mode, prefer quantized, clear NPU cache, measured
+defaults). 27 unit tests.
+
+M3 (quantization, desktop, ORT CPU-EP fake-quant, 200-image smokes, box mAP50-95):
+`scripts/quantize_onnx_qnn.py` (qnn_preprocess_model + get_qnn_qdq_config, u16 activations,
+int8 per-channel weights, MinMax, 256 letterboxed calibration images):
+
+| model | float | A16W8 | delta | notes |
+|---|---|---|---|---|
+| v0.1-seg-N | 0.4613 | 0.4527 | -0.86 | seg-head convs kept int16 (`--w16-match model.25.`); plain a16w8 -1.23; a16w16 lossless |
+| v0.1-N | 0.4700 | 0.4644 | -0.56 | |
+| EsMoE-N VisDrone (200 val) | 0.1688 | 0.1653 | -0.35 | |
+
+A8W8 (MinMax) is dead on all three (0 dets); parked as `model-a8w8.rejected.onnx`. Files 3.7-4.6
+MB. Device certification: `OrtDumpTest` writes `class conf x1 y1 x2 y2` dumps per (runtime, unit,
+precision) row for the 200-image smoke sets; `scripts/score_device_dumps.sh` scores them with
+`eval_map.py`; gate = every NPU row within 1.0 pt of the CPU rows. Pending the phone run.
