@@ -1,4 +1,5 @@
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push", "oci_tarball")
+load(":version.bzl", "SERVER_VERSION")   # written by stage_bundle.sh from cpp/server/SERVER_VERSION
 
 # bundle.tar is produced by stage_bundle.sh: /opt/yolomaster/{bin,lib,models,server.json,entrypoint.sh}
 # with $ORIGIN rpaths, so the image needs no LD_LIBRARY_PATH beyond the CUDA base.
@@ -21,11 +22,11 @@ oci_image(
     },
 )
 
-# docker load < yolomaster-api.tar  (tag: yolomaster-api:1.2.0)
+# docker load < yolomaster-api.tar  (tag: yolomaster-api:<SERVER_VERSION>)
 oci_tarball(
     name = "tarball",
     image = ":image",
-    repo_tags = ["yolomaster-api:1.2.0", "yolomaster-api:latest"],
+    repo_tags = ["yolomaster-api:" + SERVER_VERSION, "yolomaster-api:latest"],
 )
 
 # bazel run //:push -- --repository index.docker.io/<user>/yolomaster-api   (or set DOCKERHUB_USER in push.sh)
@@ -33,5 +34,5 @@ oci_push(
     name = "push",
     image = ":image",
     repository = "index.docker.io/DOCKERHUB_USER/yolomaster-api",
-    remote_tags = ["1.2.0", "latest"],
+    remote_tags = [SERVER_VERSION, "latest"],
 )

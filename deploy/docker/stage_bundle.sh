@@ -6,6 +6,8 @@
 # entrypoint.sh, LICENSES/. cuDNN, cuBLAS and cudart come from the nvidia/cuda base image.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+SERVER_VERSION="$(tr -d '[:space:]' < "$REPO/cpp/server/SERVER_VERSION")"
+echo "SERVER_VERSION = \"$SERVER_VERSION\"" > "$(dirname "$0")/version.bzl"   # consumed by BUILD.bazel (gitignored)
 BUILD="${1:-$REPO/cpp/build_l40s}"
 MODELS="${2:-/data/models_api}"
 STAGE="$REPO/deploy/docker/stage"; ROOT="$STAGE/opt/yolomaster"

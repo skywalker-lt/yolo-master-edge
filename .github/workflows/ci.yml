@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "dev/**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: CPU build, CLI suite, server suites
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libopencv-dev ninja-build patchelf curl unzip
+      - name: Cache SDKs
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/onnxruntime-linux-x64-1.18.1
+            third_party/ncnn-20260526-ubuntu-2204-shared
+            third_party/uWebSockets
+          key: sdks-${{ hashFiles('scripts/server/fetch_cpu_sdks.sh', 'scripts/server/fetch_uws.sh') }}
+      - name: Fetch SDKs and fixtures
+        run: |
+          bash scripts/server/fetch_uws.sh
+          bash scripts/server/fetch_cpu_sdks.sh
+          bash scripts/server/fetch_ci_fixtures.sh
+      - name: Python test deps
+        run: python3 -m pip install -q pytest websocket-client opencv-python-headless numpy openapi-spec-validator
+      - name: Configure
+        run: |
+          cmake -S cpp -B cpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_ORT=ON -DUSE_NCNN=ON -DUSE_MNN=OFF -DUSE_TRT=OFF -DBUILD_SERVER=ON \
+            -DONNXRUNTIME_ROOT=$PWD/third_party/onnxruntime-linux-x64-1.18.1 \
+            -DNCNN_ROOT=$PWD/third_party/ncnn-20260526-ubuntu-2204-shared
+      - name: Build
+        run: cmake --build cpp/build -j"$(nproc)"
+      - name: Versions
+        run: |
+          ./cpp/build/yolomaster_edge --version
+          ./cpp/build/server/yolomaster_server --version
+      - name: CLI suite
+        run: bash tests/run_tests.sh
+      - name: Server suites
+        run: bash tests/run_server_tests.sh
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            /tmp/yolomaster_server_test_*.log
+            cpp/build/CMakeFiles/CMakeOutput.log
+            cpp/build/CMakeFiles/CMakeError.log
+          if-no-files-found: ignore
+
+  lint:
+    name: docs and scripts
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: No em-dashes in Markdown
+        run: |
+          if git grep -nP '\x{2014}' -- '*.md' ':!third_party' ':!android/**/build/**'; then
+            echo "em-dash found in Markdown"; exit 1; fi
+      - name: Shell syntax
+        run: |
+          for f in deploy/*.sh deploy/**/*.sh scripts/*.sh scripts/**/*.sh tests/*.sh; do
+            [ -f "$f" ] && bash -n "$f"; done
+      - name: VERSION matches CHANGELOG
+        run: |
+          v="$(tr -d '[:space:]' < VERSION)"; sv="$(tr -d '[:space:]' < cpp/server/SERVER_VERSION)"
+          grep -q "^## Runtime $v / server $sv" CHANGELOG.md || { echo "CHANGELOG top entry does not match VERSION $v / SERVER_VERSION $sv"; exit 1; }
+      - name: Python syntax
+        run: python3 -m compileall -q scripts clients tests

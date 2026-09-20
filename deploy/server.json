@@ -11,6 +11,10 @@
   "log_level": "info",
   "cors": true,
   "access_log": true,
+  "log_format": "plain",
+  "api_keys": [],
+  "auth_exempt": ["/healthz", "/readyz"],
+  "rate_limit": {"rps": 0, "burst": 0},
   "models": [
     {"id": "v01n-trt",       "path": "/opt/yolomaster/models/v01n/model.onnx",          "backend": "trt",  "device": "cuda", "precision": "fp16", "workers": 1},
     {"id": "v01n-ort",       "path": "/opt/yolomaster/models/v01n/model-fp16.onnx",     "backend": "onnx", "device": "cuda", "workers": 1, "preload": false},

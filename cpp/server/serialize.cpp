@@ -60,10 +60,14 @@ nlohmann::json result_coco(const InferResult& r, int image_id, bool coco91) {
     return a;
 }
 
-std::string prometheus_text(ModelRegistry& reg, const ServerConfig& cfg, double uptime_s) {
+std::string prometheus_text(ModelRegistry& reg, const ServerConfig& cfg, double uptime_s, const GlobalCounters* gc) {
     std::string o;
     o += "# HELP yolomaster_uptime_seconds Seconds since the server started.\n# TYPE yolomaster_uptime_seconds gauge\n";
     o += "yolomaster_uptime_seconds " + std::to_string(uptime_s) + "\n";
+    o += "# HELP yolomaster_rate_limited_total Requests answered 429 by the token-bucket limiter.\n# TYPE yolomaster_rate_limited_total counter\n";
+    o += "yolomaster_rate_limited_total " + std::to_string(gc ? gc->rate_limited.load() : 0) + "\n";
+    o += "# HELP yolomaster_auth_failed_total Requests answered 401 (missing or invalid API key).\n# TYPE yolomaster_auth_failed_total counter\n";
+    o += "yolomaster_auth_failed_total " + std::to_string(gc ? gc->auth_failed.load() : 0) + "\n";
     o += "# HELP yolomaster_requests_total Inference requests by model and HTTP status.\n# TYPE yolomaster_requests_total counter\n";
     for (WorkerPool* p : reg.pools()) {
         std::lock_guard<std::mutex> g(p->metrics.codes_m);
@@ -106,7 +110,7 @@ std::string prometheus_text(ModelRegistry& reg, const ServerConfig& cfg, double 
     return o;
 }
 
-nlohmann::json stats_json(ModelRegistry& reg, double uptime_s) {
+nlohmann::json stats_json(ModelRegistry& reg, double uptime_s, const GlobalCounters* gc) {
     nlohmann::json models = nlohmann::json::object();
     for (WorkerPool* p : reg.pools()) {
         auto& m = p->metrics;
@@ -123,7 +127,8 @@ nlohmann::json stats_json(ModelRegistry& reg, double uptime_s) {
                          {"post", m.post.count ? m.post.sum / m.post.count : 0.0},
                          {"total", m.total.count ? m.total.sum / m.total.count : 0.0}}}};
     }
-    return {{"uptime_s", uptime_s}, {"models", models}};
+    return {{"uptime_s", uptime_s}, {"models", models},
+            {"server", {{"rate_limited", gc ? gc->rate_limited.load() : 0}, {"auth_failed", gc ? gc->auth_failed.load() : 0}}}};
 }
 
 } // namespace yolomaster::server
