@@ -269,7 +269,7 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
 
     app.get("/", [&](Res* res, Req* req) {
         auto p = begin(res, req);
-        send_json(*p, 200, {{"service", "yolomaster-edge api"}, {"version", "1.2.0"}, {"docs", "/docs/API.md"},
+        send_json(*p, 200, {{"service", "yolomaster-edge api"}, {"version", YM_SERVER_VERSION}, {"runtime", YM_VERSION}, {"commit", YM_GIT_COMMIT}, {"docs", "/docs/API.md"},
                             {"endpoints", {"/healthz", "/readyz", "/v1/models", "/v1/infer", "/v1/infer/batch", "/v1/video", "/v1/stream (ws)", "/v1/stats", "/metrics"}}});
     });
     app.get("/healthz", [&](Res* res, Req* req) {

@@ -51,6 +51,7 @@ static bool imwrite_jpg(const std::string& path, const cv::Mat& bgr) {
 
 int main(int argc, char** argv) {
     CLI::App app{"yolomaster_edge - universal YOLO-Master edge runner (ONNX / ncnn / MNN)"};
+    app.set_version_flag("--version", std::string(YM_VERSION) + " (" + YM_GIT_COMMIT + ")");
     std::string model, source, backend = "auto", classes_opt = "auto", outdir = "runs_edge";
     std::string device = "cpu", savetxt;
     int imgsz = 0, threads = 4, limit = 0, max_det = 300, warmup = 0;

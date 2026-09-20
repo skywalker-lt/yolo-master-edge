@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
-project(yolomaster_edge LANGUAGES CXX)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" YM_VERSION LIMIT_COUNT 1)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/server/SERVER_VERSION" YM_SERVER_VERSION LIMIT_COUNT 1)
+project(yolomaster_edge VERSION ${YM_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,6 +40,13 @@ set(SRC  src/common.cpp src/slicing.cpp src/annotate_writers.cpp src/annotate_ex
 set(INCS include third_party ${OpenCV_INCLUDE_DIRS})
 set(LIBS ${OpenCV_LIBS})
 set(DEFS "")
+# version / provenance stamps (bench JSON, --version, GET /)
+execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE YM_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT YM_GIT_COMMIT)
+  set(YM_GIT_COMMIT "unknown")
+endif()
+list(APPEND DEFS "YM_VERSION=\"${YM_VERSION}\"" "YM_GIT_COMMIT=\"${YM_GIT_COMMIT}\"")
 if(NOT PORTABLE)
   list(APPEND DEFS HAVE_VIDEOIO)   # cv::VideoCapture (--source video) needs opencv_videoio
 endif()
