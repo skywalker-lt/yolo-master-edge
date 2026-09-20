@@ -36,7 +36,7 @@ option(BUILD_SERVER "Build the HTTP/WebSocket inference API server (cpp/server)"
 # The runtime core is one static library (yolomaster_core); the CLI, the API server and
 # the GUI/mobile builds are thin consumers of it. Keep main.cpp out of the core.
 set(SRC  src/common.cpp src/slicing.cpp src/annotate_writers.cpp src/annotate_export.cpp
-         src/stb_impl.cpp)
+         src/stb_impl.cpp src/map_metrics.cpp src/bench.cpp)
 set(INCS include third_party ${OpenCV_INCLUDE_DIRS})
 set(LIBS ${OpenCV_LIBS})
 set(DEFS "")
@@ -144,9 +144,14 @@ endif()
 add_library(yolomaster_core STATIC ${SRC})
 target_include_directories(yolomaster_core PUBLIC ${INCS})
 target_link_libraries(yolomaster_core PUBLIC ${LIBS})
+string(REPLACE ";" "," _YM_FLAGS "${DEFS};${CMAKE_BUILD_TYPE}")
+string(REGEX REPLACE "YM_[A-Z_]+=\"[^\"]*\",?" "" _YM_FLAGS "${_YM_FLAGS}")
+list(APPEND DEFS "YM_BUILD_FLAGS=\"${_YM_FLAGS}\"")
 target_compile_definitions(yolomaster_core PUBLIC ${DEFS})
 set_target_properties(yolomaster_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+add_executable(yolomaster_score src/score_main.cpp)
+target_link_libraries(yolomaster_score PRIVATE yolomaster_core)
 add_executable(yolomaster_edge src/main.cpp)
 target_link_libraries(yolomaster_edge PRIVATE yolomaster_core)
 
