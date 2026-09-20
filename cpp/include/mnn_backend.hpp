@@ -6,6 +6,8 @@
 #include <MNN/Interpreter.hpp>
 #include <MNN/Tensor.hpp>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace yolomaster {
 
@@ -25,6 +27,10 @@ private:
     MNN::Tensor*  output_   = nullptr;   // owned by the session
     std::vector<float> blob_;            // reused NCHW RGB/255 input
     int threads_;
+    // multi-path session support (fp32 routing segments inside an fp16 GPU session): the
+    // BackendConfigs must outlive the session, and the path name lists must outlive createSession.
+    std::vector<MNN::BackendConfig> bcs_;
+    std::vector<MNN::ScheduleConfig> scs_;
 };
 
 } // namespace yolomaster

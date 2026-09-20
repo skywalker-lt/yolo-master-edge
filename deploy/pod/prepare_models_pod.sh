@@ -13,6 +13,9 @@ mkdir -p "$OUT"
 for id in v01n v01n-pruned esmoen; do
   d="$OUT/$id"; mkdir -p "$d"
   cp -u "$SRC/api/$id/model.onnx" "$SRC/api/$id/model-fp16.onnx" "$SRC/api/$id/metadata.yaml" "$d/"
+  # multi-path sidecar (fp32 routing segments for MNN CUDA fp16), one per ONNX; MnnBackend looks for
+  # "<model>.mnn.paths.json", "<stem>.paths.json" or "model.paths.json" next to the .mnn
+  [ -f "$SRC/api/$id/model.paths.json" ] && cp -u "$SRC/api/$id/model.paths.json" "$d/model.paths.json"
   # sidecars for the fp16 onnx and the engines the server will build
   cp -u "$d/metadata.yaml" "$d/model.metadata.yaml"; cp -u "$d/metadata.yaml" "$d/model-fp16.metadata.yaml"
   # MNN: fp32 and fp16-weight variants from the same fp32 ONNX
@@ -24,6 +27,12 @@ for id in v01n v01n-pruned esmoen; do
     log "MNNConvert $id fp16"
     "$MNNCONVERT" -f ONNX --modelFile "$d/model.onnx" --MNNModel "$d/model-fp16.mnn" --bizCode yolomaster --keepInputFormat=1 --fp16 > "$d/mnnconvert-fp16.log" 2>&1 || { tail -5 "$d/mnnconvert-fp16.log"; log "MNN fp16 conversion FAILED for $id"; }
   fi
+  # C2 candidate: the routing-protected fp16 ONNX (Cast nodes keep the router fp32) converted as is
+  if [ ! -f "$d/model-fp16-routed.mnn" ]; then
+    log "MNNConvert $id fp16-routed"
+    "$MNNCONVERT" -f ONNX --modelFile "$d/model-fp16.onnx" --MNNModel "$d/model-fp16-routed.mnn" --bizCode yolomaster --keepInputFormat=1 > "$d/mnnconvert-fp16-routed.log" 2>&1 || { tail -5 "$d/mnnconvert-fp16-routed.log"; log "MNN fp16-routed conversion FAILED for $id"; }
+  fi
+  [ -f "$d/model-fp16-routed.mnn" ] && cp -u "$d/metadata.yaml" "$d/model-fp16-routed.metadata.yaml"
   [ -f "$d/model.mnn" ] && cp -u "$d/metadata.yaml" "$d/model.metadata.yaml"
   [ -f "$d/model-fp16.mnn" ] && cp -u "$d/metadata.yaml" "$d/model-fp16.metadata.yaml"
 done

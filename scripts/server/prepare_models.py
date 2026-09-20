@@ -10,7 +10,7 @@ Writes models/api/<id>/model.onnx (copy of the fp32 export), model-fp16.onnx (gr
 fp32 I/O so every runtime binds float tensors), metadata.yaml (names/imgsz from the ONNX
 metadata), and prepare_report.json with the fp32-vs-fp16 drift on the probe image.
 """
-import argparse, json, os, shutil, sys, time
+import argparse, sys, json, os, shutil, sys, time
 from pathlib import Path
 import numpy as np
 import onnx
@@ -101,6 +101,19 @@ def main():
                 node_block.append(name)
                 print(f"  [{mid}] fp16 retry {attempt + 1}: keeping node {name} in fp32", flush=True)
         report_nodes = list(node_block)
+        # The routing subgraph cannot run in fp16 anywhere (1e30-class masks, TopK on rounded gates):
+        # stamp the sidecar so the MNN / ncnn backends refuse whole-model fp16 and use their mixed
+        # modes instead (MNN: the paths sidecar written by mnn_router_paths.py; ncnn: Layer::featmask).
+        routed = any("/routing/" in n.name for n in onnx.load(str(fp32)).graph.node)
+        meta_path = dst / "metadata.yaml"
+        if meta_path.exists():
+            lines = [l for l in meta_path.read_text().splitlines() if not l.startswith("fp16_safe:")]
+            lines.append(f"fp16_safe: {'false' if routed else 'true'}")
+            meta_path.write_text("\n".join(lines) + "\n")
+        if routed:
+            import subprocess
+            subprocess.run([sys.executable, str(Path(__file__).with_name("mnn_router_paths.py")), str(fp32),
+                            "--out", str(dst / "model.paths.json")], check=True)
         blob = probe_blob(a.probe, imgsz)
         o32, ms32 = run(fp32, blob)
         o16, ms16 = run(fp16, blob)
