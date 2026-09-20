@@ -6,6 +6,8 @@
 #include <numeric>
 #include <set>
 #include <sstream>
+#include <cstdio>
+#include <cstdlib>
 
 namespace yolomaster::metrics {
 
@@ -71,17 +73,23 @@ std::string label_path_for(const std::string& image_path, const std::string& lab
     return p + stem + ".txt";
 }
 
-std::vector<PredBox> from_detections(const std::vector<Detection>& dets, int conf_decimals) {
+static double round6(double v) {            // what "std::cout << float" prints (6 significant digits)
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%g", static_cast<float>(v));
+    return std::strtod(buf, nullptr);
+}
+
+std::vector<PredBox> from_detections(const std::vector<Detection>& dets, bool txt_rounding) {
     std::vector<PredBox> out;
     out.reserve(dets.size());
-    const double q = conf_decimals > 0 ? std::pow(10.0, conf_decimals) : 0.0;
     for (const auto& d : dets) {
         PredBox p;
         p.x1 = d.box.x; p.y1 = d.box.y;
-        p.x2 = static_cast<double>(d.box.x) + d.box.width;
-        p.y2 = static_cast<double>(d.box.y) + d.box.height;
-        p.conf = q > 0 ? std::round(static_cast<double>(d.conf) * q) / q : d.conf;
+        p.x2 = d.box.x + d.box.width;          // float arithmetic, as the txt writer does
+        p.y2 = d.box.y + d.box.height;
+        p.conf = d.conf;
         p.cls = d.class_id;
+        if (txt_rounding) { p.x1 = round6(p.x1); p.y1 = round6(p.y1); p.x2 = round6(p.x2); p.y2 = round6(p.y2); p.conf = round6(p.conf); }
         out.push_back(p);
     }
     return out;

@@ -3,6 +3,8 @@
 // from the model, versatile --source (image / dir / video / dataset.yaml).
 #include "yolomaster.hpp"
 #include "slicing.hpp"
+#include "bench.hpp"
+#include "map_metrics.hpp"
 #include "annotate_export.hpp"
 #ifdef USE_ORT
 #include "ort_backend.hpp"
@@ -62,6 +64,9 @@ int main(int argc, char** argv) {
     bool slicing_masks = false, cw_nms = false;
     float sigma = 0.1f;
     std::string precision_s = "auto";
+    std::string bench_mode = "off", bench_json, accuracy;
+    int bench_iters = 50, bench_warmup = 10;
+    double bench_minutes = 2.0;
 
     app.add_option("-m,--model", model, "model: .onnx file, or ncnn dir / .param")->required();
     app.add_option("-s,--source", source, "image / directory / video / dataset.yaml")->required();
@@ -93,7 +98,22 @@ int main(int argc, char** argv) {
     app.add_option("--export-labels", export_labels, "dir to write annotation labels (WYSIWYG at the current conf/iou/nms settings)");
     app.add_option("--label-format", label_format, "yolo|coco|voc")->default_str("yolo");
     app.add_option("--sampling", sampling, "video label export: all|1s|N (every Nth frame)")->default_str("1s");
+    app.add_option("--bench", bench_mode, "off|cold|sustained: benchmark mode (yolomaster-bench/v1 JSON): gray-probe sweep "
+                   "(cold: --bench-warmup + --bench-iters; sustained: a --bench-minutes loop) plus per-stage stats of the "
+                   "dataset pass; images/dirs/dataset.yaml only")->default_str("off");
+    app.add_option("--bench-iters", bench_iters, "timed probe forwards in the cold sweep")->capture_default_str();
+    app.add_option("--bench-warmup", bench_warmup, "untimed probe forwards before the sweep")->capture_default_str();
+    app.add_option("--bench-minutes", bench_minutes, "sustained mode: loop duration")->capture_default_str();
+    app.add_option("--bench-json", bench_json, "write the bench result JSON here (default <out>/bench.json)");
+    app.add_option("--accuracy", accuracy, "score the source with the in-process mAP: a YOLO labels dir, or 'auto' to map "
+                   ".../images/... to .../labels/... (dataset.yaml sources). Runs a second pass at the val protocol "
+                   "(conf 0.001, iou 0.7, multi-label, max_det 300); implies --bench cold");
     CLI11_PARSE(app, argc, argv);
+    if (bench_mode != "off" && bench_mode != "cold" && bench_mode != "sustained") {
+        std::cerr << "unknown --bench mode: " << bench_mode << " (off|cold|sustained)\n"; return 2;
+    }
+    if (!accuracy.empty() && bench_mode == "off") bench_mode = "cold";
+    const bool bench_on = bench_mode != "off";
 
     Precision precision = Precision::Auto;
     if (!parse_precision(precision_s, precision)) {
@@ -206,6 +226,10 @@ int main(int argc, char** argv) {
 
     // ---- run over the source ----
     const SourceKind kind = classify_source(source);
+    std::vector<std::string> imgs;                 // image sources (bench / accuracy re-use the list)
+    if (bench_on && kind == SourceKind::Video) {
+        std::cerr << "--bench / --accuracy apply to images, directories and dataset.yaml sources only\n"; return 2;
+    }
     if (slice_mode != SliceMode::Off && kind == SourceKind::Video) {
         std::cerr << "[warn] slicing applies to images and folders only - video runs single-pass\n";
         slice_mode = SliceMode::Off;
@@ -245,6 +269,8 @@ int main(int argc, char** argv) {
     auto t_start = std::chrono::high_resolution_clock::now();
     long frames = 0, total_dets = 0;
     double sum_pre = 0, sum_inf = 0, sum_post = 0;
+    bench::Samples samples;                        // per-frame stage samples (bench JSON)
+    bench::BenchResult bres;
 
     // Video sources: annotated output becomes ONE mp4 (per-frame jpgs would overwrite each
     // other - "11.mp4#930" stems to "11"), and --save-txt gets frame-indexed names.
@@ -291,6 +317,7 @@ int main(int argc, char** argv) {
         }
         frames++; total_dets += static_cast<long>(dets.size());
         sum_pre += be->pre_ms; sum_inf += be->infer_ms; sum_post += be->post_ms;
+        samples.add(*be, dets.size());
         if (!quiet)
             std::cout << "  " << tag << "  dets=" << dets.size()
                       << "  infer=" << be->infer_ms << "ms" << slice_note << "\n";
@@ -382,9 +409,15 @@ int main(int argc, char** argv) {
         return 4;
 #endif
     } else {
-        auto imgs = gather_images(source, limit);
+        imgs = gather_images(source, limit);
         if (imgs.empty()) { std::cerr << "no inputs resolved from source: " << source << "\n"; return 4; }
-        if (warmup > 0) {   // untimed forwards on the first input (lazy allocations, cuDNN autotune, TRT context)
+        if (bench_on) {     // the probe sweep doubles as the warm-up of the dataset pass
+            bres.has_cold = true;
+            bres.cold = bench::cold_sweep(*be, cfg, bench_warmup, bench_iters);
+            std::cout << "[bench] cold probe " << bres.cold.probe_mode << ": infer median=" << bres.cold.infer_ms.median
+                      << "ms p90=" << bres.cold.infer_ms.p90 << " min=" << bres.cold.infer_ms.min
+                      << " (n=" << bres.cold.infer_ms.n << ")\n";
+        } else if (warmup > 0) {   // untimed forwards on the first input (lazy allocations, cuDNN autotune, TRT context)
             cv::Mat w = imread_bgr(imgs.front());
             for (int i = 0; i < warmup && !w.empty(); ++i) { try { (void)be->infer(w, cfg); } catch (...) { break; } }
         }
@@ -405,6 +438,74 @@ int main(int argc, char** argv) {
         std::cout << "[slicing] mode=" << slicing << "  tiles=" << tstats.tiles_run << "/"
                   << tstats.tiles_total << "  size=" << tstats.tile_size_label()
                   << "  fallbacks=" << tstats.fallbacks << "  capped=" << tstats.capped << "\n";
+    if (bench_on) {
+        if (bench_mode == "sustained") {
+            bres.has_sustained = true;
+            bres.sustained = bench::sustained_loop(*be, cfg, bench_warmup, bench_minutes, bench_iters);
+            std::cout << "[bench] sustained " << bres.sustained.duration_s << "s " << bres.sustained.probe_mode
+                      << ": cold median=" << bres.sustained.cold_median_ms << "ms sustained median="
+                      << bres.sustained.sustained_median_ms << "ms throttle=" << bres.sustained.throttle_pct << "%\n";
+        }
+        if (!accuracy.empty()) {
+            // second pass at the val protocol; boxes and confs rounded the way --save-txt prints them so
+            // the in-process number equals scoring the txt dump with scripts/eval_map*.py
+            Config cv = cfg;
+            cv.conf_thresh = 0.001f; cv.iou_thresh = 0.7f; cv.multi_label = true; cv.max_det = 300;
+            const std::string labels_dir = (accuracy == "auto") ? std::string() : accuracy;
+            std::vector<metrics::ImageEval> evals;
+            evals.reserve(imgs.size());
+            std::vector<double> acc_infer;
+            for (const auto& p : imgs) {
+                cv::Mat img = imread_bgr(p);
+                if (img.empty()) continue;
+                std::vector<Detection> dets;
+                try {
+                    if (slice_mode != SliceMode::Off) {
+                        (void)sliced_candidates(*be, img, cv, sconf);
+                        dets = nms_and_cap(be->candidates, cv, img.cols, img.rows);
+                    } else dets = be->infer(img, cv);
+                } catch (const std::exception& e) {
+                    std::cerr << "  [skip] accuracy pass error on " << p << ": " << e.what() << "\n"; continue;
+                }
+                acc_infer.push_back(be->infer_ms);
+                metrics::ImageEval ev;
+                metrics::load_yolo_labels(metrics::label_path_for(p, labels_dir), img.cols, img.rows, ev.gts);
+                ev.preds = metrics::from_detections(dets, /*txt_rounding=*/true);
+                evals.push_back(std::move(ev));
+            }
+            bres.accuracy.present = true;
+            bres.accuracy.conf = cv.conf_thresh; bres.accuracy.iou = cv.iou_thresh;
+            bres.accuracy.max_det = cv.max_det; bres.accuracy.multi_label = cv.multi_label;
+            bres.accuracy.labels = labels_dir.empty() ? "auto" : labels_dir;
+            bres.accuracy.map = metrics::evaluate(evals);
+            bres.accuracy.infer_ms = bench::reduce(acc_infer);
+            std::printf("[accuracy] images=%d  mAP50=%.4f  mAP50-95=%.4f\n", bres.accuracy.map.images,
+                        bres.accuracy.map.map50, bres.accuracy.map.map5095);
+        }
+        bres.tool = "cli";
+        bres.timestamp = bench::timestamp_utc();
+        bres.model = bench::model_info(*be, model, backend, precision_s, cfg);
+        bres.env = bench::collect_env(*be, threads);
+        bres.protocol.mode = bench_mode;
+        bres.protocol.conf = cfg.conf_thresh; bres.protocol.iou = cfg.iou_thresh;
+        bres.protocol.max_det = cfg.max_det; bres.protocol.multi_label = cfg.multi_label;
+        bres.protocol.slicing = slicing; bres.protocol.tile_size = tile_size;
+        bres.protocol.warmup = bench_warmup; bres.protocol.iters = bench_iters; bres.protocol.minutes = bench_minutes;
+        bres.protocol.probe_mode = bres.has_cold ? bres.cold.probe_mode : bres.sustained.probe_mode;
+        bres.protocol.dataset = fs::path(source).stem().string();
+        bres.protocol.image_count = static_cast<int>(imgs.size());
+        bres.protocol.image_list_sha256 = bench::image_list_sha256(imgs);
+        bres.has_dataset = true;
+        bres.dataset.frames = frames; bres.dataset.total_dets = total_dets;
+        bres.dataset.pre_ms = bench::reduce(samples.pre); bres.dataset.infer_ms = bench::reduce(samples.infer);
+        bres.dataset.post_ms = bench::reduce(samples.post); bres.dataset.total_ms = bench::reduce(samples.total);
+        bres.dataset.model_fps = 1000.0 / avg; bres.dataset.wall_s = wall;
+        const std::string jpath = bench_json.empty() ? (fs::path(outdir) / "bench.json").string() : bench_json;
+        { std::error_code ec; fs::create_directories(fs::path(jpath).parent_path(), ec); }
+        std::ofstream jf(jpath);
+        jf << bench::to_json(bres).dump(2) << "\n";
+        std::cout << "[bench] json -> " << jpath << "\n";
+    }
     if (sink) {
         const AnnotationSink::Result r = sink->finish();
         if (!r.error.empty()) std::cerr << "[labels] export failed: " << r.error << "\n";

@@ -31,6 +31,29 @@ run -m "$ONNX" -s "$DIR" --limit 4 --quiet --no-save | grep -q "frames=4" && ok 
 run -m "$NCNN" -s "$YAML" --limit 3 --quiet --no-save | grep -q "frames=3" && ok "T4 dataset.yaml source" || no T4
 [ -f "$OUT/test.mp4" ] && { run -m "$ONNX" -s "$OUT/test.mp4" --quiet --no-save | grep -q "frames=6" && ok "T5 video source" || no T5; } || echo "  SKIP  T5 (no video)"
 
+echo "== bench mode + in-process accuracy =="
+rm -rf "$OUT/bench" "$OUT/valtxt"
+run -m "$ONNX" -s "$DIR" --limit 4 --quiet --no-save --bench cold --bench-iters 5 --bench-warmup 2 --bench-json "$OUT/bench/b.json" > "$OUT/bench_out.txt" 2>&1
+if grep -q "frames=4" "$OUT/bench_out.txt" && python3 - "$OUT/bench/b.json" <<'PY'
+import json, sys
+j = json.load(open(sys.argv[1]))
+assert j["schema_version"] == "yolomaster-bench/v1"
+assert j["cold"]["infer_ms"]["n"] == 5 and j["cold"]["probe_mode"] in ("infer_only", "full")
+assert j["dataset"]["frames"] == 4
+for k in ("n", "mean", "median", "p90", "p95", "p99", "min", "max"):
+    assert k in j["dataset"]["infer_ms"], k
+assert j["stats_convention"] == "floor_rank" and j["protocol"]["image_count"] == 4
+assert len(j["protocol"]["image_list_sha256"]) == 64 and j["environment"]["version"]
+PY
+then ok "T19 --bench cold writes a valid yolomaster-bench/v1 JSON ([summary] intact)"; else no T19; fi
+LABELS="$ROOT/visdrone50/labels/val"
+if [ -d "$LABELS" ]; then
+  run -m "$ONNX" -s "$DIR" --quiet --no-save --conf 0.001 --iou 0.7 --multi-label --save-txt "$OUT/valtxt" > /dev/null 2>&1
+  REF=$(python3 "$ROOT/scripts/eval_map_standalone.py" --preds "$OUT/valtxt" --images "$DIR" --labels "$LABELS" 2>/dev/null | grep "^images=")
+  GOT=$(run -m "$ONNX" -s "$DIR" --quiet --no-save --accuracy "$LABELS" --bench-iters 1 --bench-warmup 0 --bench-json "$OUT/bench/acc.json" 2>&1 | grep "^\[accuracy\]" | sed 's/^\[accuracy\] //')
+  [ -n "$REF" ] && [ "$REF" = "$GOT" ] && ok "T20 in-process accuracy == eval_map_standalone.py ($GOT)" || { echo "  ref: $REF"; echo "  got: $GOT"; no T20; }
+else echo "  SKIP  T20 (no visdrone50 labels)"; fi
+
 echo "== ncnn per-layer fp32 pin (router-emulated mixture graph) =="
 MOA=${MOA:-$ROOT/models/moa-n_ncnn}
 if [ -f "$MOA/model.ncnn.param" ]; then

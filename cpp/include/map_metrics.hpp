@@ -35,9 +35,10 @@ bool load_yolo_labels(const std::string& path, int img_w, int img_h, std::vector
 // ultralytics img2label_paths rule when labels_dir is empty ("/images/" -> "/labels/", ".txt"),
 // otherwise "<labels_dir>/<stem>.txt".
 std::string label_path_for(const std::string& image_path, const std::string& labels_dir);
-// Detection -> PredBox in original-image px. `conf_decimals` > 0 rounds conf the way the CLI's
-// --save-txt writer prints it, so in-process and txt-scored results order ties identically.
-std::vector<PredBox> from_detections(const std::vector<Detection>& dets, int conf_decimals = 0);
+// Detection -> PredBox in original-image px. `txt_rounding` rounds conf and box edges to the six
+// significant digits the CLI's --save-txt writer prints (ostream default), so the in-process score
+// equals scoring the txt dump with scripts/eval_map*.py, ties included.
+std::vector<PredBox> from_detections(const std::vector<Detection>& dets, bool txt_rounding = false);
 MapResult evaluate(const std::vector<ImageEval>& images);
 // per-pred correctness matrix (N x 10) for one image; diagnostics only
 std::vector<std::array<bool, 10>> debug_tp(const ImageEval& im);
