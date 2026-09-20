@@ -26,8 +26,8 @@ int main(int argc, char** argv) {
     const size_t n = static_cast<size_t>(3) * imgsz * imgsz;
     float* d_out = nullptr; uint8_t* d_raw = nullptr; size_t d_raw_cap = 0;
     cuda::PreprocParams* d_pp = nullptr;
-    CK(cudaMalloc(&d_out, n * sizeof(float)));
-    CK(cudaMalloc(&d_pp, sizeof(cuda::PreprocParams)));
+    CK(cudaMalloc(reinterpret_cast<void**>(&d_out), n * sizeof(float)));
+    CK(cudaMalloc(reinterpret_cast<void**>(&d_pp), sizeof(cuda::PreprocParams)));
     std::vector<float> ref(n), got(n);
     double worst = 0; int bad = 0;
     for (const auto& p : imgs) {
@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
         pp.fx = static_cast<float>(bgr.cols) / ow; pp.fy = static_cast<float>(bgr.rows) / oh;
         pp.pad_x = lb.pad_x; pp.pad_y = lb.pad_y; pp.out_w = ow; pp.out_h = oh;
         const size_t raw_bytes = static_cast<size_t>(bgr.step) * bgr.rows;
-        if (raw_bytes > d_raw_cap) { if (d_raw) cudaFree(d_raw); CK(cudaMalloc(&d_raw, raw_bytes)); d_raw_cap = raw_bytes; }
+        if (raw_bytes > d_raw_cap) { if (d_raw) cudaFree(d_raw); CK(cudaMalloc(reinterpret_cast<void**>(&d_raw), raw_bytes)); d_raw_cap = raw_bytes; }
         CK(cudaMemcpy(d_raw, bgr.data, raw_bytes, cudaMemcpyHostToDevice));
         CK(cudaMemcpy(d_pp, &pp, sizeof pp, cudaMemcpyHostToDevice));
         cuda::preprocess_nchw_cuda(d_raw, d_pp, d_out, imgsz, 0);
