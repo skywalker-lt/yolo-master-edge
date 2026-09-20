@@ -260,6 +260,42 @@ def test_ws_track():
     assert all("track_id" not in d for g in got[5:] for d in g["detections"])
 
 
+def test_request_id_and_traceparent():
+    rid = "client-rid-42"
+    c.request_id = rid
+    try:
+        r = c.infer(IMGS[0], model=MODEL)
+    finally:
+        c.request_id = None
+    h = {k.lower(): v for k, v in c.last_headers.items()}
+    assert r["request_id"] == rid and h["x-request-id"] == rid
+    tp = h["traceparent"]; parts = tp.split("-")
+    assert len(parts) == 4 and parts[0] == "00" and len(parts[1]) == 32 and len(parts[2]) == 16
+    # an unsafe inbound id is replaced, an inbound traceparent keeps its trace id with a new span id
+    req = urllib.request.Request(URL + "/healthz", headers={"X-Request-Id": "bad id with spaces" * 8,
+                                                          "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        hh = {k.lower(): v for k, v in resp.headers.items()}
+    assert hh["x-request-id"] != "bad id with spaces" * 8
+    assert hh["traceparent"].startswith("00-0af7651916cd43dd8448eb211c80319c-") and hh["traceparent"].split("-")[2] != "b7ad6b7169203331"
+
+
+def test_openapi_document():
+    doc = json.loads(c._req("GET", "/openapi.json")[2])
+    assert doc["openapi"] == "3.1.0" and doc["info"]["version"]
+    paths = set(doc["paths"])
+    listed = set(e.replace(" (ws)", "") for e in c._req("GET", "/")[2] and json.loads(c._req("GET", "/")[2])["endpoints"])
+    assert {"/v1/infer", "/v1/infer/batch", "/v1/video", "/v1/bench", "/v1/stream", "/v1/models/{id}/load", "/metrics", "/openapi.json"} <= paths
+    assert listed <= {p.replace("{id}", ":id") for p in paths} | {"/v1/models/:id/load", "/v1/models/:id/unload"}
+    assert doc["paths"]["/v1/stream"]["get"].get("x-websocket") is True
+    assert "InferResult" in doc["components"]["schemas"] and "ApiKeyHeader" in doc["components"]["securitySchemes"]
+    try:
+        from openapi_spec_validator import validate  # type: ignore
+        validate(doc)
+    except ImportError:
+        pass
+
+
 def test_load_unload_roundtrip():
     if not MODEL2:
         return _skip("no second model")

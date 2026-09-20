@@ -4,6 +4,8 @@
 #include "CLI11.hpp"
 #include <csignal>
 #include <fstream>
+#include <sstream>
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 
@@ -48,7 +50,8 @@ static void on_signal(int s) { g_signal = s; }
 int main(int argc, char** argv) {
     CLI::App app{"yolomaster_server - YOLO-Master inference API (REST + WebSocket)"};
     app.set_version_flag("--version", std::string(YM_SERVER_VERSION) + " (runtime " + YM_VERSION + ", " + YM_GIT_COMMIT + ")");
-    std::string config_path, host, engine_cache, log_level;
+    std::string config_path, host, engine_cache, log_level, api_key_file, log_format;
+    double rate_rps = -1; int rate_burst = -1;
     int port = -1, loop_threads = -1, max_queue = -1, timeout_ms = -1, max_body_mb = -1, drain_ms = 5000;
     bool check_config = false, no_preload = false, print_config = false;
     std::vector<std::string> model_args;
@@ -63,6 +66,11 @@ int main(int argc, char** argv) {
     app.add_option("--engine-cache", engine_cache, "directory for TensorRT engines built from .onnx");
     app.add_option("--log-level", log_level, "debug|info|warn|error");
     app.add_option("--drain-ms", drain_ms, "graceful shutdown: wait for queued jobs up to this long");
+    app.add_option("--api-key-file", api_key_file, "file with one API key per line (blank / # lines ignored); enables auth. "
+                   "Env YM_API_KEYS=k1,k2 is the alternative; precedence: config < env < this flag");
+    app.add_option("--rate-rps", rate_rps, "token-bucket rate limit per API key or peer IP, requests per second (0 = off)");
+    app.add_option("--rate-burst", rate_burst, "rate limit burst (bucket size; default = rps rounded up)");
+    app.add_option("--log-format", log_format, "access log format: plain|json");
     app.add_flag("--no-preload", no_preload, "load models on first request instead of at startup");
     app.add_flag("--check-config", check_config, "validate config + model files and exit");
     app.add_flag("--print-config", print_config, "print the effective config JSON and exit");
@@ -90,6 +98,29 @@ int main(int argc, char** argv) {
     if (max_body_mb > 0) cfg.max_body_mb = max_body_mb;
     if (!engine_cache.empty()) cfg.engine_cache_dir = engine_cache;
     if (!log_level.empty()) cfg.log_level = log_level;
+    if (!log_format.empty()) cfg.log_format = log_format;
+    if (cfg.log_format != "plain" && cfg.log_format != "json") { std::cerr << "log_format must be plain|json\n"; return 2; }
+    if (rate_rps >= 0) cfg.rate_limit.rps = rate_rps;
+    if (rate_burst >= 0) cfg.rate_limit.burst = rate_burst;
+    // API keys: config file < YM_API_KEYS < --api-key-file (each source replaces the previous one)
+    auto trim = [](std::string v) {
+        const auto b = v.find_first_not_of(" \t\r\n"); if (b == std::string::npos) return std::string();
+        const auto e = v.find_last_not_of(" \t\r\n"); return v.substr(b, e - b + 1);
+    };
+    if (const char* env = std::getenv("YM_API_KEYS")) {
+        cfg.api_keys.clear();
+        std::stringstream ss(env); std::string k;
+        while (std::getline(ss, k, ',')) { k = trim(k); if (!k.empty()) cfg.api_keys.push_back(k); }
+    }
+    if (!api_key_file.empty()) {
+        std::ifstream f(api_key_file);
+        if (!f) { std::cerr << "cannot open --api-key-file: " << api_key_file << "\n"; return 2; }
+        cfg.api_keys.clear();
+        std::string k;
+        while (std::getline(f, k)) { k = trim(k); if (!k.empty() && k[0] != '#') cfg.api_keys.push_back(k); }
+    }
+    for (const auto& k : cfg.api_keys)
+        if (k.size() < 16) { std::cerr << "refusing an API key shorter than 16 characters\n"; return 2; }
     if (no_preload) for (auto& m : cfg.models) m.preload = false;
     if (cfg.models.empty()) { std::cerr << "no models configured (use --config or --model id=path)\n"; return 2; }
     if (print_config) { std::cout << nlohmann::json(cfg).dump(2) << "\n"; return 0; }

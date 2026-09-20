@@ -1,5 +1,9 @@
 #include "http_api.hpp"
 #include "serialize.hpp"
+#include "auth.hpp"
+#include "routes.hpp"
+#include "trace.hpp"
+#include <functional>
 #include "App.h"
 #include "Multipart.h"
 #include <future>
@@ -10,6 +14,7 @@
 #include <iostream>
 #include <sstream>
 #include <thread>
+#include <cmath>
 #ifdef HAVE_VIDEOIO
 #include <opencv2/videoio.hpp>
 #endif
@@ -38,12 +43,32 @@ struct Pending {
     Res* res; uWS::Loop* loop; std::atomic<bool> aborted{false};
     std::string rid, method, path; std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
     ServerState* st;
+    trace::TraceCtx trace;                                   // W3C trace context (inbound or minted)
+    std::string client;                                      // peer address ("k:<hash>" once a key authenticated)
+    std::vector<std::pair<std::string, std::string>> hdrs;   // extra response headers (rate limit, auth challenge)
+    std::string model; int worker = -1;                      // filled by respond_result for the access log
+    double stages[7] = {0, 0, 0, 0, 0, 0, 0}; bool has_stages = false;   // queue decode pre infer post encode total
     Pending(Res* r, uWS::Loop* l, ServerState* s) : res(r), loop(l), st(s) {}
 };
 
 void access_log(ServerState& st, const Pending& p, int status, size_t bytes) {
     if (!st.cfg.access_log) return;
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p.t0).count();
+    if (st.cfg.log_format == "json") {
+        // one object per line: an OpenTelemetry collector's filelog receiver (json_parser + timestamp
+        // on "ts") turns these into log records joined to the caller's trace by trace_id / span_id
+        nlohmann::json j = {{"ts", now_iso()}, {"rid", p.rid}, {"trace_id", p.trace.trace_id}, {"span_id", p.trace.span_id},
+                            {"parent_span", p.trace.parent_span}, {"method", p.method}, {"path", p.path}, {"status", status},
+                            {"bytes", bytes}, {"ms", std::round(ms * 100.0) / 100.0}, {"client", p.client}};
+        if (!p.model.empty()) j["model"] = p.model;
+        if (p.worker >= 0) j["worker"] = p.worker;
+        if (p.has_stages)
+            j["stages"] = {{"queue", p.stages[0]}, {"decode", p.stages[1]}, {"pre", p.stages[2]}, {"infer", p.stages[3]},
+                           {"post", p.stages[4]}, {"encode", p.stages[5]}, {"total", p.stages[6]}};
+        const std::string line = j.dump() + "\n";
+        std::fwrite(line.data(), 1, line.size(), stderr);
+        return;
+    }
     std::fprintf(stderr, "%s access rid=%s %s %s %d %zuB %.2fms\n", now_iso().c_str(), p.rid.c_str(),
                  p.method.c_str(), p.path.c_str(), status, bytes, ms);
 }
@@ -52,13 +77,15 @@ void cors_headers(Res* res, const ServerConfig& cfg) {
     if (!cfg.cors) return;
     res->writeHeader("Access-Control-Allow-Origin", "*");
     res->writeHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res->writeHeader("Access-Control-Allow-Headers", "Content-Type, X-Request-Id");
+    res->writeHeader("Access-Control-Allow-Headers", "Content-Type, X-Request-Id, X-API-Key, Authorization, traceparent");
+    res->writeHeader("Access-Control-Expose-Headers", "X-Request-Id, traceparent, X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After, X-Infer-Ms, X-Detections");
 }
 
 const char* status_text(int code) {
     switch (code) {
         case 200: return "200 OK"; case 202: return "202 Accepted"; case 204: return "204 No Content";
-        case 400: return "400 Bad Request"; case 404: return "404 Not Found"; case 405: return "405 Method Not Allowed";
+        case 400: return "400 Bad Request"; case 401: return "401 Unauthorized"; case 403: return "403 Forbidden";
+        case 404: return "404 Not Found"; case 405: return "405 Method Not Allowed";
         case 409: return "409 Conflict"; case 413: return "413 Payload Too Large"; case 415: return "415 Unsupported Media Type";
         case 422: return "422 Unprocessable Entity"; case 429: return "429 Too Many Requests";
         case 500: return "500 Internal Server Error"; case 501: return "501 Not Implemented";
@@ -74,6 +101,8 @@ void send(Pending& p, int code, const std::string& body, const char* ctype, cons
         p.res->writeStatus(status_text(code));
         p.res->writeHeader("Content-Type", ctype);
         p.res->writeHeader("X-Request-Id", p.rid);
+        p.res->writeHeader("traceparent", trace::render_traceparent(p.trace));
+        for (const auto& h : p.hdrs) p.res->writeHeader(h.first, h.second);
         if (!extra_hdr.empty()) p.res->writeHeader(extra_hdr, extra_val);
         cors_headers(p.res, p.st->cfg);
         p.res->end(body);
@@ -191,6 +220,9 @@ WorkerPool* resolve_pool(ServerState& st, Req* req, std::shared_ptr<Pending>& p,
 
 // Serialize one result per the `return` mode; runs on the loop thread.
 void respond_result(Pending& p, InferResult& r, const std::string& model_id, const std::string& ret, int image_id, bool coco91, bool names) {
+    p.model = model_id; p.worker = r.worker_id; p.has_stages = true;
+    const double st7[7] = {r.queue_ms, r.decode_ms, r.pre_ms, r.infer_ms, r.post_ms, r.encode_ms, r.total_ms};
+    for (int i = 0; i < 7; ++i) p.stages[i] = std::round(st7[i] * 1000.0) / 1000.0;
     if (r.http_status != 200) { send_error(p, r.http_status, r.error, r.http_status == 503 ? "Retry-After" : "", r.http_status == 503 ? "1" : ""); return; }
     p.res->writeHeader("X-Infer-Ms", std::to_string(r.infer_ms));
     if (ret == "txt") send(p, 200, result_txt(r), "text/plain");
@@ -267,35 +299,107 @@ void request_stop(ServerState& st) {
     for (auto& c : st.closers) { auto fn = c.second; c.first->defer([fn]() { fn(); }); }
 }
 
+namespace {
+bool path_exempt(const ServerConfig& cfg, const std::string& path) {
+    for (const auto& e : cfg.auth_exempt) if (path == e) return true;
+    return false;
+}
+
+// Auth + rate-limit gate shared by the HTTP routes and the WebSocket upgrade. Returns false after
+// answering the request (401 / 429) itself.
+bool gate_request(ServerState& st, Pending& p, Req* req, const RouteSpec& spec) {
+    const bool exempt = path_exempt(st.cfg, p.path);
+    if (spec.auth && !st.cfg.api_keys.empty() && !exempt) {
+        const std::string key = auth::presented_key(req->getHeader("x-api-key"), req->getHeader("authorization"));
+        if (!auth::authorized(st.cfg.api_keys, key)) {
+            st.counters.auth_failed.fetch_add(1);
+            p.hdrs.emplace_back("WWW-Authenticate", "Bearer realm=\"yolomaster\"");
+            send_error(p, 401, "missing or invalid API key (X-API-Key or Authorization: Bearer)");
+            return false;
+        }
+        p.client = "k:" + std::to_string(std::hash<std::string>{}(key));   // one bucket per key, never the key itself
+    }
+    if (spec.rate_limited && st.cfg.rate_limit.rps > 0 && !exempt) {
+        const auto v = st.limiter.take(p.client, st.cfg.rate_limit.rps, st.cfg.rate_limit.burst);
+        p.hdrs.emplace_back("X-RateLimit-Limit", std::to_string(v.limit));
+        p.hdrs.emplace_back("X-RateLimit-Remaining", std::to_string(v.remaining));
+        if (!v.ok) {
+            st.counters.rate_limited.fetch_add(1);
+            p.hdrs.emplace_back("Retry-After", std::to_string(v.retry_after_s));
+            send_error(p, 429, "rate limit exceeded");
+            return false;
+        }
+    }
+    return true;
+}
+
+std::shared_ptr<Pending> begin_request(ServerState& st, uWS::Loop* loop, Res* res, Req* req, const RouteSpec& spec) {
+    auto p = std::make_shared<Pending>(res, loop, &st);
+    const auto in_rid = req->getHeader("x-request-id");
+    p->rid = trace::valid_rid(in_rid) ? std::string(in_rid) : make_rid(st);
+    p->trace = trace::parse_traceparent(req->getHeader("traceparent"));
+    p->method = std::string(req->getMethod()); p->path = std::string(req->getUrl());
+    p->client = std::string(res->getRemoteAddressAsText());
+    res->onAborted([p] { p->aborted = true; });
+    if (!gate_request(st, *p, req, spec)) return nullptr;
+    return p;
+}
+
+RouteSpec R(const char* method, const char* path, const char* op, const char* summary) {
+    RouteSpec r; r.method = method; r.path = path; r.op_id = op; r.summary = summary; return r;
+}
+QueryParam Q(const char* name, const char* type, const char* desc, std::vector<std::string> en = {}) {
+    QueryParam q; q.name = name; q.type = type; q.desc = desc; q.enum_values = std::move(en); return q;
+}
+const std::vector<QueryParam>& infer_params() {
+    static const std::vector<QueryParam> v = {
+        Q("model", "string", "model id (optional when exactly one model is configured)"),
+        Q("conf", "number", "confidence threshold"), Q("iou", "number", "NMS IoU threshold"),
+        Q("max_det", "integer", "detections cap"), Q("multi_label", "boolean", "one detection per class above conf per anchor"),
+        Q("slicing", "string", "Sparse SAHI per request", {"off", "dense", "sparse"}), Q("tile_size", "integer", "tile edge in source px"),
+        Q("masks", "string", "seg: composite masks into the annotated image", {"overlay"}),
+        Q("mask_coeffs", "boolean", "seg: include raw mask coefficients"), Q("names", "boolean", "include class names (default true)"),
+        Q("quality", "integer", "annotated JPEG quality")};
+    return v;
+}
+} // namespace
+
 bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_count) {
     const ServerConfig& cfg = st.cfg;
     const size_t max_body = size_t(cfg.max_body_mb) << 20;
     uWS::App app;
     uWS::Loop* loop = uWS::Loop::get();
 
-    auto begin = [&](Res* res, Req* req) {
-        auto p = std::make_shared<Pending>(res, loop, &st);
-        p->rid = make_rid(st); p->method = std::string(req->getMethod()); p->path = std::string(req->getUrl());
-        res->onAborted([p] { p->aborted = true; });
-        return p;
+    // ---- the route table: registration and GET /openapi.json read the same entries ----
+    std::vector<RouteSpec> table;
+    using Handler = std::function<void(std::shared_ptr<Pending>, Req*)>;
+    auto add_route = [&](RouteSpec spec, Handler fn) {
+        table.push_back(spec);
+        auto h = [&st, loop, spec, fn](Res* res, Req* req) {
+            auto p = begin_request(st, loop, res, req, spec);
+            if (!p) return;
+            fn(p, req);
+        };
+        if (spec.method == "GET") app.get(spec.path, h);
+        else if (spec.method == "POST") app.post(spec.path, h);
+        else if (spec.method == "OPTIONS") app.options(spec.path, h);
+        else if (spec.method == "ANY") app.any(spec.path, h);
     };
 
-    app.get("/", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
-        send_json(*p, 200, {{"service", "yolomaster-edge api"}, {"version", YM_SERVER_VERSION}, {"runtime", YM_VERSION}, {"commit", YM_GIT_COMMIT}, {"docs", "/docs/API.md"},
-                            {"endpoints", {"/healthz", "/readyz", "/v1/models", "/v1/infer", "/v1/infer/batch", "/v1/video", "/v1/stream (ws)", "/v1/bench", "/v1/stats", "/metrics"}}});
+    add_route([]{ auto r = R("GET", "/", "serviceInfo", "service, versions and the endpoint list"); r.auth = false; r.responses = {{200, "ServiceInfo"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
+        nlohmann::json eps = nlohmann::json::array();
+        for (const auto& r : table) if (!r.hidden && r.method != "OPTIONS" && r.method != "ANY") eps.push_back(r.method == "WS" ? r.path + " (ws)" : r.path);
+        send_json(*p, 200, {{"service", "yolomaster-edge api"}, {"version", YM_SERVER_VERSION}, {"runtime", YM_VERSION}, {"commit", YM_GIT_COMMIT},
+                            {"docs", "/docs/API.md"}, {"openapi", "/openapi.json"}, {"auth", !st.cfg.api_keys.empty()}, {"endpoints", eps}});
     });
-    app.get("/healthz", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
+    add_route([]{ auto r = R("GET", "/healthz", "healthz", "process liveness"); r.auth = false; r.rate_limited = false; r.responses = {{200, "Health"}, {503, "Health"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
         send_json(*p, st.stopping ? 503 : 200, {{"status", st.stopping ? "stopping" : "ok"}, {"uptime_s", st.uptime_s()}});
     });
-    app.get("/readyz", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
+    add_route([]{ auto r = R("GET", "/readyz", "readyz", "all preloaded models warmed up"); r.auth = false; r.rate_limited = false; r.responses = {{200, "Ready"}, {503, "Ready"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
         std::string why; const bool ok = !st.stopping && st.reg.ready(why);
         send_json(*p, ok ? 200 : 503, {{"ready", ok}, {"reason", ok ? "" : why}});
     });
-    app.get("/v1/models", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
+    add_route([]{ auto r = R("GET", "/v1/models", "listModels", "model cards"); r.responses = {{200, "ModelsList"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& s : st.reg.specs()) {
             WorkerPool* pool = st.reg.get(s.id);
@@ -305,33 +409,31 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
         }
         send_json(*p, 200, {{"models", arr}});
     });
-    app.post("/v1/models/:id/load", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
+    add_route([]{ auto r = R("POST", "/v1/models/:id/load", "loadModel", "start a model's worker pool"); r.responses = {{202, "LoadResult"}, {404, "Error"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
         const std::string id(req->getParameter("id"));
         std::string err;
         if (!st.reg.load(id, err)) { send_error(*p, 404, err); return; }
         send_json(*p, 202, {{"model", id}, {"loaded", true}, {"ready", st.reg.get(id)->ready()}});
     });
-    app.post("/v1/models/:id/unload", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
+    add_route([]{ auto r = R("POST", "/v1/models/:id/unload", "unloadModel", "stop a model's worker pool"); r.responses = {{200, "LoadResult"}, {404, "Error"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
         const std::string id(req->getParameter("id"));
         if (!st.reg.unload(id)) { send_error(*p, 404, "model not loaded: " + id); return; }
         send_json(*p, 200, {{"model", id}, {"loaded", false}});
     });
-    app.get("/v1/stats", [&](Res* res, Req* req) { auto p = begin(res, req); send_json(*p, 200, stats_json(st.reg, st.uptime_s())); });
-    app.get("/metrics", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
-        send(*p, 200, prometheus_text(st.reg, st.cfg, st.uptime_s()), "text/plain; version=0.0.4");
-    });
-    app.options("/*", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
-        res->writeHeader("Access-Control-Max-Age", "86400");
+    add_route([]{ auto r = R("GET", "/v1/stats", "stats", "rolling latency percentiles per model and server counters"); r.responses = {{200, "Stats"}}; return r; }(),
+              [&](std::shared_ptr<Pending> p, Req*) { send_json(*p, 200, stats_json(st.reg, st.uptime_s(), &st.counters)); });
+    add_route([]{ auto r = R("GET", "/metrics", "metrics", "Prometheus text exposition"); r.response_ctype = "text/plain"; r.responses = {{200, "Prometheus text exposition (version 0.0.4)"}}; return r; }(),
+              [&](std::shared_ptr<Pending> p, Req*) { send(*p, 200, prometheus_text(st.reg, st.cfg, st.uptime_s(), &st.counters), "text/plain; version=0.0.4"); });
+    add_route([]{ auto r = R("GET", "/openapi.json", "openapi", "this API as an OpenAPI 3.1 document, rendered from the route table"); r.auth = false; r.responses = {{200, "OpenAPI 3.1 document"}}; return r; }(),
+              [&](std::shared_ptr<Pending> p, Req*) { send_json(*p, 200, openapi_json(table, YM_SERVER_VERSION, YM_VERSION, !st.cfg.api_keys.empty())); });
+    add_route([]{ auto r = R("OPTIONS", "/*", "preflight", "CORS preflight"); r.auth = false; r.rate_limited = false; r.hidden = true; return r; }(),
+              [&](std::shared_ptr<Pending> p, Req*) {
+        p->res->writeHeader("Access-Control-Max-Age", "86400");
         send(*p, 204, "", "text/plain");
     });
 
     // ---- single image ----
-    app.post("/v1/infer", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
+    add_route([]{ auto r = R("POST", "/v1/infer", "infer", "one image, one result"); r.query = infer_params(); r.query.insert(r.query.begin() + 1, Q("return", "string", "response format", {"json", "txt", "coco", "annotated"})); r.query.push_back(Q("image_id", "integer", "coco: image_id")); r.query.push_back(Q("coco91", "boolean", "coco: 91-id category map")); r.request_ctypes = {"image/*", "application/octet-stream", "multipart/form-data"}; r.responses = {{200, "InferResult"}, {400, "Error"}, {404, "Error"}, {413, "Error"}, {503, "Error"}, {504, "Error"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
         std::string model_id;
         WorkerPool* pool = resolve_pool(st, req, p, model_id);
         if (!pool) return;
@@ -353,8 +455,7 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
     });
 
     // ---- multi-file: K independent batch-1 jobs spread over the pool ----
-    app.post("/v1/infer/batch", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
+    add_route([]{ auto r = R("POST", "/v1/infer/batch", "inferBatch", "K files in one multipart body, K independent batch-1 jobs"); r.query = infer_params(); r.request_ctypes = {"multipart/form-data"}; r.responses = {{200, "BatchResult"}, {400, "Error"}, {404, "Error"}, {413, "Error"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
         std::string model_id;
         WorkerPool* pool = resolve_pool(st, req, p, model_id);
         if (!pool) return;
@@ -388,8 +489,7 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
     });
 
     // ---- bench: probe sweep on one worker of a loaded model (yolomaster-bench/v1 JSON) ----
-    app.post("/v1/bench", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
+    add_route([]{ auto r = R("POST", "/v1/bench", "bench", "probe sweep on one worker of a loaded model (yolomaster-bench/v1)"); r.query = {Q("model", "string", "model id"), Q("warmup", "integer", "untimed forwards (default 10)"), Q("iters", "integer", "timed forwards (default 50)")}; r.request_ctypes = {"application/octet-stream"}; r.responses = {{200, "BenchResult"}, {404, "Error"}, {503, "Error"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
         std::string model_id;
         WorkerPool* pool = resolve_pool(st, req, p, model_id);
         if (!pool) return;
@@ -414,8 +514,7 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
     });
 
     // ---- video upload -> NDJSON stream of per-frame results ----
-    app.post("/v1/video", [&](Res* res, Req* req) {
-        auto p = begin(res, req);
+    add_route([]{ auto r = R("POST", "/v1/video", "video", "video file upload, NDJSON stream of per-frame results"); r.query = infer_params(); r.query.push_back(Q("every", "integer", "process every Nth frame")); r.query.push_back(Q("max_frames", "integer", "stop after N processed frames")); r.query.push_back(Q("track", "string", "multi-object tracking, track_id per detection", {"off", "botsort", "bytetrack"})); r.request_ctypes = {"application/octet-stream", "video/*"}; r.response_ctype = "application/x-ndjson"; r.responses = {{200, "NDJSON: one InferResult per frame with frame, then {done, frames, decoded, track?}"}, {404, "Error"}, {501, "Error"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
 #ifndef HAVE_VIDEOIO
         send_error(*p, 501, "server built without OpenCV videoio (PORTABLE build)");
         return;
@@ -472,6 +571,12 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
     });
 
     // ---- WebSocket stream ----
+    const RouteSpec ws_spec = []{ auto r = R("WS", "/v1/stream", "stream", "binary frames in, JSON per frame out, keep-latest backpressure");
+        r.query = {Q("model", "string", "model id"), Q("conf", "number", ""), Q("iou", "number", ""), Q("max_det", "integer", ""),
+                   Q("return", "string", "json or annotated (JPEG binary before the JSON)", {"json", "annotated"}),
+                   Q("track", "string", "multi-object tracking for this connection", {"off", "botsort", "bytetrack"}), Q("fps", "number", "source fps for the tracker buffer")};
+        r.responses = {{101, "WebSocket upgrade"}, {404, "unknown model"}}; return r; }();
+    table.push_back(ws_spec);
     app.ws<WsSession*>("/v1/stream", {
         .compression = uWS::DISABLED,
         .maxPayloadLength = unsigned(cfg.ws_max_payload_mb) << 20,
@@ -481,6 +586,10 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
         .resetIdleTimeoutOnSend = true,
         .sendPingsAutomatically = true,
         .upgrade = [&](Res* res, Req* req, us_socket_context_t* ctx) {
+            {   // the same API-key and rate-limit gate as the HTTP routes (one token per upgrade)
+                auto gp = begin_request(st, loop, res, req, ws_spec);
+                if (!gp) return;
+            }
             std::string model_id = qs(req, "model");
             if (model_id.empty()) { auto specs = st.reg.specs(); if (specs.size() == 1) model_id = specs[0].id; }
             std::string err;
@@ -541,7 +650,8 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
         }
     });
 
-    app.any("/*", [&](Res* res, Req* req) { auto p = begin(res, req); send_error(*p, 404, "no such route: " + std::string(req->getUrl())); });
+    add_route([]{ auto r = R("ANY", "/*", "notFound", "404"); r.auth = false; r.rate_limited = false; r.hidden = true; return r; }(),
+              [&](std::shared_ptr<Pending> p, Req* req) { send_error(*p, 404, "no such route: " + std::string(req->getUrl())); });
 
     bool ok = false;
     app.listen(cfg.host, cfg.port, [&](us_listen_socket_t* ls) {

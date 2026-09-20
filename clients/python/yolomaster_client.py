@@ -27,11 +27,22 @@ class ApiError(RuntimeError):
 
 
 class Client:
-    def __init__(self, base_url: str = "http://localhost:8080", timeout: float = 30.0):
+    def __init__(self, base_url: str = "http://localhost:8080", timeout: float = 30.0, api_key: Optional[str] = None):
         self.base = base_url.rstrip("/")
         self.timeout = timeout
+        self.api_key = api_key                # sent as X-API-Key on every request (and the WS upgrade)
+        self.request_id: Optional[str] = None  # optional X-Request-Id to send with the next request(s)
+        self.last_headers: dict = {}
 
     # ---- helpers ----
+    def _headers(self) -> dict:
+        h = {}
+        if self.api_key:
+            h["X-API-Key"] = self.api_key
+        if self.request_id:
+            h["X-Request-Id"] = self.request_id
+        return h
+
     @staticmethod
     def _bytes(x: Bytes) -> bytes:
         return x if isinstance(x, (bytes, bytearray)) else Path(x).read_bytes()
@@ -46,8 +57,11 @@ class Client:
         req = urllib.request.Request(url, data=data, method=method)
         if data is not None:
             req.add_header("Content-Type", ctype)
+        for k, v in self._headers().items():
+            req.add_header(k, v)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                self.last_headers = dict(r.headers)
                 return r.status, dict(r.headers), r.read()
         except urllib.error.HTTPError as e:
             raise ApiError(e.code, e.read().decode(errors="replace")) from None
@@ -126,6 +140,8 @@ class Client:
         url = self.base + "/v1/video?" + "&".join(f"{k}={v}" for k, v in q.items() if v is not None)
         req = urllib.request.Request(url, data=self._bytes(path), method="POST")
         req.add_header("Content-Type", "application/octet-stream")
+        for k, v in self._headers().items():
+            req.add_header(k, v)
         with urllib.request.urlopen(req, timeout=max(self.timeout, 600)) as r:
             for line in r:
                 line = line.strip()
@@ -139,7 +155,7 @@ class Client:
         import cv2, websocket  # optional deps
         ws_url = self.base.replace("http://", "ws://").replace("https://", "wss://") + "/v1/stream?" + \
             "&".join(f"{k}={v}" for k, v in {"model": model, **params}.items() if v is not None)
-        ws = websocket.create_connection(ws_url, timeout=self.timeout)
+        ws = websocket.create_connection(ws_url, timeout=self.timeout, header=[f"{k}: {v}" for k, v in self._headers().items()])
         hello = json.loads(ws.recv())
         cap = cv2.VideoCapture(str(path))
         sent = 0
@@ -167,6 +183,7 @@ class Client:
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default="http://localhost:8080")
+    ap.add_argument("--api-key", default=os.environ.get("YM_API_KEY"), help="X-API-Key (or env YM_API_KEY)")
     ap.add_argument("--model", default=None)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("infer"); p.add_argument("image"); p.add_argument("--return", dest="ret", default="json")
@@ -174,7 +191,7 @@ def main(argv=None):
     sub.add_parser("models"); sub.add_parser("stats"); sub.add_parser("ready"); sub.add_parser("metrics")
     v = sub.add_parser("video"); v.add_argument("path"); v.add_argument("--every", type=int, default=1); v.add_argument("--ws", action="store_true")
     a = ap.parse_args(argv)
-    c = Client(a.url)
+    c = Client(a.url, api_key=a.api_key)
     if a.cmd == "models":
         for m in c.models():
             print(f"{m['id']:24s} {m.get('backend','?'):6s} {m.get('ep',''):18s} loaded={m.get('loaded')} ready={m.get('ready')} imgsz={m.get('imgsz')} nc={m.get('nc')}")

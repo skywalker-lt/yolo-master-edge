@@ -52,6 +52,7 @@ default 2), `max_body_mb` (32), `max_pixels` (50 M), `max_queue` (64 pending job
 | POST | `/v1/bench` | probe sweep on one worker of a loaded model, `yolomaster-bench/v1` JSON |
 | GET | `/v1/stats` | rolling p50/p90/p95/p99 latency (1 min, 5 min windows) per model |
 | GET | `/metrics` | Prometheus text exposition |
+| GET | `/openapi.json` | OpenAPI 3.1 document generated from the route table |
 
 ### POST /v1/infer
 
@@ -148,6 +149,46 @@ Prometheus exposition: `yolomaster_requests_total{model,code}`, `yolomaster_queu
 histograms with `stage=queue|decode|pre|infer|post|encode|total` (buckets from 0.5 ms to 10 s),
 `yolomaster_ws_dropped_frames_total{model}`, `yolomaster_gpu_memory_bytes{kind}` (CUDA builds),
 `yolomaster_uptime_seconds`.
+
+## Authentication
+
+Off by default. Configure keys with `"api_keys": ["..."]` in the config file, `YM_API_KEYS=k1,k2`
+in the environment, or `--api-key-file <file>` (one key per line; each source replaces the
+previous one, keys shorter than 16 characters are refused at startup). With keys set, every
+route except `/`, `/healthz`, `/readyz`, `/openapi.json` and CORS preflight needs
+`X-API-Key: <key>` or `Authorization: Bearer <key>`; the WebSocket upgrade is checked the same
+way. Failures answer `401` with `WWW-Authenticate` and count in `yolomaster_auth_failed_total`.
+Keys are compared in constant time over the whole list. `auth_exempt` in the config extends the
+open paths. `--print-config` reports only the number of keys.
+
+## Rate limiting
+
+`"rate_limit": {"rps": 5, "burst": 10}` (or `--rate-rps` / `--rate-burst`) enables a token
+bucket per client: per API key when authenticated, else per peer address. One bucket map is
+shared by all event-loop threads. Every limited response carries `X-RateLimit-Limit` (the
+burst) and `X-RateLimit-Remaining`; a rejected request answers `429` with `Retry-After` and
+counts in `yolomaster_rate_limited_total`. `/healthz`, `/readyz` and preflight are never
+limited; a WebSocket upgrade costs one token.
+
+## Request ids, tracing and logs
+
+Every response carries `X-Request-Id` (an inbound value matching `[A-Za-z0-9._-]{1,64}` is
+kept, anything else is replaced) and a W3C `traceparent`: an inbound header keeps its trace id
+and gets a new span id, otherwise the server starts a trace. The access log (`access_log`,
+stderr) is a plain line by default; `"log_format": "json"` (or `--log-format json`) writes one
+object per request: `ts`, `rid`, `trace_id`, `span_id`, `parent_span`, `method`, `path`,
+`status`, `bytes`, `ms`, `client`, and for inference `model`, `worker` and the `stages`
+(queue, decode, pre, infer, post, encode, total, milliseconds). An OpenTelemetry collector
+ingests it with the filelog receiver and a `json_parser` operator whose `timestamp` reads `ts`
+(RFC 3339 with milliseconds) and whose `trace` block maps `trace_id` / `span_id`.
+
+## OpenAPI
+
+`GET /openapi.json` serves an OpenAPI 3.1 document rendered from the same route table the
+server registers its handlers from, so it cannot drift: paths, query parameters, request
+media types, response schemas (`InferResult`, `Detection`, `BatchResult`, `BenchResult`,
+`ModelsList`, `Stats`, `Error`, ...), the security schemes, and the WebSocket entry marked
+`x-websocket: true`. `GET /` lists the same endpoints.
 
 ## Clients
 

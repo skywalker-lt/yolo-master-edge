@@ -80,6 +80,11 @@ private:
     size_t head_ = 0, size_ = 0;
 };
 
+// server-wide counters (not per model)
+struct GlobalCounters {
+    std::atomic<uint64_t> rate_limited{0}, auth_failed{0};
+};
+
 struct ModelMetrics {
     Histogram queue, decode, pre, infer, post, encode, total;
     SampleRing total_ring, infer_ring;

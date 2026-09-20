@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "model_registry.hpp"
+#include "rate_limit.hpp"
 
 namespace uWS { struct Loop; }
 
@@ -18,6 +19,8 @@ struct ServerState {
     ModelRegistry reg;
     std::atomic<bool> stopping{false};
     std::atomic<uint64_t> request_seq{0};
+    RateLimiter limiter;
+    GlobalCounters counters;
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     std::mutex loops_m;
     std::vector<std::pair<uWS::Loop*, std::function<void()>>> closers;   // per loop: close the App

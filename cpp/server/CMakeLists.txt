@@ -19,7 +19,7 @@ target_compile_definitions(usockets PUBLIC LIBUS_NO_SSL LIBUS_USE_EPOLL)
 set_target_properties(usockets PROPERTIES C_STANDARD 11 POSITION_INDEPENDENT_CODE ON)
 
 add_executable(yolomaster_server
-  server_main.cpp http_api.cpp worker_pool.cpp serialize.cpp)
+  server_main.cpp http_api.cpp worker_pool.cpp serialize.cpp openapi.cpp)
 target_include_directories(yolomaster_server PRIVATE ${UWS_ROOT}/src ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(yolomaster_server PRIVATE UWS_NO_ZLIB UWS_HTTPRESPONSE_NO_WRITEMARK
                            "YM_SERVER_VERSION=\"${YM_SERVER_VERSION}\"")

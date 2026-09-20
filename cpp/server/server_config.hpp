@@ -37,6 +37,10 @@ struct ServerConfig {
     std::string log_level = "info"; // debug|info|warn|error
     bool cors = true;
     bool access_log = true;
+    std::string log_format = "plain";        // plain | json (one JSON object per request on stderr)
+    std::vector<std::string> api_keys;       // empty = authentication off
+    std::vector<std::string> auth_exempt{"/healthz", "/readyz"};   // paths served without a key
+    struct RateLimit { double rps = 0; int burst = 0; } rate_limit;  // rps <= 0 = off; per API key or peer IP
     std::vector<ModelSpec> models;
 };
 
@@ -66,13 +70,25 @@ inline void from_json(const nlohmann::json& j, ServerConfig& c) {
     c.engine_cache_dir = j.value("engine_cache_dir", c.engine_cache_dir);
     c.log_level = j.value("log_level", c.log_level); c.cors = j.value("cors", c.cors);
     c.access_log = j.value("access_log", c.access_log);
+    c.log_format = j.value("log_format", c.log_format);
+    if (j.contains("api_keys")) c.api_keys = j.at("api_keys").get<std::vector<std::string>>();
+    if (j.contains("auth_exempt")) c.auth_exempt = j.at("auth_exempt").get<std::vector<std::string>>();
+    if (j.contains("rate_limit")) {
+        c.rate_limit.rps = j["rate_limit"].value("rps", c.rate_limit.rps);
+        c.rate_limit.burst = j["rate_limit"].value("burst", c.rate_limit.burst);
+    }
     if (j.contains("models")) c.models = j.at("models").get<std::vector<ModelSpec>>();
 }
 inline void to_json(nlohmann::json& j, const ServerConfig& c) {
     j = {{"host", c.host}, {"port", c.port}, {"loop_threads", c.loop_threads}, {"max_body_mb", c.max_body_mb},
          {"max_pixels", c.max_pixels}, {"max_queue", c.max_queue}, {"request_timeout_ms", c.request_timeout_ms},
          {"ws_max_payload_mb", c.ws_max_payload_mb}, {"engine_cache_dir", c.engine_cache_dir},
-         {"log_level", c.log_level}, {"cors", c.cors}, {"access_log", c.access_log}, {"models", c.models}};
+         {"log_level", c.log_level}, {"cors", c.cors}, {"access_log", c.access_log},
+         {"log_format", c.log_format},
+         {"api_keys_count", c.api_keys.size()},   // never the keys themselves (--print-config is not a secret store)
+         {"auth_exempt", c.auth_exempt},
+         {"rate_limit", {{"rps", c.rate_limit.rps}, {"burst", c.rate_limit.burst}}},
+         {"models", c.models}};
 }
 
 // Parse a CLI model spec "id=path[,backend=trt][,device=cuda][,precision=fp16][,threads=8][,workers=1]...".
