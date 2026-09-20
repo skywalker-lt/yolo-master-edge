@@ -10,6 +10,7 @@ REPO="${1:-/data/yolo-master-edge}"
 TP="$REPO/third_party"
 SM="${SM:-89}"
 BUILD_ROOT="${BUILD_ROOT:-$REPO/cpp}"
+mkdir -p "$BUILD_ROOT"
 J="$(nproc)"; [ "$J" -gt 32 ] && J=32
 log() { echo "[build $(date +%H:%M:%S)] $*"; }
 
