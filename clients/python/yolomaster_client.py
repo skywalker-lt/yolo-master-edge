@@ -88,6 +88,12 @@ class Client:
     def metrics(self) -> str:
         return self._req("GET", "/metrics")[2].decode()
 
+    def bench(self, model: Optional[str] = None, warmup: int = 10, iters: int = 50) -> dict:
+        """POST /v1/bench: gray-probe sweep on one worker of a loaded model -> yolomaster-bench/v1 JSON."""
+        _, _, body = self._req("POST", "/v1/bench", b"", "application/octet-stream",
+                               {"model": model, "warmup": warmup, "iters": iters})
+        return json.loads(body)
+
     def infer(self, image: Bytes, model: Optional[str] = None, ret: str = "json", **params):
         """params: conf, iou, max_det, multi_label, slicing, tile_size, masks=overlay, mask_coeffs, image_id, coco91, names, quality.
         Returns dict for json/coco, str for txt, bytes for annotated. Also sets self.last_headers."""
@@ -114,7 +120,8 @@ class Client:
         return json.loads(out)["results"]
 
     def video(self, path: Bytes, model: Optional[str] = None, every: int = 1, max_frames: int = 0, **params) -> Iterator[dict]:
-        """POST a video file; yields one dict per processed frame (NDJSON stream), last item has done=True."""
+        """POST a video file; yields one dict per processed frame (NDJSON stream), last item has done=True.
+        track="botsort"|"bytetrack" adds a track_id to every detection."""
         q = {"model": model, "every": every, "max_frames": max_frames, **params}
         url = self.base + "/v1/video?" + "&".join(f"{k}={v}" for k, v in q.items() if v is not None)
         req = urllib.request.Request(url, data=self._bytes(path), method="POST")

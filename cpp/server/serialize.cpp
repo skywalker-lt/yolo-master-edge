@@ -19,10 +19,12 @@ static double r3(double v) { return std::round(v * 1000.0) / 1000.0; }
 nlohmann::json result_json(const InferResult& r, const std::string& model_id, const std::string& request_id,
                            bool include_names) {
     nlohmann::json dets = nlohmann::json::array();
-    for (const auto& d : r.dets) {
+    for (size_t i = 0; i < r.dets.size(); ++i) {
+        const auto& d = r.dets[i];
         // full float precision: the JSON must round-trip to the CLI's txt numbers for parity checks
         nlohmann::json o = {{"class_id", d.class_id}, {"conf", d.conf},
                             {"box", {d.box.x, d.box.y, d.box.x + d.box.width, d.box.y + d.box.height}}};
+        if (i < r.track_ids.size()) o["track_id"] = r.track_ids[i];
         if (include_names && d.class_id >= 0 && d.class_id < int(r.cfg_used.class_names.size()))
             o["name"] = r.cfg_used.class_names[d.class_id];
         if (!d.mask_coeffs.empty()) o["mask_coeffs"] = d.mask_coeffs;

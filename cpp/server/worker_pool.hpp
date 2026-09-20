@@ -16,6 +16,8 @@
 #include <vector>
 #include "yolomaster.hpp"
 #include "slicing.hpp"
+#include "tracker.hpp"
+#include "bench.hpp"
 #include "server_config.hpp"
 #include "metrics.hpp"
 
@@ -33,7 +35,10 @@ struct InferParams {
     bool mask_overlay = false;          // seg: composite masks into the annotated image
     bool mask_coeffs = false;           // seg: include raw mask coefficients in JSON
     int jpeg_quality = 90;
+    std::string track;                  // "" | botsort | bytetrack (video / stream jobs carry a Tracker)
 };
+
+struct BenchRequest { int warmup = 10, iters = 50; };
 
 struct InferResult {
     int http_status = 200;
@@ -47,6 +52,8 @@ struct InferResult {
     int worker_id = -1;
     std::vector<unsigned char> annotated_jpg;
     Config cfg_used;                    // conf/iou/imgsz/class names actually applied
+    std::vector<int> track_ids;         // parallel to dets when the job carried a tracker
+    nlohmann::json bench_json;          // bench jobs: the yolomaster-bench/v1 document
 };
 
 struct Job {
@@ -54,6 +61,8 @@ struct Job {
     std::string image;                  // encoded bytes (jpg/png/bmp/...) or raw BGR when raw_w > 0
     int raw_w = 0, raw_h = 0;           // raw BGR8 frame (WS video path) instead of an encoded image
     InferParams params;
+    std::shared_ptr<track::Tracker> tracker;   // owned by the video request / WS session; one job in flight
+    std::shared_ptr<BenchRequest> bench;       // bench job: no image, runs bench::cold_sweep on this worker
     Clock::time_point enqueued;
     Clock::time_point deadline;
     std::function<void(InferResult&&)> done;
