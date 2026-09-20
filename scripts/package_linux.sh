@@ -104,7 +104,7 @@ if [ ! -f "$OCV/lib/cmake/opencv4/OpenCVConfig.cmake" ]; then
   SRC="$ROOT/third_party/opencv-lean-src"
   [ -d "$SRC" ] || git clone --depth 1 --branch 4.10.0 https://github.com/opencv/opencv.git "$SRC"
   cmake -S "$SRC" -B "$SRC/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$OCV" \
-    -DBUILD_LIST=core,imgproc,imgcodecs,videoio -DBUILD_SHARED_LIBS=ON \
+    -DBUILD_LIST=core,imgproc,imgcodecs,videoio,video,calib3d -DBUILD_SHARED_LIBS=ON \
     -DWITH_FFMPEG=ON -DWITH_GSTREAMER=OFF -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_V4L=OFF -DWITH_1394=OFF \
     -DWITH_TIFF=OFF -DWITH_WEBP=OFF -DWITH_OPENJPEG=OFF -DWITH_JASPER=OFF -DWITH_OPENEXR=OFF -DWITH_EIGEN=OFF -DWITH_IPP=ON \
     -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_ZLIB=ON \

@@ -12,12 +12,18 @@ endif()
 # PORTABLE=ON -> slim relocatable bundle: link only the OpenCV modules headless
 # image inference needs (drops videoio/highgui -> no FFmpeg/GStreamer/X11 closure).
 option(PORTABLE "Slim relocatable build: image inference only, minimal OpenCV deps" OFF)
+# BoT-SORT camera motion compensation needs OpenCV video (LK optical flow) + calib3d
+# (estimateAffinePartial2D); OFF keeps ncnn-only mobile builds lean (tracking then runs without GMC).
+option(USE_GMC "BoT-SORT camera motion compensation (OpenCV video + calib3d)" ON)
 # image I/O via stb + hand-written NMS -> only need core+imgproc (no imgcodecs->GDAL,
 # no dnn->protobuf). Full build adds videoio for cv::VideoCapture (--source video).
 if(PORTABLE)
   find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 else()
   find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio)   # -DOpenCV_DIR=... on Windows
+  if(USE_GMC)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio video calib3d)
+  endif()
 endif()
 
 # SDK roots - override per platform:
@@ -36,10 +42,13 @@ option(BUILD_SERVER "Build the HTTP/WebSocket inference API server (cpp/server)"
 # The runtime core is one static library (yolomaster_core); the CLI, the API server and
 # the GUI/mobile builds are thin consumers of it. Keep main.cpp out of the core.
 set(SRC  src/common.cpp src/slicing.cpp src/annotate_writers.cpp src/annotate_export.cpp
-         src/stb_impl.cpp src/map_metrics.cpp src/bench.cpp)
+         src/stb_impl.cpp src/map_metrics.cpp src/bench.cpp src/tracker.cpp)
 set(INCS include third_party ${OpenCV_INCLUDE_DIRS})
 set(LIBS ${OpenCV_LIBS})
 set(DEFS "")
+if(USE_GMC AND NOT PORTABLE)
+  list(APPEND DEFS HAVE_GMC)
+endif()
 # version / provenance stamps (bench JSON, --version, GET /)
 execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 OUTPUT_VARIABLE YM_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)

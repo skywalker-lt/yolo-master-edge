@@ -15,8 +15,11 @@ ok(){ echo "  PASS  $1"; P=$((P+1)); }
 no(){ echo "  FAIL  $1"; F=$((F+1)); }
 run(){ "$BIN" "$@" 2>&1; }
 
+# python with cv2 for the synthetic videos (PYCV=... to point at a venv; skips the video tests otherwise)
+PYCV=${PYCV:-python3}
+"$PYCV" -c "import cv2" 2>/dev/null || PYCV=""
 # build a 6-frame test video if opencv-python is present
-python - "$DIR" "$OUT/test.mp4" <<'PY' 2>/dev/null || true
+[ -n "$PYCV" ] && "$PYCV" - "$DIR" "$OUT/test.mp4" <<'PY' 2>/dev/null || true
 import cv2,glob,sys
 imgs=sorted(glob.glob(sys.argv[1]+"/*.jpg"))[:6]
 vw=cv2.VideoWriter(sys.argv[2],cv2.VideoWriter_fourcc(*'mp4v'),5,(640,480))
@@ -53,6 +56,37 @@ if [ -d "$LABELS" ]; then
   GOT=$(run -m "$ONNX" -s "$DIR" --quiet --no-save --accuracy "$LABELS" --bench-iters 1 --bench-warmup 0 --bench-json "$OUT/bench/acc.json" 2>&1 | grep "^\[accuracy\]" | sed 's/^\[accuracy\] //')
   [ -n "$REF" ] && [ "$REF" = "$GOT" ] && ok "T20 in-process accuracy == eval_map_standalone.py ($GOT)" || { echo "  ref: $REF"; echo "  got: $GOT"; no T20; }
 else echo "  SKIP  T20 (no visdrone50 labels)"; fi
+
+echo "== multi-object tracking (synthetic panning clip) =="
+if [ -n "$PYCV" ] && "$PYCV" - "$IMG" "$OUT/pan.mp4" <<'PY' 2>/dev/null
+import cv2, sys, numpy as np
+img = cv2.resize(cv2.imread(sys.argv[1]), (640, 480))
+vw = cv2.VideoWriter(sys.argv[2], cv2.VideoWriter_fourcc(*'mp4v'), 10, (640, 480))
+for f in range(30):
+    M = np.float32([[1, 0, 3 * f], [0, 1, 0]])
+    vw.write(cv2.warpAffine(img, M, (640, 480), borderValue=(114, 114, 114)))
+vw.release()
+PY
+then
+  for TM in bytetrack botsort; do
+    rm -rf "$OUT/trk_$TM"
+    run -m "$ONNX" -s "$OUT/pan.mp4" --track $TM --save-txt "$OUT/trk_$TM" --no-save --quiet > "$OUT/trk_$TM.log" 2>&1
+    if grep -q "frames=30" "$OUT/trk_$TM.log" && python3 - "$OUT/trk_$TM" <<'PY'
+import glob, sys, collections
+files = sorted(glob.glob(sys.argv[1] + "/*.txt")); top = []; ids = set(); bad = 0
+for f in files:
+    rows = [l.split() for l in open(f) if l.strip()]
+    bad += sum(1 for r in rows if len(r) != 7)
+    if rows:
+        top.append(max(rows, key=lambda r: float(r[1]))[6]); ids.update(r[6] for r in rows)
+assert len(files) == 30 and bad == 0 and top, (len(files), bad)
+stable = collections.Counter(top).most_common(1)[0][1]
+assert stable >= 27, f"top detection kept one id on only {stable}/30 frames"
+assert len(ids) >= 2
+PY
+    then ok "T21 --track $TM: 7-column txt, top detection keeps one id on >= 27/30 frames"; else no "T21 $TM"; fi
+  done
+else echo "  SKIP  T21 (no python with cv2; set PYCV=/path/to/python)"; fi
 
 echo "== ncnn per-layer fp32 pin (router-emulated mixture graph) =="
 MOA=${MOA:-$ROOT/models/moa-n_ncnn}

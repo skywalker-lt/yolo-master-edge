@@ -4,6 +4,7 @@
 #include "yolomaster.hpp"
 #include "slicing.hpp"
 #include "bench.hpp"
+#include "tracker.hpp"
 #include "map_metrics.hpp"
 #include "annotate_export.hpp"
 #ifdef USE_ORT
@@ -65,6 +66,8 @@ int main(int argc, char** argv) {
     float sigma = 0.1f;
     std::string precision_s = "auto";
     std::string bench_mode = "off", bench_json, accuracy;
+    std::string track_mode = "off";
+    int track_buffer = 30;
     int bench_iters = 50, bench_warmup = 10;
     double bench_minutes = 2.0;
 
@@ -108,7 +111,16 @@ int main(int argc, char** argv) {
     app.add_option("--accuracy", accuracy, "score the source with the in-process mAP: a YOLO labels dir, or 'auto' to map "
                    ".../images/... to .../labels/... (dataset.yaml sources). Runs a second pass at the val protocol "
                    "(conf 0.001, iou 0.7, multi-label, max_det 300); implies --bench cold");
+    app.add_option("--track", track_mode, "off|botsort|bytetrack: multi-object tracking on video sources (ids drawn, "
+                   "--save-txt gains a 7th column track_id); botsort adds camera motion compensation")->default_str("off");
+    app.add_option("--track-buffer", track_buffer, "frames a lost track is kept before its id retires")->capture_default_str();
     CLI11_PARSE(app, argc, argv);
+    track::TrackerConfig tcfg;
+    const bool track_on = track_mode != "off";
+    if (track_on && !track::parse_tracker_kind(track_mode, tcfg.kind)) {
+        std::cerr << "unknown --track mode: " << track_mode << " (off|botsort|bytetrack)\n"; return 2;
+    }
+    tcfg.track_buffer = track_buffer;
     if (bench_mode != "off" && bench_mode != "cold" && bench_mode != "sustained") {
         std::cerr << "unknown --bench mode: " << bench_mode << " (off|cold|sustained)\n"; return 2;
     }
@@ -210,6 +222,9 @@ int main(int argc, char** argv) {
         want = be->fixed_imgsz;
     }
     cfg.imgsz = want;
+    // tracking wants the low-score detections for its second association: unless the user pinned
+    // --conf, the detector floor drops to the tracker's low threshold (ultralytics does the same)
+    if (track_on && !app.count("--conf")) cfg.conf_thresh = tcfg.track_low_thresh;
     std::string classes_src;
     if (classes_opt == "visdrone") { cfg.class_names = visdrone_classes(); classes_src = "flag:visdrone"; }
     else if (classes_opt == "sku" || classes_opt == "sku110k") { cfg.class_names = sku110k_classes(); classes_src = "flag:sku"; }
@@ -230,6 +245,11 @@ int main(int argc, char** argv) {
     if (bench_on && kind == SourceKind::Video) {
         std::cerr << "--bench / --accuracy apply to images, directories and dataset.yaml sources only\n"; return 2;
     }
+    if (track_on && kind != SourceKind::Video) {
+        std::cerr << "--track applies to video sources only\n"; return 2;
+    }
+    std::unique_ptr<track::Tracker> tracker;   // created once the capture fps is known
+    std::vector<int> track_ids;                // parallel to `dets` inside run_one when tracking
     if (slice_mode != SliceMode::Off && kind == SourceKind::Video) {
         std::cerr << "[warn] slicing applies to images and folders only - video runs single-pass\n";
         slice_mode = SliceMode::Off;
@@ -305,6 +325,21 @@ int main(int argc, char** argv) {
             std::cerr << "  [skip] inference error on " << tag << ": " << e.what() << "\n";
             return;
         }
+        std::vector<track::Track> tracks;
+        track_ids.clear();
+        if (tracker) {
+            tracks = tracker->update(dets, &img);
+            std::vector<Detection> tracked;
+            tracked.reserve(tracks.size());
+            for (const auto& t : tracks) {
+                Detection d;
+                d.class_id = t.class_id; d.conf = t.conf; d.box = t.box; d.mask_coeffs = t.mask_coeffs;
+                d.cand_index = t.det_index >= 0 && t.det_index < static_cast<int>(dets.size()) ? dets[t.det_index].cand_index : -1;
+                tracked.push_back(std::move(d));
+                track_ids.push_back(t.id);
+            }
+            dets.swap(tracked);
+        }
         if (!export_labels.empty() && do_export) {
             AnnotationSink& s = ensure_sink();
             annot::Image aimg;
@@ -320,6 +355,7 @@ int main(int argc, char** argv) {
         samples.add(*be, dets.size());
         if (!quiet)
             std::cout << "  " << tag << "  dets=" << dets.size()
+                      << (tracker ? "  tracks=" + std::to_string(tracks.size()) : std::string())
                       << "  infer=" << be->infer_ms << "ms" << slice_note << "\n";
         if (!no_save) {
             cv::Mat vis = img.clone();
@@ -338,7 +374,7 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            draw(vis, dets, cfg);
+            if (tracker) track::draw_tracks(vis, tracks, cfg); else draw(vis, dets, cfg);
 #ifdef HAVE_VIDEOIO
             if (video_mode) {                         // one annotated mp4, not overwriting jpgs
                 if (!vwriter.isOpened()) {
@@ -365,9 +401,13 @@ int main(int argc, char** argv) {
             }
             std::ofstream f((fs::path(savetxt) /
                 (unique_stem(txt_stems, tstem) + ".txt")).string());
-            for (const auto& d : dets)
+            for (size_t i = 0; i < dets.size(); ++i) {
+                const auto& d = dets[i];
                 f << d.class_id << ' ' << d.conf << ' ' << d.box.x << ' ' << d.box.y << ' '
-                  << (d.box.x + d.box.width) << ' ' << (d.box.y + d.box.height) << '\n';
+                  << (d.box.x + d.box.width) << ' ' << (d.box.y + d.box.height);
+                if (tracker && i < track_ids.size()) f << ' ' << track_ids[i];
+                f << '\n';
+            }
         }
     };
 
@@ -377,6 +417,13 @@ int main(int argc, char** argv) {
         if (!cap.isOpened()) { std::cerr << "cannot open video: " << source << "\n"; return 4; }
         const double fps_probe = cap.get(cv::CAP_PROP_FPS);
         src_fps = (fps_probe > 1.0 && fps_probe < 1000.0) ? fps_probe : 30.0;
+        if (track_on) {
+            tcfg.fps = src_fps;
+            tracker = std::make_unique<track::Tracker>(tcfg);
+            std::cout << "[track] " << track::tracker_kind_name(tcfg.kind) << "  buffer=" << tcfg.track_buffer
+                      << " frames  gmc=" << ((tcfg.kind == track::TrackerConfig::Kind::BotSort && track::gmc_available()) ? "on" : "off")
+                      << "  conf_floor=" << cfg.conf_thresh << "\n";
+        }
         // label-export sampling stride: all=1, 1s=round(fps), N=every Nth
         int stride = 1;
         if (!export_labels.empty()) {
