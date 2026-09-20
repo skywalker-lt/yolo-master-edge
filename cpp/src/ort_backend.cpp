@@ -612,7 +612,8 @@ void OrtBackend::setup_gpu_io() {
         if (fixed_imgsz == 0) fixed_imgsz = sz;   // the bound input has a fixed size now
         active_ep += "+gpupre";
     } catch (const std::exception& e) {
-        note(std::string("gpu preprocess disabled: ") + e.what());
+        if (!ep_note.empty()) ep_note += "; ";
+        ep_note += std::string("gpu preprocess disabled: ") + e.what();
         teardown_gpu_io();
     }
 }
