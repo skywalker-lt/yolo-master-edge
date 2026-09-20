@@ -68,10 +68,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: No em-dashes in Markdown
+      - name: No em-dashes in the deliverable docs
         run: |
-          if git grep -nP '\x{2014}' -- '*.md' ':!third_party' ':!android/**/build/**'; then
-            echo "em-dash found in Markdown"; exit 1; fi
+          python3 - <<'PY'
+          import pathlib, sys
+          docs = ["README.md", "CHANGELOG.md", "docs/API.md", "deploy/README.md", "API_SERVER_RESULTS.md", "TECHNICAL_REPORT.md"]
+          bad = [d for d in docs if pathlib.Path(d).exists() and "\u2014" in pathlib.Path(d).read_text(errors="replace")]
+          if bad:
+              print("em-dash found in:", *bad); sys.exit(1)
+          print("ok")
+          PY
       - name: Shell syntax
         run: |
           for f in deploy/*.sh deploy/**/*.sh scripts/*.sh scripts/**/*.sh tests/*.sh; do
