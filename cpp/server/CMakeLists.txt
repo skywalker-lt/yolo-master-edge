@@ -21,7 +21,8 @@ set_target_properties(usockets PROPERTIES C_STANDARD 11 POSITION_INDEPENDENT_COD
 add_executable(yolomaster_server
   server_main.cpp http_api.cpp worker_pool.cpp serialize.cpp)
 target_include_directories(yolomaster_server PRIVATE ${UWS_ROOT}/src ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(yolomaster_server PRIVATE UWS_NO_ZLIB UWS_HTTPRESPONSE_NO_WRITEMARK)
+target_compile_definitions(yolomaster_server PRIVATE UWS_NO_ZLIB UWS_HTTPRESPONSE_NO_WRITEMARK
+                           "YM_SERVER_VERSION=\"${YM_SERVER_VERSION}\"")
 target_link_libraries(yolomaster_server PRIVATE yolomaster_core usockets pthread)
 # CUDA runtime for /metrics GPU memory when the TRT backend is in (CUDART_LIB is set by the parent)
 if(USE_TRT AND CUDART_LIB)

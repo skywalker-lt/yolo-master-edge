@@ -47,6 +47,7 @@ static void on_signal(int s) { g_signal = s; }
 
 int main(int argc, char** argv) {
     CLI::App app{"yolomaster_server - YOLO-Master inference API (REST + WebSocket)"};
+    app.set_version_flag("--version", std::string(YM_SERVER_VERSION) + " (runtime " + YM_VERSION + ", " + YM_GIT_COMMIT + ")");
     std::string config_path, host, engine_cache, log_level;
     int port = -1, loop_threads = -1, max_queue = -1, timeout_ms = -1, max_body_mb = -1, drain_ms = 5000;
     bool check_config = false, no_preload = false, print_config = false;
