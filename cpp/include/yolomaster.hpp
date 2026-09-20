@@ -217,6 +217,8 @@ public:
     virtual std::vector<Detection> infer(const cv::Mat& bgr, const Config& cfg);
     // Short runtime tag ("ncnn", "ort", ...): the runtime, not the device (that is active_ep).
     virtual const char* runtime_name() const { return "unknown"; }
+    // Accelerator name for the bench environment block ("" when the backend cannot tell).
+    virtual std::string device_name() const { return ""; }
     std::vector<std::string> meta_names;   // auto-read from the model (may be empty)
     int meta_imgsz = 0;                    // auto-read (0 = unknown)
     int fixed_imgsz = 0;                   // hard input constraint (0 = flexible)
