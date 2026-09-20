@@ -23,6 +23,7 @@ private:
     bool end2end_ = false;   // NMS-free [1,num_det,6] output (yolo26 lineage)
     MNN::Tensor*  input_    = nullptr;   // owned by the session
     MNN::Tensor*  output_   = nullptr;   // owned by the session
+    std::vector<float> blob_;            // reused NCHW RGB/255 input
     int threads_;
 };
 

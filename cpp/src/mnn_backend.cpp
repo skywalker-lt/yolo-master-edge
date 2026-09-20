@@ -73,19 +73,10 @@ std::vector<Detection> MnnBackend::infer(const cv::Mat& bgr, const Config& cfg) 
     // ---- preprocess: letterbox -> NCHW float RGB /255 (identical to ORT) ----
     auto t0 = clk::now();
     LetterboxInfo lb;
-    cv::Mat padded = preprocess(bgr, cfg.imgsz, cfg.stretch, lb);   // imgsz x imgsz, CV_8UC3 BGR
-    const int sz = cfg.imgsz, hw = sz * sz;
-    std::vector<float> blob(3 * hw);
-    for (int y = 0; y < sz; ++y) {
-        const uint8_t* row = padded.ptr<uint8_t>(y);
-        for (int x = 0; x < sz; ++x) {
-            const uint8_t* px = row + x * 3;           // BGR
-            const int idx = y * sz + x;
-            blob[idx]          = px[2] * (1.0f / 255);  // R
-            blob[hw + idx]     = px[1] * (1.0f / 255);  // G
-            blob[2 * hw + idx] = px[0] * (1.0f / 255);  // B
-        }
-    }
+    const int sz = cfg.imgsz;
+    std::vector<float>& blob = blob_;
+    blob.resize(static_cast<size_t>(3) * sz * sz);
+    preprocess_nchw(bgr, sz, cfg.stretch, blob.data(), lb);
     // resize the session input if it doesn't already match imgsz (handles fixed & flexible graphs)
     auto ishape = input_->shape();
     if (ishape.size() != 4 || ishape[2] != sz || ishape[3] != sz) {

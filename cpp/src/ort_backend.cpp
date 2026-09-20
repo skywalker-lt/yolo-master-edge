@@ -404,19 +404,8 @@ void OrtBackend::forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode)
     // ---- preprocess: letterbox -> NCHW float RGB /255 (the ncnn path's from_pixels + normalize) ----
     auto t0 = clk::now();
     LetterboxInfo lb;
-    cv::Mat padded = preprocess(bgr, cfg.imgsz, cfg.stretch, lb);   // imgsz x imgsz, CV_8UC3 BGR
-    const int sz = cfg.imgsz, hw = sz * sz;
-    blob_.resize(static_cast<size_t>(3) * hw);
-    for (int y = 0; y < sz; ++y) {
-        const uint8_t* row = padded.ptr<uint8_t>(y);
-        for (int x = 0; x < sz; ++x) {
-            const uint8_t* px = row + x * 3;          // BGR
-            const int idx = y * sz + x;
-            blob_[idx]          = px[2] * (1.0f / 255); // R
-            blob_[hw + idx]     = px[1] * (1.0f / 255); // G
-            blob_[2 * hw + idx] = px[0] * (1.0f / 255); // B
-        }
-    }
+    blob_.resize(static_cast<size_t>(3) * cfg.imgsz * cfg.imgsz);
+    preprocess_nchw(bgr, cfg.imgsz, cfg.stretch, blob_.data(), lb);
     std::array<int64_t, 4> in_shape{1, 3, cfg.imgsz, cfg.imgsz};
     Ort::Value in_tensor{nullptr};
     if (in_fp16_) {

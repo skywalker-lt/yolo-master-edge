@@ -84,6 +84,12 @@ const std::vector<std::string>& sku110k_classes();   // 1
 cv::Mat preprocess(const cv::Mat& img, int imgsz, bool stretch, LetterboxInfo& info);
 // Back-compat alias: aspect-preserving letterbox (== preprocess(..., stretch=false)).
 cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info);
+// Pure scale/pad arithmetic of preprocess() for a w x h source (no pixels touched): the single
+// definition shared by the CPU path and the CUDA preprocessing kernel. out_w/out_h = resized size.
+void letterbox_params(int w, int h, int imgsz, bool stretch, LetterboxInfo& info, int& out_w, int& out_h);
+// letterbox(+stretch) -> RGB -> /255 -> NCHW float into dst[3*imgsz*imgsz]. The CPU reference
+// every backend feeds its input tensor from; its CUDA twin is preprocess_nchw_cuda (cuda_preproc.hpp).
+void preprocess_nchw(const cv::Mat& bgr, int imgsz, bool stretch, float* dst, LetterboxInfo& info);
 // Decode raw model output -> pre-NMS candidates (score >= cfg.conf_thresh; pass a low floor to cache).
 std::vector<RawDet> decode_candidates(const float* out, int feat_dim, int num_anchors,
                                       const Config& cfg, const LetterboxInfo& lb);

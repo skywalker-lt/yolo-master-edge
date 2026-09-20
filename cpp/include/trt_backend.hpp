@@ -51,7 +51,7 @@ private:
     int feat_dim_ = 0, num_anchors_ = 0;   // detection output [1, feat_dim, num_anchors]
     bool end2end_ = false;                 // NMS-free [1, num_det, 6] head (sidecar or shape)
     int pc_ = 0, ph_ = 0, pw_ = 0;         // proto output [1, pc, ph, pw] (0 = detection engine)
-    std::vector<float> h_out_, h_proto_;
+    std::vector<float> h_in_, h_out_, h_proto_;
     void load_engine(const std::string& engine_path);
 };
 
