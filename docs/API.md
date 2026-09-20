@@ -47,8 +47,9 @@ default 2), `max_body_mb` (32), `max_pixels` (50 M), `max_queue` (64 pending job
 | POST | `/v1/models/{id}/load`, `/unload` | start or stop a model's worker pool |
 | POST | `/v1/infer` | one image, one result |
 | POST | `/v1/infer/batch` | K files in one multipart body, K independent batch-1 jobs |
-| POST | `/v1/video` | video file upload, NDJSON stream of per-frame results |
+| POST | `/v1/video` | video file upload, NDJSON stream of per-frame results (`track=` for ids) |
 | WS | `/v1/stream` | binary frames in, JSON per frame out, keep-latest backpressure |
+| POST | `/v1/bench` | probe sweep on one worker of a loaded model, `yolomaster-bench/v1` JSON |
 | GET | `/v1/stats` | rolling p50/p90/p95/p99 latency (1 min, 5 min windows) per model |
 | GET | `/metrics` | Prometheus text exposition |
 
@@ -106,6 +107,19 @@ Nth frame), `max_frames`, plus the detection parameters. Response: `application/
 JSON object per processed frame with `frame` (index), then a final `{"done": true, "frames",
 "decoded"}` line. Frames are processed sequentially in order with one job in flight.
 
+Tracking: `track=botsort|bytetrack` on `/v1/video` and `/v1/stream` runs a multi-object tracker
+over the frames of that request or connection (one tracker per video, one per WebSocket
+session), and every detection gains a `track_id`. `botsort` (default recommendation) adds
+sparse-optical-flow camera motion compensation; `bytetrack` is the same association without it.
+Unless `conf` is given, the detector threshold drops to the tracker's low threshold (0.1) so the
+second association stage has candidates; boxes are the tracker's Kalman estimates. The NDJSON tail
+of `/v1/video` echoes `"track"`; a stream connection switches with a text message
+`{"track": "bytetrack"}` (new ids) or `{"track": "off"}`.
+
+Slicing per request: `slicing=off|dense|sparse&tile_size=N` on every inference endpoint runs the
+Sparse SAHI mode of the runtime (global pass plus tiles) for that request; the response carries
+`slicing.tiles_run` / `slicing.tiles_total`. A model spec `slicing=` sets the default.
+
 ### WS /v1/stream
 
 `ws://host/v1/stream?model=<id>[&conf=..&iou=..&return=json|annotated]`. Send binary messages
@@ -115,6 +129,17 @@ JPEG as a binary message before the JSON. While a frame is being processed, newe
 the one pending frame (keep-latest), so a camera can push at any rate and the stream stays live;
 `dropped` counts the frames skipped that way. A text message with JSON `{"conf": 0.3, "iou":
 0.5, "max_det": 100, "return": "json"}` updates the parameters for that connection.
+
+### POST /v1/bench
+
+`POST /v1/bench?model=<id>&warmup=10&iters=50` (empty body). One worker of the model runs
+`warmup` untimed and `iters` timed forwards of a gray 114 probe at the model's imgsz
+(`forward_raw` without decoding on ONNX Runtime and ncnn, a full `infer()` on TensorRT and MNN,
+reported as `cold.probe_mode`) and answers the `yolomaster-bench/v1` document the CLI's `--bench`
+writes: `model`, `environment` (host, CPU, GPU, threads, commit, build flags, version), `protocol`,
+`cold.infer_ms{n, mean, median, p90, p95, p99, min, max}` (floor-rank percentiles, the phone Bench
+tabs' convention) plus `request_id` and `worker`. The sweep holds that worker for its duration;
+other workers keep serving. Accuracy is not measured over HTTP: use the CLI's `--accuracy`.
 
 ### GET /metrics
 

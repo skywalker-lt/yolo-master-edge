@@ -155,6 +155,27 @@ InferResult WorkerPool::run_job(Backend& be, const Config& base, int wid, Job& j
         r.http_status = 504; r.error = "deadline exceeded while queued (" + std::to_string(int(r.queue_ms)) + " ms)";
         return r;
     }
+    // ---- bench job: probe sweep on this worker's backend, no image ----
+    if (job.bench) {
+        bench::BenchResult br;
+        br.tool = "server";
+        br.timestamp = bench::timestamp_utc();
+        br.has_cold = true;
+        br.cold = bench::cold_sweep(be, base, job.bench->warmup, job.bench->iters);
+        br.model = bench::model_info(be, spec_.path, spec_.backend, spec_.precision, base);
+        br.model.id = spec_.id;
+        br.env = bench::collect_env(be, spec_.threads);
+        br.protocol.mode = "cold"; br.protocol.conf = base.conf_thresh; br.protocol.iou = base.iou_thresh;
+        br.protocol.max_det = base.max_det; br.protocol.multi_label = base.multi_label;
+        br.protocol.slicing = spec_.slicing.empty() ? "off" : spec_.slicing; br.protocol.tile_size = spec_.tile_size;
+        br.protocol.warmup = job.bench->warmup; br.protocol.iters = job.bench->iters;
+        br.protocol.probe_mode = br.cold.probe_mode;
+        r.bench_json = bench::to_json(br);
+        r.bench_json["worker"] = wid;
+        r.active_ep = be.active_ep; r.cfg_used = base;
+        r.total_ms = ms_between(t_start, Clock::now());
+        return r;
+    }
     // ---- decode ----
     cv::Mat bgr;
     if (job.raw_w > 0) {
@@ -178,6 +199,8 @@ InferResult WorkerPool::run_job(Backend& be, const Config& base, int wid, Job& j
     if (p.iou >= 0) cfg.iou_thresh = std::min(1.0f, std::max(0.0f, p.iou));
     if (p.max_det > 0) cfg.max_det = std::min(3000, p.max_det);
     if (p.multi_label >= 0) cfg.multi_label = p.multi_label != 0;
+    // tracking wants the low-score detections for its second association (the CLI does the same)
+    if (job.tracker && p.conf < 0) cfg.conf_thresh = job.tracker->config().track_low_thresh;
     std::string slicing = p.slicing.empty() ? spec_.slicing : p.slicing;
     SliceConfig sc;
     sc.mode = slicing == "dense" ? SliceMode::Dense : slicing == "sparse" ? SliceMode::Sparse : SliceMode::Off;
@@ -197,6 +220,20 @@ InferResult WorkerPool::run_job(Backend& be, const Config& base, int wid, Job& j
         r.pre_ms = be.pre_ms; r.infer_ms = be.infer_ms; r.post_ms = be.post_ms;
     }
     r.active_ep = be.active_ep; r.is_seg = be.is_seg(); r.cfg_used = cfg;
+    // ---- tracking: detections -> confirmed tracks (ids parallel to dets) ----
+    std::vector<track::Track> tracks;
+    if (job.tracker) {
+        tracks = job.tracker->update(r.dets, &bgr);
+        std::vector<Detection> tracked;
+        tracked.reserve(tracks.size());
+        for (const auto& t : tracks) {
+            Detection d;
+            d.class_id = t.class_id; d.conf = t.conf; d.box = t.box; d.mask_coeffs = t.mask_coeffs;
+            tracked.push_back(std::move(d));
+            r.track_ids.push_back(t.id);
+        }
+        r.dets.swap(tracked);
+    }
     if (!p.mask_coeffs) for (auto& d : r.dets) d.mask_coeffs.clear();
     metrics.pre.observe(r.pre_ms); metrics.infer.observe(r.infer_ms); metrics.post.observe(r.post_ms);
     metrics.infer_ring.add(r.infer_ms);
@@ -215,7 +252,7 @@ InferResult WorkerPool::run_job(Backend& be, const Config& base, int wid, Job& j
                 }
             }
         }
-        draw(vis, r.dets, cfg);
+        if (job.tracker) track::draw_tracks(vis, tracks, cfg); else draw(vis, r.dets, cfg);
         r.annotated_jpg = encode_jpg(vis, p.jpeg_quality);
         r.encode_ms = ms_between(t_enc, Clock::now());
         metrics.encode.observe(r.encode_ms);

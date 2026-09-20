@@ -190,6 +190,76 @@ def test_ws_stream():
     assert [o["seq"] for o in out] == list(range(1, 7))
 
 
+def test_slicing_param():
+    r = c.infer(IMGS[0], model=MODEL, slicing="dense")
+    assert "slicing" in r and r["slicing"]["tiles_total"] > 0 and r["slicing"]["tiles_run"] >= 1
+    r2 = c.infer(IMGS[0], model=MODEL, slicing="off")
+    assert "slicing" not in r2
+
+
+def test_bench_endpoint():
+    j = c.bench(model=MODEL, warmup=1, iters=4)
+    assert j["schema_version"] == "yolomaster-bench/v1" and j["tool"] == "server"
+    assert j["cold"]["infer_ms"]["n"] == 4 and j["cold"]["probe_mode"] in ("infer_only", "full")
+    assert j["model"]["id"] == MODEL and j["environment"]["version"] and "request_id" in j
+    for k in ("mean", "median", "p90", "p95", "p99", "min", "max"):
+        assert k in j["cold"]["infer_ms"]
+
+
+def _make_pan_video(path, frames=12):
+    import cv2, numpy as np
+    img = cv2.resize(cv2.imread(str(IMGS[0])), (640, 480))
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (640, 480))
+    for f in range(frames):
+        m = np.float32([[1, 0, 3 * f], [0, 1, 0]])
+        vw.write(cv2.warpAffine(img, m, (640, 480), borderValue=(114, 114, 114)))
+    vw.release()
+
+
+def test_video_track():
+    try:
+        import cv2  # noqa
+    except ImportError:
+        return _skip("opencv-python missing")
+    with tempfile.TemporaryDirectory() as td:
+        vp = Path(td) / "pan.mp4"; _make_pan_video(vp)
+        try:
+            frames = list(c.video(vp, model=MODEL, track="bytetrack"))
+        except ApiError as e:
+            if e.status == 501:
+                return _skip("server built without videoio")
+            raise
+    assert frames[-1]["done"] and frames[-1]["track"] == "bytetrack" and frames[-1]["frames"] == 12
+    body = frames[:-1]
+    assert all(all("track_id" in d for d in f["detections"]) for f in body)
+    ids = [d["track_id"] for f in body for d in f["detections"]]
+    assert ids and len(set(ids)) < len(ids)          # ids repeat across frames
+    top = [max(f["detections"], key=lambda d: d["conf"])["track_id"] for f in body if f["detections"]]
+    assert top.count(max(set(top), key=top.count)) >= len(top) - 2
+
+
+def test_ws_track():
+    try:
+        import cv2, websocket  # noqa
+    except ImportError:
+        return _skip("opencv-python/websocket-client missing")
+    with tempfile.TemporaryDirectory() as td:
+        vp = Path(td) / "pan.mp4"; _make_pan_video(vp, 8)
+        ws = websocket.create_connection(URL.replace("http://", "ws://") + f"/v1/stream?model={MODEL}&track=botsort", timeout=60)
+        json.loads(ws.recv())                                    # hello
+        cap = cv2.VideoCapture(str(vp)); got = []
+        for i in range(8):
+            ok, frame = cap.read(); assert ok
+            if i == 5:                                           # switch tracking off mid-stream
+                ws.send(json.dumps({"track": "off"})); ack = json.loads(ws.recv()); assert ack["params"]["track"] == "off"
+            ws.send_binary(cv2.imencode(".jpg", frame)[1].tobytes())
+            got.append(json.loads(ws.recv()))
+        ws.close(); cap.release()
+    assert len(got) == 8 and all("count" in g for g in got)
+    assert all("track_id" in d for g in got[:5] for d in g["detections"])
+    assert all("track_id" not in d for g in got[5:] for d in g["detections"])
+
+
 def test_load_unload_roundtrip():
     if not MODEL2:
         return _skip("no second model")

@@ -104,6 +104,8 @@ InferParams params_from(Req* req, const std::string& ret) {
     p.slicing = qs(req, "slicing"); p.tile_size = qi(req, "tile_size", -1);
     p.annotated = ret == "annotated"; p.mask_overlay = qs(req, "masks") == "overlay"; p.mask_coeffs = qb(req, "mask_coeffs", false);
     p.jpeg_quality = qi(req, "quality", 90);
+    p.track = qs(req, "track");
+    if (p.track == "off") p.track.clear();
     return p;
 }
 
@@ -205,9 +207,19 @@ Job make_job(ServerState& st, const std::shared_ptr<Pending>& p, std::string&& i
     return j;
 }
 
+// tracker factory for video / stream requests ("" or unknown -> none)
+static std::shared_ptr<track::Tracker> make_tracker(const std::string& mode, double fps, std::string* err = nullptr) {
+    if (mode.empty()) return nullptr;
+    track::TrackerConfig tc;
+    if (!track::parse_tracker_kind(mode, tc.kind)) { if (err) *err = "unknown track mode: " + mode + " (botsort|bytetrack|off)"; return nullptr; }
+    tc.fps = (fps > 1.0 && fps < 1000.0) ? fps : 30.0;
+    return std::make_shared<track::Tracker>(tc);
+}
+
 // ---- WebSocket stream: keep-latest backpressure per connection ----
 struct WsSession {
     std::string model_id; InferParams params; std::string ret = "json";
+    std::shared_ptr<track::Tracker> tracker;   // set by ?track= at upgrade or a text {"track": ...} message
     std::atomic<bool> busy{false}, closed{false};
     std::string pending; bool has_pending = false; uint64_t seq = 0, pending_seq = 0, dropped = 0;
     uWS::WebSocket<false, true, WsSession*>* ws = nullptr; uWS::Loop* loop = nullptr;
@@ -234,6 +246,7 @@ void ws_submit(ServerState& st, std::shared_ptr<WsSession> s, std::string&& fram
     if (!pool || !pool->ready()) { s->ws->send(nlohmann::json{{"error", "model not ready"}, {"seq", seq}}.dump(), uWS::OpCode::TEXT); return; }
     s->busy = true;
     Job j; j.request_id = "ws-" + std::to_string(seq); j.image = std::move(frame); j.params = s->params;
+    j.tracker = s->tracker;
     j.enqueued = std::chrono::steady_clock::now(); j.deadline = j.enqueued + std::chrono::milliseconds(st.cfg.request_timeout_ms);
     uWS::Loop* loop = s->loop; ServerState* stp = &st;
     j.done = [stp, s, seq, loop](InferResult&& r) mutable {
@@ -270,7 +283,7 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
     app.get("/", [&](Res* res, Req* req) {
         auto p = begin(res, req);
         send_json(*p, 200, {{"service", "yolomaster-edge api"}, {"version", YM_SERVER_VERSION}, {"runtime", YM_VERSION}, {"commit", YM_GIT_COMMIT}, {"docs", "/docs/API.md"},
-                            {"endpoints", {"/healthz", "/readyz", "/v1/models", "/v1/infer", "/v1/infer/batch", "/v1/video", "/v1/stream (ws)", "/v1/stats", "/metrics"}}});
+                            {"endpoints", {"/healthz", "/readyz", "/v1/models", "/v1/infer", "/v1/infer/batch", "/v1/video", "/v1/stream (ws)", "/v1/bench", "/v1/stats", "/metrics"}}});
     });
     app.get("/healthz", [&](Res* res, Req* req) {
         auto p = begin(res, req);
@@ -374,6 +387,32 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
         });
     });
 
+    // ---- bench: probe sweep on one worker of a loaded model (yolomaster-bench/v1 JSON) ----
+    app.post("/v1/bench", [&](Res* res, Req* req) {
+        auto p = begin(res, req);
+        std::string model_id;
+        WorkerPool* pool = resolve_pool(st, req, p, model_id);
+        if (!pool) return;
+        auto breq = std::make_shared<BenchRequest>();
+        breq->warmup = std::max(0, std::min(1000, qi(req, "warmup", 10)));
+        breq->iters = std::max(1, std::min(10000, qi(req, "iters", 50)));
+        read_body(p, max_body, [&st, p, pool, breq, model_id](std::string&&) {
+            Job j = make_job(st, p, std::string(), InferParams{});
+            j.bench = breq;
+            j.deadline = j.enqueued + std::chrono::seconds(600);   // a sweep is long by design
+            j.done = [p, model_id](InferResult&& r) {
+                auto rp = std::make_shared<InferResult>(std::move(r));
+                deliver(p, [rp, model_id](Pending& pp) {
+                    if (rp->http_status != 200) { send_error(pp, rp->http_status, rp->error); return; }
+                    rp->bench_json["request_id"] = pp.rid;
+                    rp->bench_json["model"]["id"] = model_id;
+                    send_json(pp, 200, rp->bench_json);
+                });
+            };
+            if (!pool->submit(std::move(j))) send_error(*p, 503, "queue full", "Retry-After", "1");
+        });
+    });
+
     // ---- video upload -> NDJSON stream of per-frame results ----
     app.post("/v1/video", [&](Res* res, Req* req) {
         auto p = begin(res, req);
@@ -399,14 +438,18 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
                 cv::VideoCapture cap(tmp.string());
                 nlohmann::json tail = {{"done", true}};
                 if (!cap.isOpened()) { tail["error"] = "cannot decode video"; }
+                std::string terr;
+                std::shared_ptr<track::Tracker> tracker = make_tracker(params.track, cap.isOpened() ? cap.get(cv::CAP_PROP_FPS) : 30.0, &terr);
+                if (!terr.empty()) tail["error"] = terr;
+                if (tracker) tail["track"] = track::tracker_kind_name(tracker->config().kind);
                 int idx = 0, sent = 0;
                 cv::Mat frame;
-                while (cap.isOpened() && !p->aborted && cap.read(frame)) {
+                while (cap.isOpened() && terr.empty() && !p->aborted && cap.read(frame)) {
                     const int fi = idx++;
                     if (fi % every) continue;
                     if (max_frames > 0 && sent >= max_frames) break;
                     if (!frame.isContinuous()) frame = frame.clone();
-                    Job j; j.request_id = p->rid + "-f" + std::to_string(fi); j.params = params;
+                    Job j; j.request_id = p->rid + "-f" + std::to_string(fi); j.params = params; j.tracker = tracker;
                     j.raw_w = frame.cols; j.raw_h = frame.rows; j.image.assign(reinterpret_cast<const char*>(frame.data), size_t(frame.total()) * 3);
                     j.enqueued = std::chrono::steady_clock::now(); j.deadline = j.enqueued + std::chrono::milliseconds(st.cfg.request_timeout_ms);
                     std::promise<InferResult> pr; auto fut = pr.get_future();
@@ -448,6 +491,7 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
             auto* s = new WsSession();
             s->model_id = model_id; s->params = params_from(req, qs(req, "return", "json")); s->ret = qs(req, "return", "json");
             s->params.annotated = s->ret == "annotated";
+            s->tracker = make_tracker(s->params.track, qf(req, "fps", 30.0f));
             res->template upgrade<WsSession*>(std::move(s), req->getHeader("sec-websocket-key"), req->getHeader("sec-websocket-protocol"),
                                              req->getHeader("sec-websocket-extensions"), ctx);
         },
@@ -464,7 +508,16 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
                     if (j.contains("iou")) raw->params.iou = j["iou"].get<float>();
                     if (j.contains("max_det")) raw->params.max_det = j["max_det"].get<int>();
                     if (j.contains("return")) { raw->ret = j["return"].get<std::string>(); raw->params.annotated = raw->ret == "annotated"; }
-                    ws->send(nlohmann::json{{"ok", true}, {"params", {{"conf", raw->params.conf}, {"iou", raw->params.iou}, {"max_det", raw->params.max_det}, {"return", raw->ret}}}}.dump(), uWS::OpCode::TEXT);
+                    if (j.contains("track")) {          // "botsort" | "bytetrack" start a fresh tracker, "off" stops it
+                        std::string mode = j["track"].get<std::string>();
+                        if (mode == "off") mode.clear();
+                        std::string terr;
+                        raw->params.track = mode;
+                        raw->tracker = make_tracker(mode, j.value("fps", 30.0), &terr);
+                        if (!terr.empty()) throw std::runtime_error(terr);
+                    }
+                    ws->send(nlohmann::json{{"ok", true}, {"params", {{"conf", raw->params.conf}, {"iou", raw->params.iou}, {"max_det", raw->params.max_det}, {"return", raw->ret},
+                                                              {"track", raw->tracker ? track::tracker_kind_name(raw->tracker->config().kind) : "off"}}}}.dump(), uWS::OpCode::TEXT);
                 } catch (const std::exception& e) { ws->send(nlohmann::json{{"error", std::string("bad json: ") + e.what()}}.dump(), uWS::OpCode::TEXT); }
                 return;
             }
