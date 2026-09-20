@@ -55,3 +55,6 @@ cpp/tools/build*/
 /models
 /third_party
 /visdrone50
+
+# local eval sets (release assets, see scripts/package_eval_sets.sh)
+/datasets
