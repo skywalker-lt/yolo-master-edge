@@ -58,6 +58,13 @@ cpp/build_l40s/server/yolomaster_server --config deploy/server.json
 
 or extract the bundle tar anywhere: `tar xf bundle.tar -C / && /opt/yolomaster/entrypoint.sh`.
 
+## Authentication, rate limit, tracing
+
+The image runs open by default. `YM_API_KEYS=key1,key2` in the container environment (`deploy/run.sh`
+and `docker-compose.yml` pass it through) turns on API-key authentication; `rate_limit`, `log_format`
+and `auth_exempt` are config keys (see docs/API.md). Every response carries `X-Request-Id` and a W3C
+`traceparent`; `GET /openapi.json` describes the running server.
+
 ## Configuration
 
 See `docs/API.md` for the model spec keys and the server options. The reference config
