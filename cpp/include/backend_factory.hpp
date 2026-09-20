@@ -68,7 +68,8 @@ inline std::unique_ptr<Backend> make_backend(std::string model, std::string back
                                              int threads, const std::string& device,
                                              std::string& resolved, std::string& err,
                                              Precision precision = Precision::Auto,
-                                             const std::string& trt_cache_dir = "") {
+                                             const std::string& trt_cache_dir = "",
+                                             bool gpu_preproc = true, bool cuda_graph = false) {
     namespace fs = std::filesystem;
     if (backend == "auto") {
         backend = detect_backend(model);
@@ -81,7 +82,8 @@ inline std::unique_ptr<Backend> make_backend(std::string model, std::string back
         if (backend == "onnx") {
 #ifdef USE_ORT
             std::string ep = want_gpu ? "cuda" : (device.empty() ? "cpu" : device);
-            return std::make_unique<OrtBackend>(model, threads, ep);
+            OrtOptions oo; oo.device = ep; oo.threads = threads; oo.gpu_preproc = gpu_preproc;
+            return std::make_unique<OrtBackend>(model, oo);
 #else
             err = "built without ONNXRuntime backend"; return nullptr;
 #endif
@@ -108,6 +110,7 @@ inline std::unique_ptr<Backend> make_backend(std::string model, std::string back
             TrtOptions topt;
             topt.fp16 = (precision == Precision::Fp16);
             topt.cache_dir = trt_cache_dir;
+            topt.gpu_preproc = gpu_preproc; topt.cuda_graph = cuda_graph;
             return std::make_unique<TrtBackend>(model, topt);
 #else
             err = "built without TensorRT backend"; return nullptr;

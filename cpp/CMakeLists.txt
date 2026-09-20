@@ -15,6 +15,9 @@ option(PORTABLE "Slim relocatable build: image inference only, minimal OpenCV de
 # BoT-SORT camera motion compensation needs OpenCV video (LK optical flow) + calib3d
 # (estimateAffinePartial2D); OFF keeps ncnn-only mobile builds lean (tracking then runs without GMC).
 option(USE_GMC "BoT-SORT camera motion compensation (OpenCV video + calib3d)" ON)
+# GPU preprocessing (letterbox + normalize + NCHW as one CUDA kernel feeding the TensorRT / ORT-CUDA
+# input tensor) and TensorRT CUDA graphs. Needs nvcc; CPU-only builds leave it OFF.
+option(USE_CUDA_PREPROC "CUDA preprocessing kernel + IoBinding (needs nvcc)" OFF)
 # image I/O via stb + hand-written NMS -> only need core+imgproc (no imgcodecs->GDAL,
 # no dnn->protobuf). Full build adds videoio for cv::VideoCapture (--source video).
 if(PORTABLE)
@@ -125,14 +128,33 @@ else()
   message(WARNING "MNN backend: OFF (not found at ${MNN_ROOT})")
 endif()
 
+if(USE_TRT OR USE_CUDA_PREPROC)
+  # CUDA runtime (JetPack: /usr/local/cuda; x86: /usr/local/cuda-*)
+  file(GLOB _CUDA_DIRS /usr/local/cuda /usr/local/cuda-*)
+  find_path(CUDA_INC cuda_runtime_api.h PATHS ${_CUDA_DIRS} PATH_SUFFIXES include)
+  find_library(CUDART_LIB cudart PATHS ${_CUDA_DIRS} PATH_SUFFIXES lib64 lib/aarch64-linux-gnu)
+endif()
+if(USE_CUDA_PREPROC)
+  if(NOT CUDA_INC OR NOT CUDART_LIB)
+    message(FATAL_ERROR "USE_CUDA_PREPROC=ON but the CUDA runtime was not found under /usr/local/cuda*")
+  endif()
+  enable_language(CUDA)
+  set(CMAKE_CUDA_STANDARD 17)
+  if(NOT CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES 89 120)   # L4 / L40S, RTX PRO (Blackwell); Jetson passes its own
+  endif()
+  list(APPEND SRC  src/cuda/preprocess.cu)
+  list(APPEND INCS ${CUDA_INC})
+  list(APPEND LIBS ${CUDART_LIB})
+  list(APPEND DEFS HAVE_CUDA_PREPROC)
+  message(STATUS "CUDA preprocessing: ON (arch ${CMAKE_CUDA_ARCHITECTURES})")
+endif()
+
 if(USE_TRT)
   # TensorRT + CUDA from JetPack (headers under /usr/include/aarch64-linux-gnu, CUDA under /usr/local/cuda)
   find_path(TRT_INC NvInfer.h PATHS /usr/include/aarch64-linux-gnu /usr/include ${TENSORRT_ROOT}/include)
   find_library(TRT_LIB nvinfer PATHS /usr/lib/aarch64-linux-gnu ${TENSORRT_ROOT}/lib)
     find_library(TRT_ONNX_LIB nvonnxparser PATHS /usr/lib/aarch64-linux-gnu /usr/lib/x86_64-linux-gnu ${TENSORRT_ROOT}/lib)
-  file(GLOB _CUDA_DIRS /usr/local/cuda /usr/local/cuda-*)
-  find_path(CUDA_INC cuda_runtime_api.h PATHS ${_CUDA_DIRS} PATH_SUFFIXES include)
-  find_library(CUDART_LIB cudart PATHS ${_CUDA_DIRS} PATH_SUFFIXES lib64 lib/aarch64-linux-gnu)
   if(TRT_INC AND TRT_LIB AND CUDA_INC AND CUDART_LIB)
     list(APPEND SRC  src/trt_backend.cpp)
     list(APPEND INCS ${TRT_INC} ${CUDA_INC})
@@ -161,6 +183,10 @@ set_target_properties(yolomaster_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_executable(yolomaster_score src/score_main.cpp)
 target_link_libraries(yolomaster_score PRIVATE yolomaster_core)
+if(USE_CUDA_PREPROC)
+  add_executable(preproc_parity tests/preproc_parity.cpp)
+  target_link_libraries(preproc_parity PRIVATE yolomaster_core)
+endif()
 add_executable(yolomaster_edge src/main.cpp)
 target_link_libraries(yolomaster_edge PRIVATE yolomaster_core)
 

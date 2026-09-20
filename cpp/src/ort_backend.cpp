@@ -1,4 +1,8 @@
 #include "ort_backend.hpp"
+#ifdef HAVE_CUDA_PREPROC
+#include "cuda_preproc.hpp"
+#include <cuda_runtime_api.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -73,6 +77,7 @@ OrtBackend::OrtBackend(const std::string& model_path, const OrtOptions& opt)
       // dialed back to WARNING through RunOptions (see forward_raw), so the steady state is quiet.
       env_(ORT_LOGGING_LEVEL_INFO, opt.log_tag.c_str(), &OrtBackend::log_sink, this),
       mem_(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU)) {
+    want_gpu_preproc_ = opt.gpu_preproc;
     std::lock_guard<std::mutex> init_lock(g_init_mu);
     {
         std::lock_guard<std::mutex> lk(g_capture_mu);
@@ -93,6 +98,9 @@ OrtBackend::OrtBackend(const std::string& model_path, const OrtOptions& opt)
 }
 
 OrtBackend::~OrtBackend() {
+#ifdef HAVE_CUDA_PREPROC
+    teardown_gpu_io();
+#endif
     std::lock_guard<std::mutex> lk(g_capture_mu);
     if (g_capturing == this) g_capturing = nullptr;
 }
@@ -266,6 +274,16 @@ void OrtBackend::build_session(const std::string& model_path, const OrtOptions& 
         try {                                    // graceful fallback if CUDA EP can't load
             OrtCUDAProviderOptions cuda{};
             cuda.device_id = 0;
+#ifdef HAVE_CUDA_PREPROC
+            if (want_gpu_preproc_) {             // EP work ordered after our preprocessing kernel
+                cudaStream_t st = nullptr;
+                if (cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) == cudaSuccess) {
+                    cuda_stream_ = st;
+                    cuda.has_user_compute_stream = 1;
+                    cuda.user_compute_stream = st;
+                }
+            }
+#endif
             opts_.AppendExecutionProvider_CUDA(cuda);
             active_ep = "ort-CUDA";
         } catch (const std::exception& e) {
@@ -325,6 +343,9 @@ void OrtBackend::build_session(const std::string& model_path, const OrtOptions& 
     }
 
     read_model_info();
+#ifdef HAVE_CUDA_PREPROC
+    if (active_ep == "ort-CUDA" && want_gpu_preproc_) setup_gpu_io();
+#endif
 
     // ---- name the result honestly: what runs where, not what was asked for ----
     const std::string prec = quant_.empty() ? std::string("fp32") : quant_;
@@ -400,10 +421,74 @@ void OrtBackend::read_model_info() {
     }
 }
 
+// One decoded output, host-resident whatever path produced it.
+struct OrtOut { std::vector<int64_t> shape; ONNXTensorElementDataType type; const float* f32 = nullptr; const Ort::Float16_t* f16 = nullptr; };
+
 void OrtBackend::forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode) {
+    LetterboxInfo lb;
+    std::vector<OrtOut> outs_h;
+    std::vector<Ort::Value> outs;
+    Ort::RunOptions ro;
+    ro.SetRunLogSeverityLevel(ORT_LOGGING_LEVEL_WARNING);   // the session is at INFO for init; runs stay quiet
+#ifdef HAVE_CUDA_PREPROC
+    if (gpu_io_) {
+        // ---- GPU preprocess + device-bound I/O: pre_ms = host staging + raw H2D + kernel, infer_ms = Run + D2H ----
+        auto t0 = clk::now();
+        cudaStream_t st = static_cast<cudaStream_t>(cuda_stream_);
+        int ow = 0, oh = 0;
+        letterbox_params(bgr.cols, bgr.rows, cfg.imgsz, cfg.stretch, lb, ow, oh);
+        const size_t raw_bytes = static_cast<size_t>(bgr.step) * bgr.rows;
+        if (raw_bytes > raw_cap_) {
+            if (h_raw_) cudaFreeHost(h_raw_);
+            if (d_raw_) cudaFree(d_raw_);
+            const size_t cap = std::max(raw_bytes, raw_cap_ * 3 / 2);
+            if (cudaHostAlloc(reinterpret_cast<void**>(&h_raw_), cap, cudaHostAllocDefault) != cudaSuccess ||
+                cudaMalloc(reinterpret_cast<void**>(&d_raw_), cap) != cudaSuccess)
+                throw std::runtime_error("CUDA: raw frame buffer allocation failed");
+            raw_cap_ = cap;
+        }
+        if (bgr.isContinuous()) std::memcpy(h_raw_, bgr.data, raw_bytes);
+        else for (int y = 0; y < bgr.rows; ++y) std::memcpy(h_raw_ + static_cast<size_t>(y) * bgr.step, bgr.ptr(y), bgr.step);
+        auto* pp = static_cast<cuda::PreprocParams*>(h_params_);
+        pp->src_w = bgr.cols; pp->src_h = bgr.rows; pp->src_stride = static_cast<int>(bgr.step); pp->imgsz = cfg.imgsz;
+        pp->fx = static_cast<float>(bgr.cols) / ow; pp->fy = static_cast<float>(bgr.rows) / oh;
+        pp->pad_x = lb.pad_x; pp->pad_y = lb.pad_y; pp->out_w = ow; pp->out_h = oh;
+        cudaMemcpyAsync(d_raw_, h_raw_, raw_bytes, cudaMemcpyHostToDevice, st);
+        cudaMemcpyAsync(d_params_, h_params_, sizeof(cuda::PreprocParams), cudaMemcpyHostToDevice, st);
+        if (in_fp16_) cuda::preprocess_nchw_cuda_fp16(d_raw_, static_cast<const cuda::PreprocParams*>(d_params_), d_in_, cfg.imgsz, st);
+        else cuda::preprocess_nchw_cuda(d_raw_, static_cast<const cuda::PreprocParams*>(d_params_), static_cast<float*>(d_in_), cfg.imgsz, st);
+        cudaEventRecord(static_cast<cudaEvent_t>(ev1_), st);
+        // ---- inference on the same stream, outputs stay on the device until the D2H below ----
+        session_->Run(ro, *binding_);
+        outs = binding_->GetOutputValues();
+        outs_h.resize(outs.size());
+        out_host_.resize(outs.size()); out_host16_.resize(outs.size());
+        for (size_t i = 0; i < outs.size(); ++i) {
+            auto info = outs[i].GetTensorTypeAndShapeInfo();
+            outs_h[i].shape = info.GetShape(); outs_h[i].type = info.GetElementType();
+            size_t count = 1; for (auto d : outs_h[i].shape) count *= static_cast<size_t>(std::max<int64_t>(d, 0));
+            if (outs_h[i].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+                out_host_[i].resize(count);
+                cudaMemcpyAsync(out_host_[i].data(), outs[i].GetTensorData<float>(), count * sizeof(float), cudaMemcpyDeviceToHost, st);
+                outs_h[i].f32 = out_host_[i].data();
+            } else if (outs_h[i].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
+                out_host16_[i].resize(count);
+                cudaMemcpyAsync(out_host16_[i].data(), outs[i].GetTensorData<Ort::Float16_t>(), count * sizeof(Ort::Float16_t), cudaMemcpyDeviceToHost, st);
+                outs_h[i].f16 = out_host16_[i].data();
+            }
+        }
+        cudaEventRecord(static_cast<cudaEvent_t>(ev2_), st);
+        cudaStreamSynchronize(st);
+        float ms12 = 0.f;
+        cudaEventElapsedTime(&ms12, static_cast<cudaEvent_t>(ev1_), static_cast<cudaEvent_t>(ev2_));
+        const double host_ms = ms_since(t0);
+        infer_ms = ms12;
+        pre_ms = std::max(0.0, host_ms - ms12);
+    } else
+#endif
+    {
     // ---- preprocess: letterbox -> NCHW float RGB /255 (the ncnn path's from_pixels + normalize) ----
     auto t0 = clk::now();
-    LetterboxInfo lb;
     blob_.resize(static_cast<size_t>(3) * cfg.imgsz * cfg.imgsz);
     preprocess_nchw(bgr, cfg.imgsz, cfg.stretch, blob_.data(), lb);
     std::array<int64_t, 4> in_shape{1, 3, cfg.imgsz, cfg.imgsz};
@@ -421,10 +506,16 @@ void OrtBackend::forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode)
 
     // ---- inference ----
     auto t1 = clk::now();
-    Ort::RunOptions ro;
-    ro.SetRunLogSeverityLevel(ORT_LOGGING_LEVEL_WARNING);   // the session is at INFO for init; runs stay quiet
-    auto outs = session_->Run(ro, in_names_.data(), &in_tensor, 1, out_names_.data(), out_names_.size());
+    outs = session_->Run(ro, in_names_.data(), &in_tensor, 1, out_names_.data(), out_names_.size());
     infer_ms = ms_since(t1);
+    outs_h.resize(outs.size());
+    for (size_t i = 0; i < outs.size(); ++i) {
+        auto info = outs[i].GetTensorTypeAndShapeInfo();
+        outs_h[i].shape = info.GetShape(); outs_h[i].type = info.GetElementType();
+        if (outs_h[i].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) outs_h[i].f32 = outs[i].GetTensorData<float>();
+        else if (outs_h[i].type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) outs_h[i].f16 = outs[i].GetTensorData<Ort::Float16_t>();
+    }
+    }
 
     // Every path below (re)fills the cached raw state; a bench-only forward leaves it empty so
     // stale candidates can never be mistaken for this frame's.
@@ -436,28 +527,26 @@ void OrtBackend::forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode)
     // ---- postprocess: detection is the rank-3 output [1,feat,anchors]; proto (seg) is rank-4 ----
     auto t2 = clk::now();
     int det_i = -1, proto_i = -1;
-    for (size_t i = 0; i < outs.size(); ++i) {
-        const size_t r = outs[i].GetTensorTypeAndShapeInfo().GetShape().size();
+    for (size_t i = 0; i < outs_h.size(); ++i) {
+        const size_t r = outs_h[i].shape.size();
         if (r == 4) proto_i = static_cast<int>(i);
         else if (r == 3) det_i = static_cast<int>(i);
     }
     if (det_i < 0) throw std::runtime_error("ONNX model has no rank-3 detection output");
     // fp16 outputs (fp16-I/O exports) are widened once; fp32 outputs are read in place.
-    auto as_float = [this](Ort::Value& v, size_t count) -> const float* {
-        const ONNXTensorElementDataType t = v.GetTensorTypeAndShapeInfo().GetElementType();
-        if (t == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) return v.GetTensorData<float>();
-        if (t == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
-            const Ort::Float16_t* h = v.GetTensorData<Ort::Float16_t>();
+    auto as_float = [this](const OrtOut& v, size_t count) -> const float* {
+        if (v.type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) return v.f32;
+        if (v.type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
             out_f32_.resize(count);
-            for (size_t i = 0; i < count; ++i) out_f32_[i] = h[i].ToFloat();
+            for (size_t i = 0; i < count; ++i) out_f32_[i] = v.f16[i].ToFloat();
             return out_f32_.data();
         }
-        throw std::runtime_error("ONNX output dtype " + std::to_string(static_cast<int>(t)) + " is not float/float16");
+        throw std::runtime_error("ONNX output dtype " + std::to_string(static_cast<int>(v.type)) + " is not float/float16");
     };
-    auto shape = outs[det_i].GetTensorTypeAndShapeInfo().GetShape();   // {1, d1, d2}
+    const auto& shape = outs_h[det_i].shape;   // {1, d1, d2}
     const int d1 = static_cast<int>(shape[1]);
     const int d2 = static_cast<int>(shape[2]);
-    const float* out = as_float(outs[det_i], static_cast<size_t>(d1) * d2);
+    const float* out = as_float(outs_h[det_i], static_cast<size_t>(d1) * d2);
     if (end2end_ || looks_end2end(d1, d2)) {                              // [1, num_det, 6] NMS-free
         candidates = decode_end2end(out, d1, cfg, lb);
     } else {
@@ -478,13 +567,69 @@ void OrtBackend::forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode)
         candidates = decode_candidates(cm, feat_dim, num_anchors, cfg, lb);
     }
     if (proto_i >= 0) {                                                // segmentation model
-        auto ps = outs[proto_i].GetTensorTypeAndShapeInfo().GetShape();  // {1, nm, mh, mw}
+        const auto& ps = outs_h[proto_i].shape;                          // {1, nm, mh, mw}
         proto_c = (int)ps[1]; proto_h = (int)ps[2]; proto_w = (int)ps[3];
         const size_t n = (size_t)proto_c * proto_h * proto_w;
-        const float* pd = as_float(outs[proto_i], n);
+        const float* pd = as_float(outs_h[proto_i], n);
         proto.assign(pd, pd + n);
     }
     post_ms = ms_since(t2);
 }
+
+std::string OrtBackend::device_name() const {
+#ifdef HAVE_CUDA_PREPROC
+    if (active_ep.find("CUDA") != std::string::npos || active_ep.find("TensorRT") != std::string::npos) {
+        int dev = 0; cudaDeviceProp prop{};
+        if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&prop, dev) == cudaSuccess) return prop.name;
+    }
+#endif
+    return "";
+}
+
+#ifdef HAVE_CUDA_PREPROC
+// Bind the input tensor (device, filled by the preprocessing kernel) and every output (device,
+// allocated by ORT) once; Run(binding) then moves nothing across the bus until our own D2H.
+void OrtBackend::setup_gpu_io() {
+    try {
+        cuda_mem_ = std::make_unique<Ort::MemoryInfo>("Cuda", OrtDeviceAllocator, 0, OrtMemTypeDefault);
+        const int sz = fixed_imgsz > 0 ? fixed_imgsz : (meta_imgsz > 0 ? meta_imgsz : 640);
+        const size_t count = static_cast<size_t>(3) * sz * sz;
+        d_in_bytes_ = count * (in_fp16_ ? 2 : 4);
+        if (cudaMalloc(&d_in_, d_in_bytes_) != cudaSuccess) throw std::runtime_error("cudaMalloc input");
+        if (cudaMalloc(&d_params_, sizeof(cuda::PreprocParams)) != cudaSuccess) throw std::runtime_error("cudaMalloc params");
+        if (cudaHostAlloc(&h_params_, sizeof(cuda::PreprocParams), cudaHostAllocDefault) != cudaSuccess) throw std::runtime_error("cudaHostAlloc params");
+        cudaEvent_t e1 = nullptr, e2 = nullptr;
+        cudaEventCreateWithFlags(&e1, cudaEventDefault); cudaEventCreateWithFlags(&e2, cudaEventDefault);
+        ev1_ = e1; ev2_ = e2;
+        binding_ = std::make_unique<Ort::IoBinding>(*session_);
+        std::array<int64_t, 4> in_shape{1, 3, sz, sz};
+        Ort::Value in = in_fp16_
+            ? Ort::Value::CreateTensor(*cuda_mem_, d_in_, d_in_bytes_, in_shape.data(), in_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16)
+            : Ort::Value::CreateTensor(*cuda_mem_, d_in_, d_in_bytes_, in_shape.data(), in_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+        binding_->BindInput(in_names_[0], in);
+        for (const char* n : out_names_) binding_->BindOutput(n, *cuda_mem_);
+        gpu_io_ = true;
+        if (fixed_imgsz == 0) fixed_imgsz = sz;   // the bound input has a fixed size now
+        active_ep += "+gpupre";
+    } catch (const std::exception& e) {
+        note(std::string("gpu preprocess disabled: ") + e.what());
+        teardown_gpu_io();
+    }
+}
+
+void OrtBackend::teardown_gpu_io() {
+    gpu_io_ = false;
+    binding_.reset(); cuda_mem_.reset();
+    if (d_in_) { cudaFree(d_in_); d_in_ = nullptr; }
+    if (d_raw_) { cudaFree(d_raw_); d_raw_ = nullptr; }
+    if (h_raw_) { cudaFreeHost(h_raw_); h_raw_ = nullptr; }
+    if (d_params_) { cudaFree(d_params_); d_params_ = nullptr; }
+    if (h_params_) { cudaFreeHost(h_params_); h_params_ = nullptr; }
+    if (ev1_) { cudaEventDestroy(static_cast<cudaEvent_t>(ev1_)); ev1_ = nullptr; }
+    if (ev2_) { cudaEventDestroy(static_cast<cudaEvent_t>(ev2_)); ev2_ = nullptr; }
+    raw_cap_ = 0;
+    if (cuda_stream_) { cudaStreamDestroy(static_cast<cudaStream_t>(cuda_stream_)); cuda_stream_ = nullptr; }
+}
+#endif
 
 } // namespace yolomaster

@@ -25,7 +25,7 @@ target_compile_definitions(yolomaster_server PRIVATE UWS_NO_ZLIB UWS_HTTPRESPONS
                            "YM_SERVER_VERSION=\"${YM_SERVER_VERSION}\"")
 target_link_libraries(yolomaster_server PRIVATE yolomaster_core usockets pthread)
 # CUDA runtime for /metrics GPU memory when the TRT backend is in (CUDART_LIB is set by the parent)
-if(USE_TRT AND CUDART_LIB)
+if((USE_TRT OR USE_CUDA_PREPROC) AND CUDART_LIB)
   target_compile_definitions(yolomaster_server PRIVATE HAVE_CUDART)
 endif()
 install(TARGETS yolomaster_server RUNTIME DESTINATION bin)

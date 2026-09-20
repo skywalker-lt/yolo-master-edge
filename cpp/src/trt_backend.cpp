@@ -1,4 +1,7 @@
 #include "trt_backend.hpp"
+#ifdef HAVE_CUDA_PREPROC
+#include "cuda_preproc.hpp"
+#endif
 #ifdef USE_TRT_ONNXPARSER
 #include <NvOnnxParser.h>
 #endif
@@ -136,6 +139,7 @@ std::string TrtBackend::build_engine(const std::string& onnx_path, const std::st
 }
 
 TrtBackend::TrtBackend(const std::string& model_path, const TrtOptions& opt) {
+    want_gpu_preproc_ = opt.gpu_preproc; want_graph_ = opt.cuda_graph;
     namespace fs = std::filesystem;
     if (ends_with(model_path, ".onnx")) {
         const std::string ep = cached_engine_path(model_path, opt);
@@ -225,64 +229,163 @@ void TrtBackend::load_engine(const std::string& engine_path_) {
     if (end2end_ || looks_end2end(feat_dim_, num_anchors_))
         std::cerr << "[trt] end2end model: NMS-free [num_det,6] output\n";
 
-    CUDA_CHECK(cudaMalloc(&d_in_,  size_t(3) * in_sz_ * in_sz_ * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_out_, size_t(feat_dim_) * num_anchors_ * sizeof(float)));
-    h_out_.resize(size_t(feat_dim_) * num_anchors_);
+    in_count_ = size_t(3) * in_sz_ * in_sz_;
+    out_count_ = size_t(feat_dim_) * num_anchors_;
+    CUDA_CHECK(cudaMalloc(&d_in_,  in_count_ * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_out_, out_count_ * sizeof(float)));
+    // pinned host staging: async copies that a CUDA graph can capture, no per-frame allocation
+    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&h_in_), in_count_ * sizeof(float), cudaHostAllocDefault));
+    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&h_out_), out_count_ * sizeof(float), cudaHostAllocDefault));
     ctx_->setTensorAddress(in_name_.c_str(),  d_in_);
     ctx_->setTensorAddress(out_name_.c_str(), d_out_);
     if (pc_ > 0) {
-        CUDA_CHECK(cudaMalloc(&d_proto_, size_t(pc_) * ph_ * pw_ * sizeof(float)));
-        h_proto_.resize(size_t(pc_) * ph_ * pw_);
+        proto_count_ = size_t(pc_) * ph_ * pw_;
+        CUDA_CHECK(cudaMalloc(&d_proto_, proto_count_ * sizeof(float)));
+        CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&h_proto_), proto_count_ * sizeof(float), cudaHostAllocDefault));
         ctx_->setTensorAddress(proto_name_.c_str(), d_proto_);
     }
+    CUDA_CHECK(cudaEventCreateWithFlags(&ev1_, cudaEventDefault));
+    CUDA_CHECK(cudaEventCreateWithFlags(&ev2_, cudaEventDefault));
+#ifdef HAVE_CUDA_PREPROC
+    if (want_gpu_preproc_) {
+        CUDA_CHECK(cudaMalloc(&d_params_, sizeof(cuda::PreprocParams)));
+        CUDA_CHECK(cudaHostAlloc(&h_params_, sizeof(cuda::PreprocParams), cudaHostAllocDefault));
+        gpu_preproc_ = true;
+        active_ep += "+gpupre";
+    }
+#endif
+}
+
+std::string TrtBackend::device_name() const {
+    int dev = 0; cudaDeviceProp prop{};
+    if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&prop, dev) != cudaSuccess) return "";
+    return prop.name;
+}
+
+void TrtBackend::ensure_raw_capacity(size_t bytes) {
+    if (bytes <= raw_cap_) return;
+    size_t cap = std::max<size_t>(bytes, raw_cap_ ? raw_cap_ * 3 / 2 : bytes);
+    if (h_raw_) cudaFreeHost(h_raw_);
+    if (d_raw_) cudaFree(d_raw_);
+    h_raw_ = nullptr; d_raw_ = nullptr; raw_cap_ = 0;
+    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&h_raw_), cap, cudaHostAllocDefault));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_raw_), cap));
+    raw_cap_ = cap;
+    if (graph_ok_) {   // the captured kernel reads the old buffer: recapture on the next frame
+        cudaGraphExecDestroy(graph_exec_); cudaGraphDestroy(graph_);
+        graph_exec_ = nullptr; graph_ = nullptr; graph_ok_ = false;
+    }
+}
+
+// Everything that runs on stream_ after the raw frame (GPU preprocess) or the float tensor (CPU
+// preprocess) has been staged: this is the sequence a CUDA graph captures.
+void TrtBackend::enqueue_frame() {
+#ifdef HAVE_CUDA_PREPROC
+    if (gpu_preproc_) {
+        CUDA_CHECK(cudaMemcpyAsync(d_params_, h_params_, sizeof(cuda::PreprocParams), cudaMemcpyHostToDevice, stream_));
+        cuda::preprocess_nchw_cuda(d_raw_, static_cast<const cuda::PreprocParams*>(d_params_),
+                                   static_cast<float*>(d_in_), in_sz_, stream_);
+    } else
+#endif
+    {
+        CUDA_CHECK(cudaMemcpyAsync(d_in_, h_in_, in_count_ * sizeof(float), cudaMemcpyHostToDevice, stream_));
+    }
+    CUDA_CHECK(cudaEventRecord(ev1_, stream_));
+    if (!ctx_->enqueueV3(stream_)) throw std::runtime_error("TRT enqueueV3 failed");
+    CUDA_CHECK(cudaMemcpyAsync(h_out_, d_out_, out_count_ * sizeof(float), cudaMemcpyDeviceToHost, stream_));
+    if (pc_ > 0)
+        CUDA_CHECK(cudaMemcpyAsync(h_proto_, d_proto_, proto_count_ * sizeof(float), cudaMemcpyDeviceToHost, stream_));
+    CUDA_CHECK(cudaEventRecord(ev2_, stream_));
+}
+
+bool TrtBackend::try_capture_graph() {
+    cudaGraph_t g = nullptr; cudaGraphExec_t ge = nullptr;
+    if (cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { cudaGetLastError(); return false; }
+    bool ok = true;
+    try { enqueue_frame(); } catch (const std::exception&) { ok = false; }
+    if (cudaStreamEndCapture(stream_, &g) != cudaSuccess) { cudaGetLastError(); ok = false; }
+    if (ok && cudaGraphInstantiate(&ge, g, 0) != cudaSuccess) { cudaGetLastError(); ok = false; }
+    if (!ok) { if (g) cudaGraphDestroy(g); cudaGetLastError(); return false; }
+    graph_ = g; graph_exec_ = ge; graph_ok_ = true;
+    return true;
 }
 
 TrtBackend::~TrtBackend() {
+    if (graph_exec_) cudaGraphExecDestroy(graph_exec_);
+    if (graph_)      cudaGraphDestroy(graph_);
     if (d_in_)    cudaFree(d_in_);
     if (d_out_)   cudaFree(d_out_);
     if (d_proto_) cudaFree(d_proto_);
+    if (d_raw_)   cudaFree(d_raw_);
+    if (d_params_) cudaFree(d_params_);
+    if (h_in_)    cudaFreeHost(h_in_);
+    if (h_out_)   cudaFreeHost(h_out_);
+    if (h_proto_) cudaFreeHost(h_proto_);
+    if (h_raw_)   cudaFreeHost(h_raw_);
+    if (h_params_) cudaFreeHost(h_params_);
+    if (ev1_) cudaEventDestroy(ev1_);
+    if (ev2_) cudaEventDestroy(ev2_);
     if (stream_)  cudaStreamDestroy(stream_);
 }
 
-std::vector<Detection> TrtBackend::infer(const cv::Mat& bgr, const Config& cfg) {
+void TrtBackend::forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode) {
+    // ---- preprocess ----
+    // pre_ms: host-side letterbox geometry + staging copy, plus (GPU path) the raw H2D and the kernel
+    // measured with events ev0 -> ev1. infer_ms: ev1 -> ev2 = enqueueV3 + D2H. The old tables had the
+    // float H2D inside infer_ms and the NCHW loop inside pre_ms: rows are labelled preproc=cpu|cuda.
     auto t0 = clk::now();
     LetterboxInfo lb;
-    std::vector<float>& in = h_in_;                    // persistent host staging (no per-frame allocation)
-    in.resize(static_cast<size_t>(3) * in_sz_ * in_sz_);
-    preprocess_nchw(bgr, in_sz_, cfg.stretch, in.data(), lb);
-    pre_ms = ms_since(t0);
-
-    auto t1 = clk::now();
-    CUDA_CHECK(cudaMemcpyAsync(d_in_, in.data(), in.size() * sizeof(float),
-                               cudaMemcpyHostToDevice, stream_));
-    if (!ctx_->enqueueV3(stream_)) throw std::runtime_error("TRT enqueueV3 failed");
-    CUDA_CHECK(cudaMemcpyAsync(h_out_.data(), d_out_, h_out_.size() * sizeof(float),
-                               cudaMemcpyDeviceToHost, stream_));
-    if (pc_ > 0)
-        CUDA_CHECK(cudaMemcpyAsync(h_proto_.data(), d_proto_, h_proto_.size() * sizeof(float),
-                                   cudaMemcpyDeviceToHost, stream_));
-    CUDA_CHECK(cudaStreamSynchronize(stream_));
-    infer_ms = ms_since(t1);
-
-    // "forward once, tune cheap": cache the pre-NMS candidates + letterbox (+ proto for
-    // seg engines) so slicing, cached re-NMS and annotation export work like every other
-    // backend (mirrors ort_backend.cpp).
-    auto t2 = clk::now();
-    if (end2end_ || looks_end2end(feat_dim_, num_anchors_))   // [1, num_det, 6] NMS-free
-        candidates = decode_end2end(h_out_.data(), feat_dim_, cfg, lb);
-    else
-        candidates = decode_candidates(h_out_.data(), feat_dim_, num_anchors_, cfg, lb);
-    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
-    if (pc_ > 0) {
-        proto = h_proto_;
-        proto_c = pc_; proto_h = ph_; proto_w = pw_;
-    } else {
-        proto.clear();
-        proto_c = proto_h = proto_w = 0;
+#ifdef HAVE_CUDA_PREPROC
+    if (gpu_preproc_) {
+        int ow = 0, oh = 0;
+        letterbox_params(bgr.cols, bgr.rows, in_sz_, cfg.stretch, lb, ow, oh);
+        const size_t raw_bytes = static_cast<size_t>(bgr.step) * bgr.rows;
+        ensure_raw_capacity(raw_bytes);
+        if (bgr.isContinuous()) std::memcpy(h_raw_, bgr.data, raw_bytes);
+        else for (int y = 0; y < bgr.rows; ++y) std::memcpy(h_raw_ + static_cast<size_t>(y) * bgr.step, bgr.ptr(y), bgr.step);
+        auto* pp = static_cast<cuda::PreprocParams*>(h_params_);
+        pp->src_w = bgr.cols; pp->src_h = bgr.rows; pp->src_stride = static_cast<int>(bgr.step); pp->imgsz = in_sz_;
+        pp->fx = static_cast<float>(bgr.cols) / ow; pp->fy = static_cast<float>(bgr.rows) / oh;
+        pp->pad_x = lb.pad_x; pp->pad_y = lb.pad_y; pp->out_w = ow; pp->out_h = oh;
+        CUDA_CHECK(cudaMemcpyAsync(d_raw_, h_raw_, raw_bytes, cudaMemcpyHostToDevice, stream_));   // outside the graph (variable size)
+    } else
+#endif
+    {
+        preprocess_nchw(bgr, in_sz_, cfg.stretch, h_in_, lb);
     }
-    auto dets = nms_and_cap(candidates, cfg, lb.orig_w, lb.orig_h);
+    // ---- the fixed per-frame sequence: replayed as a graph once captured ----
+    // capture after the first plain forward (TensorRT wants one enqueueV3 before capture); a raw
+    // buffer regrowth invalidates the graph (ensure_raw_capacity) and the next frame recaptures
+    if (want_graph_ && !graph_ok_ && frames_ >= 1) {
+        if (!try_capture_graph()) {
+            want_graph_ = false;
+            ep_note += (ep_note.empty() ? "" : "; ") + std::string("cuda graph capture failed; plain path");
+        } else if (active_ep.find("+graph") == std::string::npos) active_ep += "+graph";
+    }
+    if (graph_ok_) CUDA_CHECK(cudaGraphLaunch(graph_exec_, stream_));
+    else enqueue_frame();
+    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    ++frames_;
+    float ms12 = 0.f;
+    cudaEventElapsedTime(&ms12, ev1_, ev2_);
+    const double host_ms = ms_since(t0);
+    infer_ms = ms12;                          // enqueueV3 + D2H
+    pre_ms = std::max(0.0, host_ms - ms12);   // host staging + (raw H2D + kernel | CPU preprocess + float H2D)
+    // "forward once, tune cheap": cache the pre-NMS candidates + letterbox (+ proto for seg engines)
+    auto t2 = clk::now();
+    candidates.clear();
+    cand_orig_w = lb.orig_w; cand_orig_h = lb.orig_h; cand_lb = lb;
+    proto.clear(); proto_c = proto_h = proto_w = 0;
+    if (!decode) { post_ms = 0; return; }
+    if (end2end_ || looks_end2end(feat_dim_, num_anchors_))   // [1, num_det, 6] NMS-free
+        candidates = decode_end2end(h_out_, feat_dim_, cfg, lb);
+    else
+        candidates = decode_candidates(h_out_, feat_dim_, num_anchors_, cfg, lb);
+    if (pc_ > 0) {
+        proto.assign(h_proto_, h_proto_ + proto_count_);
+        proto_c = pc_; proto_h = ph_; proto_w = pw_;
+    }
     post_ms = ms_since(t2);
-    return dets;
 }
 
 } // namespace yolomaster

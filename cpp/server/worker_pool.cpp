@@ -60,7 +60,7 @@ std::unique_ptr<Backend> WorkerPool::make(std::string& err) const {
     Precision prec = Precision::Auto;
     if (!parse_precision(spec_.precision, prec)) { err = "bad precision: " + spec_.precision; return nullptr; }
     auto be = make_backend(spec_.path, spec_.backend, spec_.threads, spec_.device, resolved, err,
-                           prec, cfg_.engine_cache_dir);
+                           prec, cfg_.engine_cache_dir, spec_.preproc != "cpu", spec_.cuda_graph);
     if (be) const_cast<WorkerPool*>(this)->resolved_backend_ = resolved;
     return be;
 }
