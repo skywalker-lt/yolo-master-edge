@@ -30,6 +30,8 @@ Model spec keys (CLI `-m id=path,key=value,...` or the `models[]` entries of the
 | `classes` | `auto`, `visdrone`, `sku` | `auto` | class names, else from model metadata |
 | `preload` | bool | true | `false` = load on first request; `/readyz` only waits for preloaded models |
 | `slicing`, `tile_size` | `off`/`dense`/`sparse`, int | `off`, 0 | Sparse SAHI tiled inference |
+| `preproc` | `gpu`, `cpu` | `gpu` | TensorRT / ORT-CUDA: letterbox + normalize on the GPU (builds with `USE_CUDA_PREPROC`; `cpu` = the reference path) |
+| `cuda_graph` | bool | false | TensorRT: capture the per-frame stream work into a CUDA graph and replay it |
 
 Server options (JSON keys and CLI flags): `port`, `host`, `loop_threads` (event-loop threads,
 default 2), `max_body_mb` (32), `max_pixels` (50 M), `max_queue` (64 pending jobs per model, then

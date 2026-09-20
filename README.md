@@ -407,6 +407,33 @@ The backend is inferred from the model (`.onnx` → ONNX Runtime, an NCNN direct
 
 See `tests/run_tests.sh` for the 16-test robustness battery.
 
+### Benchmark mode, on-device accuracy and tracking (v1.2.0)
+
+```bash
+# cold probe sweep (10 warm-up + 50 timed forwards on a gray 640 probe) plus per-stage stats of the
+# dataset pass, written as one yolomaster-bench/v1 JSON (the schema the Android / iOS Bench tabs will share)
+yolomaster_edge -m model.onnx -s images/ --bench cold --bench-json bench.json --no-save --quiet
+# sustained: a 2-minute loop, cold vs slowest-quarter median, throttle percentage, one-second sparkline
+yolomaster_edge -m model.onnx -s images/ --bench sustained --bench-minutes 2 --bench-json sustained.json
+# accuracy: a second pass at the val protocol (conf 0.001, iou 0.7, multi-label, max_det 300) scored
+# in-process; equals scripts/eval_map.py on the txt dump to four decimals. Labels dir or 'auto'
+# (.../images/... -> .../labels/...) for dataset.yaml sources such as datasets/coco500/coco500.yaml
+yolomaster_edge -m model.onnx -s datasets/coco500/coco500.yaml --accuracy auto --bench-json acc.json
+# score an existing txt dump the same way
+yolomaster_score preds_dir images_dir labels_dir [--per-class]
+# multi-object tracking on video: ids on the annotated mp4, --save-txt gains a 7th column
+yolomaster_edge -m model.onnx -s clip.mp4 --track botsort --save-txt tracks/
+# TensorRT / ORT-CUDA builds: --cpu-preproc (reference path), --cuda-graph (TensorRT graph replay)
+```
+
+`scripts/make_coco_subset.py` builds the 500-image COCO val subset and `scripts/package_eval_sets.sh`
+packages it with `visdrone50/` as release assets. Percentiles are floor rank
+(`sorted[min(int(q * n), n - 1)]`), the convention of the phone Bench tabs; `sustained` is the
+median of the slowest quarter. `botsort` adds sparse-optical-flow camera motion compensation
+(needs OpenCV `video` + `calib3d`, `-DUSE_GMC=ON`, the default); `bytetrack` is the same
+association without it. The same tracker runs in the API server (`track=` on `/v1/video` and
+`/v1/stream`), and `POST /v1/bench` returns the same JSON from a server worker.
+
 ## 🤖 Jetson Orin (Native TensorRT)
 
 A prebuilt aarch64 runner for **Jetson Orin** (Nano / NX / AGX) on **JetPack 7** is attached to the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases) page. It bundles OpenCV and uses JetPack's TensorRT + CUDA; the per-device FP16 engine is built once with the included script.

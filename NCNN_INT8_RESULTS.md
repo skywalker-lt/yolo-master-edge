@@ -399,3 +399,14 @@ A8W8 (MinMax) is dead on all three (0 dets); parked as `model-a8w8.rejected.onnx
 MB. Device certification: `OrtDumpTest` writes `class conf x1 y1 x2 y2` dumps per (runtime, unit,
 precision) row for the 200-image smoke sets; `scripts/score_device_dumps.sh` scores them with
 `eval_map.py`; gate = every NPU row within 1.0 pt of the CPU rows. Pending the phone run.
+
+## 6. v1.2.0: the pruned v0.1-N ships as the dense export (2026-09-20)
+
+`models/p03_v01n_ncnn` is now the `scripts/export_ncnn_dense.py` graph of the pruned checkpoint
+(522 layers, 8 fused SDPA, no MatMul / Tile glue; x86 parity with the ONNX path 261 / 261
+detections, max box delta 0.01 px, where the stock pnnx export differed on 7 of 20 images) and
+`models/p03_v01n-int8_ncnn` its ACIQ mixed-INT8 sibling (139 / 145 layers, 2048 COCO train2017
+calibration images, bin 3.5 MB = 0.26x). Scored in-process on the 500-image COCO subset
+(`--accuracy auto`, x86 ncnn): fp32 mAP50-95 0.4309, INT8 0.4205 (-1.04 AP). The stock graph and
+its sibling are kept as `p03_v01n-stock_ncnn` / `p03_v01n-stock-int8_ncnn`. The Galaxy S26
+re-timing of the dense graph is the Android phase of v1.2.0.

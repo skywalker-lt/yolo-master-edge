@@ -24,6 +24,10 @@ Runtime and CLI
 - `scripts/make_coco_subset.py` (coco500) and `scripts/package_eval_sets.sh` for the labelled
   eval sets (release assets).
 - `--version` on both binaries; bench JSON carries version, commit and build flags.
+- Phone graph: the pruned v0.1-N ships as the dense ncnn export (fused SDPA, native gate
+  broadcast; x86 parity with the ONNX path 261/261 detections, the stock export was not) with a
+  re-quantized ACIQ INT8 sibling (139/145 layers, 2048 COCO train images): coco500 in-process
+  mAP50-95 fp32 0.4309, INT8 0.4205 (-1.04 AP, x86 ncnn); the S26 re-timing is the Android phase.
 
 API server 1.2.1
 - `track=` on `/v1/video` and `/v1/stream` (`track_id` per detection), `POST /v1/bench`,
