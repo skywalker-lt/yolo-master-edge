@@ -34,6 +34,8 @@ ModelSpec parse_model_arg(const std::string& arg) {
             else if (k == "iou") m.iou = std::stof(v); else if (k == "max_det") m.max_det = std::stoi(v);
             else if (k == "classes") m.classes = v; else if (k == "preload") m.preload = (v == "1" || v == "true");
             else if (k == "slicing") m.slicing = v; else if (k == "tile_size") m.tile_size = std::stoi(v);
+        else if (k == "preproc") m.preproc = v;
+        else if (k == "cuda_graph") m.cuda_graph = (v == "1" || v == "true");
             else if (k == "multi_label") m.multi_label = (v == "1" || v == "true"); else if (k == "stretch") m.stretch = (v == "1" || v == "true");
             else throw std::invalid_argument("unknown model spec key: " + k);
         }

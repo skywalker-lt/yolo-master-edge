@@ -22,6 +22,8 @@ struct ModelSpec {
     bool preload = true;            // load at startup (readyz waits for it)
     std::string slicing = "off";    // off|dense|sparse (per-request override allowed)
     int tile_size = 0;
+    std::string preproc = "gpu";    // gpu|cpu: TensorRT / ORT-CUDA preprocessing (gpu needs USE_CUDA_PREPROC)
+    bool cuda_graph = false;        // TensorRT: CUDA graph replay
 };
 
 struct ServerConfig {
@@ -53,13 +55,14 @@ inline void from_json(const nlohmann::json& j, ModelSpec& m) {
     m.classes = j.value("classes", m.classes); m.multi_label = j.value("multi_label", m.multi_label);
     m.stretch = j.value("stretch", m.stretch); m.preload = j.value("preload", m.preload);
     m.slicing = j.value("slicing", m.slicing); m.tile_size = j.value("tile_size", m.tile_size);
+    m.preproc = j.value("preproc", m.preproc); m.cuda_graph = j.value("cuda_graph", m.cuda_graph);
 }
 inline void to_json(nlohmann::json& j, const ModelSpec& m) {
     j = {{"id", m.id}, {"path", m.path}, {"backend", m.backend}, {"device", m.device},
          {"precision", m.precision}, {"threads", m.threads}, {"workers", m.workers}, {"imgsz", m.imgsz},
          {"conf", m.conf}, {"iou", m.iou}, {"max_det", m.max_det}, {"classes", m.classes},
          {"multi_label", m.multi_label}, {"stretch", m.stretch}, {"preload", m.preload},
-         {"slicing", m.slicing}, {"tile_size", m.tile_size}};
+         {"slicing", m.slicing}, {"tile_size", m.tile_size}, {"preproc", m.preproc}, {"cuda_graph", m.cuda_graph}};
 }
 inline void from_json(const nlohmann::json& j, ServerConfig& c) {
     c.host = j.value("host", c.host); c.port = j.value("port", c.port);

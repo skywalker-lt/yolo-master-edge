@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 namespace yolomaster {
 
@@ -34,6 +35,9 @@ struct OrtOptions {
     bool strict_htp = false;
     // logcat tag for the forwarded ORT diagnostics (stderr on desktop).
     std::string log_tag = "YMOrt";
+    // CUDA EP only (desktop, built with USE_CUDA_PREPROC): preprocess on the GPU and bind the input
+    // and every output to device memory (Ort::IoBinding) on the backend's own stream.
+    bool gpu_preproc = true;
 };
 
 class OrtBackend : public Backend {
@@ -87,6 +91,22 @@ private:
     std::vector<float> blob_;               // reused NCHW RGB/255 input
     std::vector<Ort::Float16_t> blob16_;    // fp16 twin, only for fp16-I/O graphs
     std::vector<float> out_f32_;            // fp16 -> fp32 output staging
+    // ---- CUDA IoBinding path (HAVE_CUDA_PREPROC, CUDA EP) ----
+    bool want_gpu_preproc_ = true, gpu_io_ = false;
+    void* cuda_stream_ = nullptr;            // cudaStream_t, owned; passed to the EP as user_compute_stream
+    void* d_in_ = nullptr; size_t d_in_bytes_ = 0;
+    uint8_t* h_raw_ = nullptr; uint8_t* d_raw_ = nullptr; size_t raw_cap_ = 0;
+    void* d_params_ = nullptr; void* h_params_ = nullptr;
+    void* ev1_ = nullptr; void* ev2_ = nullptr;   // cudaEvent_t
+    std::unique_ptr<Ort::IoBinding> binding_;
+    std::unique_ptr<Ort::MemoryInfo> cuda_mem_;
+    std::vector<std::vector<float>> out_host_;         // D2H staging per output (fp32)
+    std::vector<std::vector<Ort::Float16_t>> out_host16_;
+    void setup_gpu_io();
+    void teardown_gpu_io();
+public:
+    std::string device_name() const override;
+    bool gpu_preproc() const { return gpu_io_; }
 };
 
 } // namespace yolomaster

@@ -68,6 +68,7 @@ int main(int argc, char** argv) {
     std::string bench_mode = "off", bench_json, accuracy;
     std::string track_mode = "off";
     int track_buffer = 30;
+    bool cpu_preproc = false, cuda_graph = false;
     int bench_iters = 50, bench_warmup = 10;
     double bench_minutes = 2.0;
 
@@ -114,6 +115,8 @@ int main(int argc, char** argv) {
     app.add_option("--track", track_mode, "off|botsort|bytetrack: multi-object tracking on video sources (ids drawn, "
                    "--save-txt gains a 7th column track_id); botsort adds camera motion compensation")->default_str("off");
     app.add_option("--track-buffer", track_buffer, "frames a lost track is kept before its id retires")->capture_default_str();
+    app.add_flag("--cpu-preproc", cpu_preproc, "TensorRT / ORT-CUDA: preprocess on the CPU instead of the CUDA kernel (parity runs)");
+    app.add_flag("--cuda-graph", cuda_graph, "TensorRT: capture the per-frame stream work into a CUDA graph and replay it");
     CLI11_PARSE(app, argc, argv);
     track::TrackerConfig tcfg;
     const bool track_on = track_mode != "off";
@@ -162,7 +165,8 @@ int main(int argc, char** argv) {
     try {
         if (backend == "onnx") {
 #ifdef USE_ORT
-            be = std::make_unique<OrtBackend>(model, threads, device);
+            OrtOptions oo; oo.device = device; oo.threads = threads; oo.gpu_preproc = !cpu_preproc;
+            be = std::make_unique<OrtBackend>(model, oo);
 #else
             std::cerr << "built without ONNXRuntime backend\n"; return 2;
 #endif
@@ -197,6 +201,7 @@ int main(int argc, char** argv) {
             // .engine loads as-is; .onnx is built (fp32, or fp16 with --precision fp16) and cached
             TrtOptions topt;
             topt.fp16 = (precision == Precision::Fp16);
+            topt.gpu_preproc = !cpu_preproc; topt.cuda_graph = cuda_graph;
             be = std::make_unique<TrtBackend>(model, topt);
 #else
             std::cerr << "built without TensorRT backend (rebuild with -DUSE_TRT=ON)\n"; return 2;
