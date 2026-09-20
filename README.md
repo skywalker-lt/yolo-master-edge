@@ -7,7 +7,7 @@ This project provides a universal inference runtime for [YOLO-Master](https://gi
 <p align="left">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/main/assets/edge_deployment_architecture_dark.png">
-    <img src="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/main/assets/edge_deployment_architecture_light.png" width="900" alt="Edge Deployment Bundle — Architecture">
+    <img src="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/main/assets/edge_deployment_architecture_light.png" width="900" alt="Edge Deployment Bundle, Architecture">
   </picture>
 </p>
 
@@ -192,7 +192,7 @@ Please check our [Release Page](https://github.com/skywalker-lt/yolo-master-edge
 
 **[Download](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-macos/YOLO-Master-CoreML-Runner-1.0.0.zip) and try it now!**
 
-Alongside the Linxu and Windows C++ runtime, we now provide a native, user-friendly macOS runner, **YOLO-Master CoreML Runner** — a [SwiftUI](https://developer.apple.com/xcode/swiftui/) frontend over an Apple [Core ML](https://developer.apple.com/documentation/coreml) backend for on-device [YOLO-Master](https://github.com/Tencent/YOLO-Master) inference, no command line required. It ships with a default `YOLO-Master-v0.1-seg-N` segmentation model, so it runs out of the box. 
+Alongside the Linxu and Windows C++ runtime, we now provide a native, user-friendly macOS runner, **YOLO-Master CoreML Runner**, a [SwiftUI](https://developer.apple.com/xcode/swiftui/) frontend over an Apple [Core ML](https://developer.apple.com/documentation/coreml) backend for on-device [YOLO-Master](https://github.com/Tencent/YOLO-Master) inference, no command line required. It ships with a default `YOLO-Master-v0.1-seg-N` segmentation model, so it runs out of the box. 
 
 <img width="400" alt="Screenshot1" src="https://github.com/user-attachments/assets/d1747b4d-0961-458e-99c5-2a9870b8df96" /> <img width="400" alt="Screenshot2" src="https://github.com/user-attachments/assets/5f71d80a-6238-49bd-a230-95ccd4020d29" /> 
 <img width="400" alt="Screenshot3" src="https://github.com/user-attachments/assets/9cc60636-b795-4326-992c-06239a77db55" /> <img width="400" alt="Screenshot4" src="https://github.com/user-attachments/assets/b5ee48bb-52dc-4ff7-b0bd-f2461b34ad7c" />
@@ -208,15 +208,15 @@ For more details, please check the [Release](https://github.com/skywalker-lt/yol
 
 ## ✨ Benefits
 
-- **Universal CLI Binary for Linux and Windows:** A single executable integrates **ONNX Runtime**, **NCNN** and **MNN** backends; the backend, class names, and input size are auto-detected from the model — no recompilation or any dataset YAML needed at runtime.
+- **Universal CLI Binary for Linux and Windows:** A single executable integrates **ONNX Runtime**, **NCNN** and **MNN** backends; the backend, class names, and input size are auto-detected from the model, no recompilation or any dataset YAML needed at runtime.
 - **Verified Accuracy:** Reproduces the PyTorch original to **< 0.5%** mAP50-95 across ONNX / NCNN / MNN, and **< 1.0%** under INT8 quantization, on 548 VisDrone validation images.
-- **Deployment-Friendly:** Cross-platform [CMake](https://cmake.org/) build producing **self-contained and relocatable bundles** for Linux x86_64 and Windows 10/11 — installable by unzip, no dependencies on the target.
+- **Deployment-Friendly:** Cross-platform [CMake](https://cmake.org/) build producing **self-contained and relocatable bundles** for Linux x86_64 and Windows 10/11, installable by unzip, no dependencies on the target.
 - **GUI:** On Windows 10/11 and MacOS, there are user-friendly GUI runners which integarates all functions of the CLI bundles and supports GPU acceleration.
 - **GPU Acceleration:** Supports FP32 CPU inference & [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) GPU acceleration through the ONNX Runtime CUDA Execution Provider on both Linux and Windows, on Windows via NCNN's [Vulkan](https://vulkan.org) & MNN's [OpenCL](https://opencl.org), on [NVIDIA Jetson](https://developer.nvidia.com/embedded-computing) Orin via a native TensorRT backend (JetPack 7), and accelerated on MacOS via [MPS](https://developer.apple.com/documentation/metalperformanceshaders) beind Core ML.
 
 ## ☕ Note
 
-The exported models embed their class names, input size, and stride as ONNX/NCNN/MNN metadata, so the runtime configures itself from the model file. Post-processing is tuned for the vertical domain — aspect-ratio-preserving letterbox, per-class **multi-label** NMS, and a low default confidence threshold appropriate for VisDrone's small, dense objects.
+The exported models embed their class names, input size, and stride as ONNX/NCNN/MNN metadata, so the runtime configures itself from the model file. Post-processing is tuned for the vertical domain, aspect-ratio-preserving letterbox, per-class **multi-label** NMS, and a low default confidence threshold appropriate for VisDrone's small, dense objects.
 
 ## 📦 Exporting Models
 
@@ -238,10 +238,10 @@ model.export(format="onnx", opset=12, simplify=True, dynamic=False, imgsz=640)
 ### NCNN (via pnnx) and MNN
 
 ```bash
-# NCNN — Ultralytics uses pnnx under the hood
+# NCNN: Ultralytics uses pnnx under the hood
 yolo export model=EsMoE-N_VisDrone.pt format=ncnn imgsz=640
 
-# MNN — convert the exported ONNX with MNN's converter
+# MNN: convert the exported ONNX with MNN's converter
 mnnconvert -f ONNX --modelFile esmoe_n_visdrone_sim.onnx --MNNModel esmoe_n_visdrone.mnn --bizCode edge
 ```
 
@@ -253,10 +253,10 @@ For more details on exporting, refer to the [Ultralytics Export documentation](h
 # detector or segmenter (task auto-detected)
 python coreml_export/export_coreml.py --weights model.pt --imgsz 640 --out model.mlpackage
 
-# YOLO-Master default imgsz is 800 for AI-TOD models — pass --imgsz accordingly
+# YOLO-Master default imgsz is 800 for AI-TOD models: pass --imgsz accordingly
 python coreml_export/export_coreml.py --weights yolo-master-v0.1-N_aitodv2.pt --imgsz 800 --out v0.1-N.mlpackage
 
-# sunsmarterjie/yolov12 checkpoints (split qk+v area-attention) — stock ultralytics + the flag
+# sunsmarterjie/yolov12 checkpoints (split qk+v area-attention): stock ultralytics + the flag
 python coreml_export/export_coreml.py --weights yolov12x.pt --imgsz 640 --out yolov12x.mlpackage --yolov12-aattn
 
 # a LoRA fine-tune: merge the trained adapters first
@@ -280,7 +280,7 @@ Ensure you have the following dependencies installed （not required if you only
 | [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) (Optional)| 12.x          | Required for GPU acceleration via ONNX Runtime's CUDA Execution Provider (match your ONNX Runtime GPU build).   |
 | [MNN](https://github.com/alibaba/MNN) (Optional)                    | >=3.0         | Only for the third export format / benchmarking.                                                               |
 
-> **Note:** The CUDA Execution Provider is ABI-coupled to a CUDA major version — use the ONNX Runtime GPU build that matches your CUDA Toolkit (e.g. the CUDA-12 build with CUDA 12.x), or you'll hit loader errors.
+> **Note:** The CUDA Execution Provider is ABI-coupled to a CUDA major version, use the ONNX Runtime GPU build that matches your CUDA Toolkit (e.g. the CUDA-12 build with CUDA 12.x), or you'll hit loader errors.
 
 
 ### MacOS
@@ -417,7 +417,7 @@ tar xzf yolomaster_edge-jetson-orin-jp7.tar.gz && cd yolomaster_edge-jetson-orin
 ./yolomaster_edge --model models/esmoe_n_fp16.engine --source <img|dir> --classes visdrone --out out
 ```
 
-On an Orin Nano 4 GB the FP16 engine runs at **35.7 FPS** (27.8 ms) with **mAP50-95 0.2029 (−0.34% vs FP32)**. FP16 is the recommended target on this model — its area-attention does not quantize, so INT8 is both slower and less accurate here. To build from source, the [`jetson/`](jetson/) scripts drive the engine build and packaging; see [`jetson/README.md`](jetson/README.md) and [`jetson/DEPLOYMENT_LOG.md`](jetson/DEPLOYMENT_LOG.md).
+On an Orin Nano 4 GB the FP16 engine runs at **35.7 FPS** (27.8 ms) with **mAP50-95 0.2029 (−0.34% vs FP32)**. FP16 is the recommended target on this model, its area-attention does not quantize, so INT8 is both slower and less accurate here. To build from source, the [`jetson/`](jetson/) scripts drive the engine build and packaging; see [`jetson/README.md`](jetson/README.md) and [`jetson/DEPLOYMENT_LOG.md`](jetson/DEPLOYMENT_LOG.md).
 
 ## 📊 Results
 
@@ -438,7 +438,7 @@ Inference performed on full 548 VisDrone validation images against the PyTorch o
 
 CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph. The Jetson row is a native TensorRT FP16 engine, measured on-device.
 
-> ¹ INT8 is *slower* than FP32 on CPU — its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is an **accuracy** proof (−0.84%, within budget); on the actual accelerator, note that even on the Orin's tensor cores FP16 wins here (the attention doesn't quantize — see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) Section 9).
+> ¹ INT8 is *slower* than FP32 on CPU, its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is an **accuracy** proof (−0.84%, within budget); on the actual accelerator, note that even on the Orin's tensor cores FP16 wins here (the attention doesn't quantize, see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) Section 9).
 
 See [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) for the full methodology, INT8 quantization deep-dive, and numerical parity analysis.
 

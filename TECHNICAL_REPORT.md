@@ -4,7 +4,7 @@ End-to-end deployment of **YOLO-Master** to the edge, spanning export formats (O
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/main/assets/edge_deployment_architecture_dark.png">
-  <img src="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/main/assets/edge_deployment_architecture_light.png" alt="Edge Deployment Bundle — Architecture">
+  <img src="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/main/assets/edge_deployment_architecture_light.png" alt="Edge Deployment Bundle, Architecture">
 </picture>
 
 - Source code: **[Edge Deployment Repo](https://github.com/skywalker-lt/yolo-master-edge)**
