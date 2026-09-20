@@ -31,6 +31,18 @@ run -m "$ONNX" -s "$DIR" --limit 4 --quiet --no-save | grep -q "frames=4" && ok 
 run -m "$NCNN" -s "$YAML" --limit 3 --quiet --no-save | grep -q "frames=3" && ok "T4 dataset.yaml source" || no T4
 [ -f "$OUT/test.mp4" ] && { run -m "$ONNX" -s "$OUT/test.mp4" --quiet --no-save | grep -q "frames=6" && ok "T5 video source" || no T5; } || echo "  SKIP  T5 (no video)"
 
+echo "== ncnn per-layer fp32 pin (router-emulated mixture graph) =="
+MOA=${MOA:-$ROOT/models/moa-n_ncnn}
+if [ -f "$MOA/model.ncnn.param" ]; then
+  PIN=$(YOLOMASTER_NCNN_VERBOSE=1 "$BIN" -m "$MOA" -s "$IMG" --no-save --precision fp16 2>&1 | grep "^\[ncnn\] fp32 pin set" || true)
+  NPIN=$(echo "$PIN" | sed -n 's/.*pin set (\([0-9]*\) of.*/\1/p')
+  if echo "$PIN" | grep -q "pinnable=1" && [ -n "$NPIN" ] && [ "$NPIN" -ge 30 ] && [ "$NPIN" -le 200 ] \
+     && echo "$PIN" | grep -q " add_18 " && echo "$PIN" | grep -q " mul_20 " && echo "$PIN" | grep -q " ceil_19 " \
+     && echo "$PIN" | grep -q " amax_841 " && ! echo "$PIN" | grep -q " amax_840 "; then
+    ok "T22 ncnn router pin set = the 1e-9/1e30 chains only ($NPIN layers)"
+  else no T22; fi
+else echo "  SKIP  T22 (no models/moa-n_ncnn)"; fi
+
 echo "== parity (post-refactor) =="
 c1=$(run -m "$ONNX" -s "$IMG" --no-save | grep -oE "total_dets=[0-9]+")
 c2=$(run -m "$NCNN" -s "$IMG" --no-save | grep -oE "total_dets=[0-9]+")
