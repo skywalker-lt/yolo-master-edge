@@ -29,32 +29,56 @@ const std::vector<std::string>& sku110k_classes() {
     return c;
 }
 
-cv::Mat preprocess(const cv::Mat& img, int imgsz, bool stretch, LetterboxInfo& info) {
-    info.orig_w = img.cols;
-    info.orig_h = img.rows;
+void letterbox_params(int w, int h, int imgsz, bool stretch, LetterboxInfo& info, int& out_w, int& out_h) {
+    info.orig_w = w;
+    info.orig_h = h;
     if (stretch) {
         // resize straight to imgsz x imgsz, ignoring aspect -> per-axis scale, no pad.
-        info.scale_x = imgsz / static_cast<float>(img.cols);
-        info.scale_y = imgsz / static_cast<float>(img.rows);
+        info.scale_x = imgsz / static_cast<float>(w);
+        info.scale_y = imgsz / static_cast<float>(h);
         info.scale   = info.scale_x;   // ambiguous under stretch; keep x for any legacy reader
         info.pad_x = info.pad_y = 0;
+        out_w = out_h = imgsz;
+        return;
+    }
+    // letterbox: min-scale aspect-preserving, 114-gray padded, centered.
+    const float r = std::min(imgsz / static_cast<float>(w), imgsz / static_cast<float>(h));
+    out_w = static_cast<int>(std::round(w * r));
+    out_h = static_cast<int>(std::round(h * r));
+    info.scale = info.scale_x = info.scale_y = r;
+    info.pad_x = (imgsz - out_w) / 2;
+    info.pad_y = (imgsz - out_h) / 2;
+}
+
+cv::Mat preprocess(const cv::Mat& img, int imgsz, bool stretch, LetterboxInfo& info) {
+    int nw = 0, nh = 0;
+    letterbox_params(img.cols, img.rows, imgsz, stretch, info, nw, nh);
+    if (stretch) {
         cv::Mat out;
         cv::resize(img, out, cv::Size(imgsz, imgsz));
         return out;
     }
-    // letterbox: min-scale aspect-preserving, 114-gray padded, centered.
-    const float r = std::min(imgsz / static_cast<float>(img.cols),
-                             imgsz / static_cast<float>(img.rows));
-    const int nw = static_cast<int>(std::round(img.cols * r));
-    const int nh = static_cast<int>(std::round(img.rows * r));
-    info.scale = info.scale_x = info.scale_y = r;
-    info.pad_x = (imgsz - nw) / 2;
-    info.pad_y = (imgsz - nh) / 2;
     cv::Mat resized;
     cv::resize(img, resized, cv::Size(nw, nh));
     cv::Mat out(imgsz, imgsz, img.type(), cv::Scalar(114, 114, 114));
     resized.copyTo(out(cv::Rect(info.pad_x, info.pad_y, nw, nh)));
     return out;
+}
+
+void preprocess_nchw(const cv::Mat& bgr, int imgsz, bool stretch, float* dst, LetterboxInfo& info) {
+    const cv::Mat padded = preprocess(bgr, imgsz, stretch, info);   // imgsz x imgsz, CV_8UC3 BGR
+    const int sz = imgsz, hw = sz * sz;
+    float* r = dst; float* g = dst + hw; float* b = dst + 2 * hw;
+    for (int y = 0; y < sz; ++y) {
+        const uint8_t* row = padded.ptr<uint8_t>(y);
+        for (int x = 0; x < sz; ++x) {
+            const uint8_t* px = row + x * 3;          // BGR -> RGB /255, planar
+            const int idx = y * sz + x;
+            r[idx] = px[2] * (1.0f / 255);
+            g[idx] = px[1] * (1.0f / 255);
+            b[idx] = px[0] * (1.0f / 255);
+        }
+    }
 }
 
 cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info) {

@@ -247,19 +247,9 @@ TrtBackend::~TrtBackend() {
 std::vector<Detection> TrtBackend::infer(const cv::Mat& bgr, const Config& cfg) {
     auto t0 = clk::now();
     LetterboxInfo lb;
-    cv::Mat padded = preprocess(bgr, in_sz_, cfg.stretch, lb);   // in_sz_ x in_sz_, BGR
-    const int sz = in_sz_, hw = sz * sz;
-    std::vector<float> in(3 * hw);
-    for (int y = 0; y < sz; ++y) {
-        const uint8_t* row = padded.ptr<uint8_t>(y);
-        for (int x = 0; x < sz; ++x) {
-            const uint8_t* px = row + x * 3;                  // BGR -> RGB /255, NCHW
-            const int idx = y * sz + x;
-            in[idx]        = px[2] * (1.0f / 255);
-            in[hw + idx]   = px[1] * (1.0f / 255);
-            in[2 * hw + idx] = px[0] * (1.0f / 255);
-        }
-    }
+    std::vector<float>& in = h_in_;                    // persistent host staging (no per-frame allocation)
+    in.resize(static_cast<size_t>(3) * in_sz_ * in_sz_);
+    preprocess_nchw(bgr, in_sz_, cfg.stretch, in.data(), lb);
     pre_ms = ms_since(t0);
 
     auto t1 = clk::now();
