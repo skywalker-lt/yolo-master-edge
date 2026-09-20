@@ -4,6 +4,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <filesystem>
+#include <cstdlib>
+#include <cstdio>
 
 namespace yolomaster {
 
@@ -34,8 +36,20 @@ NcnnBackend::NcnnBackend(const std::string& param_path, const std::string& bin_p
     }
     auto note = [this](const std::string& s) { if (!ep_note.empty()) ep_note += "; "; ep_note += s; };
 
-    const bool model_fp16_safe = scan.fp16_safe() && yaml_fp16_safe != 0;   // any "unsafe" source wins
-    if (yaml_fp16_safe == 1 && !scan.fp16_safe())
+    // fp16 is allowed when the model is clean, or when its hazards are confined to a pin set that
+    // stays fp32 per layer (ncnn Layer::featmask) while the rest of the net runs fp16. A stamped
+    // "fp16_safe: false" is a hard override in both cases (the exporter knows something we do not).
+    // "fp16_safe: false" (stamped by export_ncnn_mixture.py) vetoes whole-net fp16 only; the mixed
+    // per-layer mode has its own veto key "fp16_mixed: false" for exporters that know better.
+    int yaml_fp16_mixed = -1;
+    {
+        std::string v;
+        if (meta::read_ncnn_yaml_scalar(mdir + "/metadata.yaml", "fp16_mixed", v))
+            yaml_fp16_mixed = (v.find("rue") != std::string::npos) ? 1 : 0;
+    }
+    const bool pinnable = scan.fp16_pinnable() && yaml_fp16_mixed != 0;
+    const bool model_fp16_safe = (scan.fp16_safe() && yaml_fp16_safe != 0) || pinnable;   // any "unsafe" source wins
+    if (yaml_fp16_safe == 1 && !scan.fp16_safe() && !pinnable)
         note("metadata says fp16_safe but the .param scan disagrees; trusting the scan");
     int8_ = scan.is_int8();
     if (precision == Precision::Int8 && !int8_) note("int8 requested but the .param has no int8 layers");
@@ -74,10 +88,42 @@ NcnnBackend::NcnnBackend(const std::string& param_path, const std::string& bin_p
         net_.opt.use_int8_packed = true;
         net_.opt.use_int8_storage = true;       // use_int8_arithmetic stays at ncnn's default
     }
-    active_ep = use_vulkan ? (fp16_ ? "ncnn-Vulkan" : "ncnn-Vulkan-fp32")
-                           : std::string("ncnn-CPU-") + (int8_ ? "int8+" : "") + (fp16_ ? "fp16" : "fp32");
     if (net_.load_param(param_path.c_str()) != 0)
         throw std::runtime_error("ncnn: failed to load param " + param_path);
+    // ---- per-layer fp32 pin (between load_param and load_model: featmask is read at pipeline creation) ----
+    // Bits per ncnn src/net.cpp get_masked_option: 1<<0 fp16 arithmetic, 1<<1 fp16 packed+storage.
+    int pinned_layers = 0;
+    if (pinnable && !scan.pin_layer_idx.empty()) {
+        std::vector<ncnn::Layer*>& layers = net_.mutable_layers();
+        bool aligned = true;
+        for (size_t k = 0; k < scan.pin_layer_idx.size(); ++k) {
+            const int i = scan.pin_layer_idx[k];
+            if (i < 0 || i >= static_cast<int>(layers.size()) || !layers[i] || layers[i]->name != scan.pin_layer_names[k]) {
+                aligned = false; break;
+            }
+        }
+        if (aligned) {
+            if (fp16_) {
+                for (int i : scan.pin_layer_idx) layers[i]->featmask |= (1 << 0) | (1 << 1);
+                pinned_layers = static_cast<int>(scan.pin_layer_idx.size());
+                note(std::to_string(pinned_layers) + " router layers pinned fp32, rest fp16");
+            }
+        } else {
+            // the scan and ncnn disagree about layer order: never guess, run the whole net fp32
+            fp16_ = false;
+            net_.opt.use_fp16_packed = net_.opt.use_fp16_storage = net_.opt.use_fp16_arithmetic = false;
+            note("fp32 pinned: per-layer pin set did not align with the loaded net (" + scan.reason() + ")");
+        }
+    }
+    if (std::getenv("YOLOMASTER_NCNN_VERBOSE") && !scan.pin_layer_idx.empty()) {
+        fprintf(stderr, "[ncnn] fp32 pin set (%zu of %d layers, pinnable=%d, applied=%d):", scan.pin_layer_idx.size(),
+                scan.layers, pinnable ? 1 : 0, pinned_layers ? 1 : 0);
+        for (const auto& n : scan.pin_layer_names) fprintf(stderr, " %s", n.c_str());
+        fprintf(stderr, "\n");
+    }
+    active_ep = use_vulkan ? (fp16_ ? (pinned_layers ? "ncnn-Vulkan-mixed" : "ncnn-Vulkan") : "ncnn-Vulkan-fp32")
+                           : std::string("ncnn-CPU-") + (int8_ ? "int8+" : "") +
+                             (fp16_ ? (pinned_layers ? "fp16-mixed" : "fp16") : "fp32");
     if (net_.load_model(bin_path.c_str()) != 0)
         throw std::runtime_error("ncnn: failed to load bin " + bin_path);
     for (const char* n : net_.output_names()) if (out_proto_ == n) has_proto_ = true;

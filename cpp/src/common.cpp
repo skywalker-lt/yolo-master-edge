@@ -519,43 +519,98 @@ NcnnParamScan scan_ncnn_param(const std::string& param_path) {
     s.ok = true;
     // ncnn writes floats with %e (always a '.' or an exponent); ints never do. Evaluating only
     // float-looking tokens avoids false overflow hits on weight counts such as "6=147456".
-    auto eval_float = [&s](const std::string& v) {
+    enum Hazard { NONE = 0, BIG = 1, TINY = 2 };
+    struct Rec {
+        std::string type, name;
+        std::vector<std::string> ins, outs;
+        int seed = NONE;          // hazard this layer introduces through its own literals
+        bool propagate = false;   // only the router mask (1e30) and nudge (1e-9) seeds spread downstream;
+                                  // a FLT_MAX Clip bound or similar pins its own layer only (output <= input)
+        int unary_op = -1;        // UnaryOp "0=" code
+        double clip_max = 0;      // Clip "1=" literal
+        bool has_clip_max = false;
+    };
+    std::vector<Rec> recs;
+    auto eval_float = [&s](const std::string& v, int& seed, bool& propagate) {
         if (v.find_first_of(".eE") == std::string::npos) return;
-        if (v == "1.000000e-9") { s.nudge_1e9++; return; }
-        if (v == "1.000000e30") { s.mask_1e30++; return; }
+        if (v == "1.000000e-9") { s.nudge_1e9++; seed |= TINY; propagate = true; return; }
+        if (v == "1.000000e30") { s.mask_1e30++; seed |= BIG; propagate = true; return; }
         char* end = nullptr;
         const double d = std::strtod(v.c_str(), &end);
         if (end == v.c_str()) return;
         const double a = std::fabs(d);
-        if (a > 65504.0) s.fp16_overflow++;
+        if (a > 65504.0) { s.fp16_overflow++; seed |= BIG; }
         else if (a > 0.0 && a < 6.1035e-5) s.fp16_flush++;
     };
     while (std::getline(f, line)) {
         if (line.empty()) continue;
         std::istringstream ls(line);
-        std::string type, name;
+        Rec r;
         int nin = 0, nout = 0;
-        if (!(ls >> type >> name >> nin >> nout)) continue;
+        if (!(ls >> r.type >> r.name >> nin >> nout)) continue;
         s.layers++;
         std::string tok;
-        for (int i = 0; i < nin + nout && (ls >> tok); ++i) {}   // skip blob names
-        if (type == "Reduction" && name.rfind("amax_", 0) == 0) s.router_amax++;
+        for (int i = 0; i < nin && (ls >> tok); ++i) r.ins.push_back(tok);
+        for (int i = 0; i < nout && (ls >> tok); ++i) r.outs.push_back(tok);
+        if (r.type == "Reduction" && r.name.rfind("amax_", 0) == 0) s.router_amax++;
         const bool quantizable =
-            (type == "Convolution" || type == "ConvolutionDepthWise" || type == "InnerProduct");
+            (r.type == "Convolution" || r.type == "ConvolutionDepthWise" || r.type == "InnerProduct");
         while (ls >> tok) {
             const auto eq = tok.find('=');
             if (eq == std::string::npos) continue;
             const std::string key = tok.substr(0, eq), val = tok.substr(eq + 1);
             if (quantizable && key == "8" && val != "0") s.int8_layers++;
+            if (r.type == "UnaryOp" && key == "0") r.unary_op = std::atoi(val.c_str());
+            if (r.type == "Clip" && key == "1") { r.clip_max = std::strtod(val.c_str(), nullptr); r.has_clip_max = true; }
             if (!key.empty() && key[0] == '-') {           // array param "-23303=1,0" -> elements
                 std::istringstream vs(val);
                 std::string el;
-                while (std::getline(vs, el, ',')) eval_float(el);
+                while (std::getline(vs, el, ',')) eval_float(el, r.seed, r.propagate);
             } else {
-                eval_float(val);
+                eval_float(val, r.seed, r.propagate);
             }
         }
+        recs.push_back(std::move(r));
     }
+    if (s.fp16_safe()) return s;
+
+    // ---- hazard propagation: which layers must keep fp32 storage/arithmetic ----
+    // A blob carries BIG (>65504) after a 1e30 mask multiply and through every consumer until a
+    // layer that bounds it (Clip with a representable max, Softmax, Sigmoid) or integerises it
+    // (UnaryOp floor/ceil/round/trunc). A blob carries TINY (the 1e-9 nudge that must survive
+    // ceil()) through every consumer until an integerising UnaryOp, Softmax or Sigmoid. Clip does
+    // NOT stop TINY: clamp(1e-9, 0, 1) must stay 1e-9. The stopping layer itself is pinned (it
+    // reads the hazardous blob); its outputs are safe. Split/Reshape/Permute only move storage,
+    // but pinned storage is exactly what keeps -1e30 alive between two arithmetic layers.
+    std::map<std::string, std::vector<int>> consumers;
+    for (int i = 0; i < static_cast<int>(recs.size()); ++i)
+        for (const auto& b : recs[i].ins) consumers[b].push_back(i);
+    std::vector<int> pinned(recs.size(), NONE);         // hazard mask a layer must run in fp32 for
+    std::vector<std::pair<int, int>> work;
+    for (int i = 0; i < static_cast<int>(recs.size()); ++i)
+        if (recs[i].seed) { pinned[i] |= recs[i].seed; if (recs[i].propagate) work.emplace_back(i, recs[i].seed); }
+    auto stops = [](const Rec& r, int hz) -> int {
+        const bool integerising = r.type == "UnaryOp" &&
+            (r.unary_op == 2 || r.unary_op == 3 || r.unary_op == 18 || r.unary_op == 19);
+        if (integerising || r.type == "Softmax" || r.type == "Sigmoid") return hz;      // stops both
+        if ((hz & BIG) && r.type == "Clip" && r.has_clip_max && std::fabs(r.clip_max) <= 65504.0) return static_cast<int>(BIG);
+        return static_cast<int>(NONE);
+    };
+    std::set<std::pair<int, int>> seen;
+    while (!work.empty()) {
+        auto [li, hz] = work.back(); work.pop_back();
+        if (!seen.insert({li, hz}).second) continue;
+        for (const auto& b : recs[li].outs)
+            for (int ci : consumers[b]) {
+                const int already = pinned[ci];
+                pinned[ci] |= hz;
+                const int passed = hz & ~stops(recs[ci], hz);
+                if (passed && (pinned[ci] != already || !seen.count({ci, passed})))
+                    work.emplace_back(ci, passed);
+            }
+    }
+    for (int i = 0; i < static_cast<int>(recs.size()); ++i)
+        if (pinned[i]) { s.pin_layer_idx.push_back(i); s.pin_layer_names.push_back(recs[i].name); }
     return s;
 }
 

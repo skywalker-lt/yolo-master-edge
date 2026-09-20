@@ -155,8 +155,20 @@ struct NcnnParamScan {
     int fp16_overflow = 0;   // other float literals with |v| > 65504 (e.g. FLT_MAX clamps)
     int fp16_flush = 0;      // other float literals with 0 < |v| < 6.1035e-5 (informational)
     int int8_layers = 0;     // quantized layers
+    // Per-layer fp32 pin set: every layer whose input or output can carry a value fp16 cannot
+    // represent (the 1e30 masks and their consumers until a bounded Clip / Softmax / Sigmoid /
+    // integerising UnaryOp; the 1e-9 nudges and their consumers until an integerising UnaryOp
+    // or Softmax; layers holding other >65504 literals). Indices follow .param order, which is
+    // ncnn::Net::layers() order. Empty for dense models.
+    std::vector<int> pin_layer_idx;
+    std::vector<std::string> pin_layer_names;
     bool router_emulated() const { return nudge_1e9 > 0 || mask_1e30 > 0 || router_amax > 0; }
     bool fp16_safe() const { return ok && !router_emulated() && fp16_overflow == 0; }
+    // fp16 is usable when the hazards are confined to a small, fully identified pin set.
+    bool fp16_pinnable() const {
+        return ok && !fp16_safe() && !pin_layer_idx.empty() && layers > 0 &&
+               pin_layer_idx.size() * 4 <= static_cast<size_t>(layers);
+    }
     bool is_int8() const { return int8_layers > 0; }
     std::string reason() const;   // why-not-fp16, for ep_note ("" when fp16_safe())
 };
