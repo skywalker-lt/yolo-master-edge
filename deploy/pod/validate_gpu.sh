@@ -18,6 +18,7 @@ log() { echo "[validate $(date +%H:%M:%S)] $*" | tee -a "$OUT/log.txt"; }
 run() { "$BIN/yolomaster_edge" "$@" 2>&1; }
 summary() { grep -E "^\[summary\]" | sed -E 's/.*avg\/frame: (pre=[^ ]+ infer=[^ ]+ post=[^ ]+ total=[^ ]+).*/\1/'; }
 
+if [ "${ONLY_SERVER:-0}" != 1 ]; then
 log "== 1. CUDA preprocessing parity (max |diff| <= 1/255) =="
 "$BIN/preproc_parity" "$DIR" | tail -1 | tee -a "$OUT/log.txt"
 "$BIN/preproc_parity" "$DIR" 640 --stretch | tail -1 | tee -a "$OUT/log.txt"
@@ -71,6 +72,7 @@ for id in esmoen v01n; do
     echo -n "mAP $id mnn-cuda C1 multipath: "; "$BIN/yolomaster_score" "$OUT/mnn_${id}_c1" "$DIR" "$LABELS" | tee -a "$OUT/log.txt"
   fi
 done
+fi   # ONLY_SERVER
 
 log "== 6. server suites with GPU preprocessing (TensorRT model + ORT-CUDA model) =="
 PORT=$(( 20000 + RANDOM % 20000 ))
@@ -81,6 +83,7 @@ SPID=$!
 for i in $(seq 1 240); do curl -sf "localhost:$PORT/readyz" >/dev/null && break; sleep 0.5; done
 curl -s "localhost:$PORT/v1/models" | python3 -c "import json,sys;[print('  ',m['id'],m.get('ep'),m.get('ready')) for m in json.load(sys.stdin)['models']]" | tee -a "$OUT/log.txt"
 export YM_SERVER_URL="http://localhost:$PORT" YM_TEST_MODEL=esmoe YM_TEST_MODEL2=esmoe-ort YM_TEST_IMAGES="$DIR" YM_CLI="$BIN/yolomaster_edge" YM_CLI_MODEL="$MODELS/esmoen/model.onnx"
+export YM_CLI_ARGS="-b trt --precision fp16"   # the CLI parity test must run the same engine as the server's esmoe model
 python3 -m pytest "$REPO/tests/server/test_api.py" -q -p no:cacheprovider 2>&1 | tail -3 | tee -a "$OUT/log.txt"
 kill -INT $SPID; wait $SPID
 log "done -> $OUT/log.txt"

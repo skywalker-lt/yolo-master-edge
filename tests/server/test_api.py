@@ -67,7 +67,10 @@ def test_txt_parity_with_cli():
     if not (CLI and CLI_MODEL and Path(CLI).exists()):
         return _skip("YM_CLI/YM_CLI_MODEL not set")
     with tempfile.TemporaryDirectory() as td:
-        subprocess.run([CLI, "-m", CLI_MODEL, "-s", str(IMGS[2]), "--no-save", "--quiet", "--save-txt", td], check=True,
+        # YM_CLI_ARGS: backend / precision flags so the CLI runs the same engine as the server model
+        # (e.g. "-b trt --precision fp16" on a GPU pod); the default compares the CPU ONNX paths.
+        extra = os.environ.get("YM_CLI_ARGS", "").split()
+        subprocess.run([CLI, "-m", CLI_MODEL, "-s", str(IMGS[2]), "--no-save", "--quiet", "--save-txt", td] + extra, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         cli = sorted(Path(td).glob("*.txt"))[0].read_text().split()
     api = c.infer(IMGS[2], model=MODEL, ret="txt").split()
@@ -234,8 +237,11 @@ def test_video_track():
     assert all(all("track_id" in d for d in f["detections"]) for f in body)
     ids = [d["track_id"] for f in body for d in f["detections"]]
     assert ids and len(set(ids)) < len(ids)          # ids repeat across frames
-    top = [max(f["detections"], key=lambda d: d["conf"])["track_id"] for f in body if f["detections"]]
-    assert top.count(max(set(top), key=top.count)) >= len(top) - 2
+    # tracks persist: the most frequent id is present on nearly every frame (the highest-conf
+    # detection may alternate between two objects, so the top-1 id alone is not the measure)
+    per_frame = [set(d["track_id"] for d in f["detections"]) for f in body]
+    best = max(ids, key=lambda i: sum(i in s for s in per_frame))
+    assert sum(best in s for s in per_frame) >= len(body) - 2
 
 
 def test_ws_track():
