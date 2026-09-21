@@ -15,7 +15,7 @@ LABELS="$REPO/visdrone50/labels/val"
 PAR="python3 $REPO/scripts/server/parity_txt.py"
 mkdir -p "$OUT" "$CACHE"
 log() { echo "[validate $(date +%H:%M:%S)] $*" | tee -a "$OUT/log.txt"; }
-run() { "$BIN/yolomaster_edge" "$@" 2>&1; }
+run() { timeout "${RUN_TIMEOUT:-900}" "$BIN/yolomaster_edge" "$@" 2>&1; }   # a hung backend (MNN CUDA fp16 did) must not stall the chain
 summary() { grep -E "^\[summary\]" | sed -E 's/.*avg\/frame: (pre=[^ ]+ infer=[^ ]+ post=[^ ]+ total=[^ ]+).*/\1/'; }
 
 if [ "${ONLY_SERVER:-0}" != 1 ]; then
