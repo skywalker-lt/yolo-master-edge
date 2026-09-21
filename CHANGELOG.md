@@ -24,6 +24,14 @@ Runtime and CLI
 - `scripts/make_coco_subset.py` (coco500) and `scripts/package_eval_sets.sh` for the labelled
   eval sets (release assets).
 - `--version` on both binaries; bench JSON carries version, commit and build flags.
+- GPU preprocessing (`USE_CUDA_PREPROC`): one CUDA kernel (letterbox, BGR to RGB, /255, NCHW) from
+  the raw uint8 frame into the TensorRT input tensor or an ORT IoBinding on the CUDA EP; TensorRT
+  CUDA-graph replay (`--cuda-graph`, spec `cuda_graph=1`). RTX PRO 4500: TensorRT fp16 end to end
+  4.67 to 1.78 ms (EsMoE-N) and 3.49 to 1.91 ms (v0.1-N), graph a further 0.2 ms, coco500 mAP
+  unchanged to 0.0002; ORT-CUDA 4.72 to 3.95 and 5.17 to 4.33 ms. `GPU_PREPROC_RESULTS.md`.
+- MNN CUDA fp16 on routed models: every fp16 variant (session precision, routing-protected
+  conversion, multi-path session) returns zero detections on MNN 3.6.1, so the request is
+  downgraded to fp32 with an `ep_note` instead of failing silently (the 1.1.1 bug).
 - Phone graph: the pruned v0.1-N ships as the dense ncnn export (fused SDPA, native gate
   broadcast; x86 parity with the ONNX path 261/261 detections, the stock export was not) with a
   re-quantized ACIQ INT8 sibling (139/145 layers, 2048 COCO train images): coco500 in-process
