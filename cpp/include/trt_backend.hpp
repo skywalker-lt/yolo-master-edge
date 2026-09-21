@@ -76,7 +76,7 @@ private:
     long frames_ = 0;
     void load_engine(const std::string& engine_path);
     void ensure_raw_capacity(size_t bytes);
-    void enqueue_frame();            // the captured / replayed sequence (everything after the raw H2D)
+    void enqueue_frame(bool record_events);   // the captured / replayed sequence (everything after the raw H2D)
     bool try_capture_graph();
 };
 
