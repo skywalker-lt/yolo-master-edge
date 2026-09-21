@@ -76,7 +76,9 @@ fi   # ONLY_SERVER
 
 log "== 6. server suites with GPU preprocessing (TensorRT model + ORT-CUDA model) =="
 PORT=$(( 20000 + RANDOM % 20000 ))
-"$BIN/server/yolomaster_server" -p "$PORT" --loop-threads 2 --max-queue 8 --max-body-mb 4 --engine-cache "$CACHE" \
+# no --engine-cache: the server then builds / reuses the engine next to the .onnx, the same file the
+# CLI parity test loads (a separately built engine can pick different fp16 tactics)
+"$BIN/server/yolomaster_server" -p "$PORT" --loop-threads 2 --max-queue 8 --max-body-mb 4 \
   -m "esmoe=$MODELS/esmoen/model.onnx,backend=trt,device=cuda,precision=fp16,workers=1" \
   -m "esmoe-ort=$MODELS/esmoen/model.onnx,backend=onnx,device=cuda,workers=1" > "$OUT/server.log" 2>&1 &
 SPID=$!
