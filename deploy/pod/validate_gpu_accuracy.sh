@@ -16,7 +16,7 @@ COCO="$REPO/datasets/coco500/coco500.yaml"
 PAR="python3 $REPO/scripts/server/parity_txt.py"
 mkdir -p "$OUT"
 log() { echo "[validate2 $(date +%H:%M:%S)] $*" | tee -a "$OUT/log.txt"; }
-run() { "$BIN/yolomaster_edge" "$@" 2>&1; }
+run() { timeout "${RUN_TIMEOUT:-900}" "$BIN/yolomaster_edge" "$@" 2>&1; }   # a hung backend (MNN CUDA fp16 did) must not stall the chain
 acc() {  # <tag> <args...>: accuracy pass on coco500, prints the [accuracy] line
   local tag="$1"; shift
   run "$@" -s "$COCO" --accuracy auto --bench-iters 20 --bench-warmup 5 --bench-json "$OUT/$tag.json" --no-save --quiet \
