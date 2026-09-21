@@ -18,7 +18,8 @@ log "apt base tools"
 apt-get install -y -qq --no-install-recommends \
   build-essential ninja-build patchelf zlib1g-dev pkg-config rsync unzip wget curl ca-certificates \
   libssl-dev git python3-dev python3-pip jq bc \
-  libavcodec58 libavformat58 libavutil56 libswscale5 libswresample3 >/dev/null   # opencv-lean videoio (ffmpeg 4.4 ABI)
+  libavcodec58 libavformat58 libavutil56 libswscale5 libswresample3 \
+  libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev >/dev/null   # opencv-lean videoio (ffmpeg 4.4 ABI + headers to rebuild it)
 
 if ! dpkg -s libnvinfer-dev >/dev/null 2>&1; then
   log "TensorRT ${TRT_VER}"
