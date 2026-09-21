@@ -279,7 +279,7 @@ void TrtBackend::ensure_raw_capacity(size_t bytes) {
 
 // Everything that runs on stream_ after the raw frame (GPU preprocess) or the float tensor (CPU
 // preprocess) has been staged: this is the sequence a CUDA graph captures.
-void TrtBackend::enqueue_frame() {
+void TrtBackend::enqueue_frame(bool record_events) {
 #ifdef HAVE_CUDA_PREPROC
     if (gpu_preproc_) {
         CUDA_CHECK(cudaMemcpyAsync(d_params_, h_params_, sizeof(cuda::PreprocParams), cudaMemcpyHostToDevice, stream_));
@@ -290,19 +290,19 @@ void TrtBackend::enqueue_frame() {
     {
         CUDA_CHECK(cudaMemcpyAsync(d_in_, h_in_, in_count_ * sizeof(float), cudaMemcpyHostToDevice, stream_));
     }
-    CUDA_CHECK(cudaEventRecord(ev1_, stream_));
+    if (record_events) CUDA_CHECK(cudaEventRecord(ev1_, stream_));
     if (!ctx_->enqueueV3(stream_)) throw std::runtime_error("TRT enqueueV3 failed");
     CUDA_CHECK(cudaMemcpyAsync(h_out_, d_out_, out_count_ * sizeof(float), cudaMemcpyDeviceToHost, stream_));
     if (pc_ > 0)
         CUDA_CHECK(cudaMemcpyAsync(h_proto_, d_proto_, proto_count_ * sizeof(float), cudaMemcpyDeviceToHost, stream_));
-    CUDA_CHECK(cudaEventRecord(ev2_, stream_));
+    if (record_events) CUDA_CHECK(cudaEventRecord(ev2_, stream_));
 }
 
 bool TrtBackend::try_capture_graph() {
     cudaGraph_t g = nullptr; cudaGraphExec_t ge = nullptr;
     if (cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { cudaGetLastError(); return false; }
     bool ok = true;
-    try { enqueue_frame(); } catch (const std::exception&) { ok = false; }
+    try { enqueue_frame(/*record_events=*/false); } catch (const std::exception&) { ok = false; }   // events recorded inside a graph cannot be timed
     if (cudaStreamEndCapture(stream_, &g) != cudaSuccess) { cudaGetLastError(); ok = false; }
     if (ok && cudaGraphInstantiate(&ge, g, 0) != cudaSuccess) { cudaGetLastError(); ok = false; }
     if (!ok) { if (g) cudaGraphDestroy(g); cudaGetLastError(); return false; }
@@ -362,8 +362,13 @@ void TrtBackend::forward_raw(const cv::Mat& bgr, const Config& cfg, bool decode)
             ep_note += (ep_note.empty() ? "" : "; ") + std::string("cuda graph capture failed; plain path");
         } else if (active_ep.find("+graph") == std::string::npos) active_ep += "+graph";
     }
-    if (graph_ok_) CUDA_CHECK(cudaGraphLaunch(graph_exec_, stream_));
-    else enqueue_frame();
+    if (graph_ok_) {
+        // graph mode: the events bracket the whole replay, so infer_ms also holds the params copy and
+        // the preprocessing kernel (about 0.1 ms); pre_ms is then host staging + raw H2D only
+        CUDA_CHECK(cudaEventRecord(ev1_, stream_));
+        CUDA_CHECK(cudaGraphLaunch(graph_exec_, stream_));
+        CUDA_CHECK(cudaEventRecord(ev2_, stream_));
+    } else enqueue_frame(/*record_events=*/true);
     CUDA_CHECK(cudaStreamSynchronize(stream_));
     ++frames_;
     float ms12 = 0.f;

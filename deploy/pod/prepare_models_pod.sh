@@ -32,7 +32,9 @@ for id in v01n v01n-pruned esmoen; do
     log "MNNConvert $id fp16-routed"
     "$MNNCONVERT" -f ONNX --modelFile "$d/model-fp16.onnx" --MNNModel "$d/model-fp16-routed.mnn" --bizCode yolomaster --keepInputFormat=1 > "$d/mnnconvert-fp16-routed.log" 2>&1 || { tail -5 "$d/mnnconvert-fp16-routed.log"; log "MNN fp16-routed conversion FAILED for $id"; }
   fi
-  [ -f "$d/model-fp16-routed.mnn" ] && cp -u "$d/metadata.yaml" "$d/model-fp16-routed.metadata.yaml"
+  # the routed fp16 conversion protects its routing inside the graph (Cast nodes), so its sidecar
+  # says fp16_safe: true and the CUDA fp16 request is honoured (that is the C2 experiment)
+  [ -f "$d/model-fp16-routed.mnn" ] && { grep -v "^fp16_safe:" "$d/metadata.yaml" > "$d/model-fp16-routed.metadata.yaml"; echo "fp16_safe: true" >> "$d/model-fp16-routed.metadata.yaml"; }
   [ -f "$d/model.mnn" ] && cp -u "$d/metadata.yaml" "$d/model.metadata.yaml"
   [ -f "$d/model-fp16.mnn" ] && cp -u "$d/metadata.yaml" "$d/model-fp16.metadata.yaml"
 done
