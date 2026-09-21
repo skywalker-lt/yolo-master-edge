@@ -426,7 +426,9 @@ yolomaster_edge -m model.onnx -s clip.mp4 --track botsort --save-txt tracks/
 # TensorRT / ORT-CUDA builds: --cpu-preproc (reference path), --cuda-graph (TensorRT graph replay)
 ```
 
-`scripts/make_coco_subset.py` builds the 500-image COCO val subset and `scripts/package_eval_sets.sh`
+GPU builds (`-DUSE_CUDA_PREPROC=ON`, needs nvcc) preprocess on the GPU for TensorRT and the ORT
+CUDA EP and can replay the TensorRT frame as a CUDA graph; numbers and the timing contract are in
+`GPU_PREPROC_RESULTS.md`. `scripts/make_coco_subset.py` builds the 500-image COCO val subset and `scripts/package_eval_sets.sh`
 packages it with `visdrone50/` as release assets. Percentiles are floor rank
 (`sorted[min(int(q * n), n - 1)]`), the convention of the phone Bench tabs; `sustained` is the
 median of the slowest quarter. `botsort` adds sparse-optical-flow camera motion compensation
