@@ -87,6 +87,35 @@ def _patch_yolov12_aattn():
     if hasattr(_M, "AAttn"): _M.AAttn = AAttn
 
 
+def _repair_legacy_checkpoint(model) -> list[str]:
+    """Make the Jan-2026 released v0.1-N COCO checkpoint exportable on the 8.4.101 fork (the same
+    repair scripts/export_ncnn_dense.py applies; no-op for current checkpoints).
+
+    Two things that checkpoint predates: (1) `OptimizedMOEImproved.add_residual`, which the fork's
+    `_ensure_compat_attrs()` defaults to True although those blocks were trained WITHOUT the residual;
+    exporting them as-is keeps box regression alive and collapses every class score (mAP ~0, no
+    error), so absence means False. (2) Router `capacity_factor` and the training-schedule
+    bookkeeping the forward reads unconditionally (inert in eval mode, set to the __init__ defaults).
+    """
+    notes = []
+    for name, mod in model.named_modules():
+        cls = type(mod).__name__
+        if cls == "OptimizedMOEImproved":
+            if "add_residual" not in vars(mod):
+                mod.add_residual = False
+                notes.append(f"{name}.add_residual=False (absent in checkpoint)")
+            for attr, default in (("_training_step", 0), ("_current_top_k", getattr(mod, "num_experts", 1)),
+                                  ("warmup_steps", 5000), ("expert_dropout_rate", 0.15), ("dropout_interval", 100),
+                                  ("progressive_sparsity", True), ("detach_routing", False)):
+                if not hasattr(mod, attr):
+                    setattr(mod, attr, default)
+                    notes.append(f"{name}.{attr}={default} (absent in checkpoint)")
+        if cls in {"EfficientSpatialRouter", "AdaptiveRoutingLayer", "LocalRoutingLayer"} and not hasattr(mod, "capacity_factor"):
+            mod.capacity_factor = None
+            notes.append(f"{name}.capacity_factor=None (absent in checkpoint)")
+    return notes
+
+
 def _silence_esmoe_aux_loss():
     """No-op EsMoE's in-place load-balancing telemetry (see docstring #3). Safe: training-only."""
     try:
@@ -112,6 +141,8 @@ def export(weights: str, imgsz: int, out: str, target: str = "macos13",
             raise RuntimeError(f"failed to load/merge LoRA adapters from {merge_lora_dir}")
     model = ym.model.eval()
     names = [ym.names[i] for i in sorted(ym.names)] if getattr(ym, "names", None) else []
+    for note in _repair_legacy_checkpoint(model):
+        print(f"[compat] {note}")
 
     for m in model.modules():                      # Detect/Segment head -> single concatenated tensor
         if hasattr(m, "export"): m.export = True
