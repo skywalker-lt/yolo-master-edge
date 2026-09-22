@@ -436,6 +436,25 @@ median of the slowest quarter. `botsort` adds sparse-optical-flow camera motion 
 association without it. The same tracker runs in the API server (`track=` on `/v1/video` and
 `/v1/stream`), and `POST /v1/bench` returns the same JSON from a server worker.
 
+**macOS (Core ML Runner 1.2.0, branch `dev/v1.2.0-mac`).** The same features on the Swift runner,
+sharing the C++ scorer, tracker and statistics through the portable core in
+`mac/Sources/YOLOMasterCore` (compiled by both CMake and the Swift package):
+
+```bash
+swift build -c release --package-path mac
+B=$(swift build -c release --package-path mac --show-bin-path)/yolomaster-coreml
+$B --model v0.1-N.mlpackage --source coco500/images --accuracy coco500/labels --save-txt val/ --bench-json acc.json
+$B --model v0.1-N.mlpackage --source images/ --bench sustained --bench-minutes 2 --bench-json sustained.json
+$B --model v0.1-N.mlpackage --source clip.mp4 --track botsort --save-txt tracks/ --out tracked.mp4
+$B --model v0.1-N.mlpackage --source images/ --cpu-preproc --dump-input dumps/   # Metal vs CPU preprocessing parity
+bash mac/tests/run_mac_tests.sh   # MODEL=... COCO500=... : the Mac battery
+```
+
+The app gains a Bench section (cold / sustained / accuracy, Save JSON), a Tracking picker for
+video and a Preprocess device picker (Metal GPU letterbox straight into the Core ML input, zero
+copy from the camera). BoT-SORT's camera motion on macOS comes from Vision's translational
+registration. See `mac/RELEASE_NOTES-1.2.0.md`.
+
 ## 🤖 Jetson Orin (Native TensorRT)
 
 A prebuilt aarch64 runner for **Jetson Orin** (Nano / NX / AGX) on **JetPack 7** is attached to the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases) page. It bundles OpenCV and uses JetPack's TensorRT + CUDA; the per-device FP16 engine is built once with the included script.

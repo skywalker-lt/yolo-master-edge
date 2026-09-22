@@ -69,7 +69,7 @@ struct AccuracyResult {
     StageStats infer_ms;
 };
 struct BenchResult {
-    std::string tool = "cli";                 // cli | server | android | ios
+    std::string tool = "cli";                 // cli | server | macos | android | ios
     std::string timestamp;
     ModelInfo model; EnvInfo env; Protocol protocol;
     bool has_cold = false; ColdResult cold;

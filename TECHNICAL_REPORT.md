@@ -82,7 +82,7 @@ Three failure modes had to be closed and are the Section 1 structures reappearin
 
 The script also handles **segmentation** (detects the two-output signature and writes `task=segment` with `proto`/`nm`) and **LoRA fine-tunes** (`--merge-lora-dir` merges adapters before export, since a merged LoRA is a static graph whereas routed MoLoRA cannot be traced).
 
-**Validation:** The Core ML path has **no mAP number**. The macOS app bundles no metric harness, and the `eval_map.py` pipeline used for every other format consumes `--save-txt` output from the C++ runtime, which the Swift app does not produce and it's not added now since Apple's Notarization mendatory for distribution is time-consuming so I decided to bundle the validator **with next major update (Core ML Runner `v1.1.0`).** 
+**Validation:** Since Core ML Runner `v1.2.0` the macOS CLI and app score themselves: `yolomaster-coreml --accuracy` runs the val protocol (conf 0.001, IoU 0.7, max_det 300) and computes mAP50-95 in process through the same C++ scorer the Linux runtime uses (the portable core under `mac/Sources/YOLOMasterCore`, shared verbatim with `cpp/`), and `--save-txt` writes the C++ dump format so `eval_map.py` scores it identically. Before 1.2.0 the Core ML path had no mAP number; the `v1.1.x` rows in Section 5.2 are latency only.
 
 ## 🔢 3. INT8 quantization findings
 
@@ -283,7 +283,7 @@ Both frontends share the same interaction model, and two decisions:
 - **Two-phase media handling.** Folders and videos are inferred once with a progress bar, then browsed or scrubbed from cache. A 30 fps clip therefore plays back at 30 fps regardless of model speed, because inference is off the playback path entirely. The webcam path instead infers on a background thread with drop-late-frames, trading completeness for latency.
 
 ## 🔖 11. Future work
-- **Core ML accuracy validation.** The one backend without an mAP number (Section 2.4). The cheapest route is a `--save-txt`-compatible dump from the macOS app, which drops it straight into the existing `eval_map.py` and makes the Core ML row directly comparable to every other row in Section 5.2.
+- **Core ML accuracy validation.** Done in Core ML Runner `v1.2.0` (Section 2.4): in-process mAP and a `--save-txt`-compatible dump, so the Core ML row is scored the same way as every other row in Section 5.2.
 - **Segmentation metrics.** The harness is detection-only; the bundled `v0.1-seg-N` is validated visually. Mask AP against the COCO protocol would close it.
 - **ARM-native backend comparison.** Section 6 leaves the original hypothesis that ncnn and MNN close the gap on ARM -- untested since the Jetson work went through TensorRT. Running the ncnn-Vulkan and MNN-OpenCL paths on the Orin would settle it on the hardware they were designed for.
 - **Non-NVIDIA GPUs.** The Vulkan and OpenCL paths should already work on AMD, Intel, and Ascend hardware.
