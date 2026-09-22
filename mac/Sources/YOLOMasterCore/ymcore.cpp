@@ -74,12 +74,12 @@ void ym_sustained_summary(const double* samples, int n, int cold_iters, YmSustai
     *out = YmSustained{s.cold_median_ms, s.sustained_median_ms, s.throttle_pct};
 }
 void ym_sha256_hex(const uint8_t* data, size_t len, char out[65]) {
-    const std::string h = bench::sha256_hex(std::string(reinterpret_cast<const char*>(data), len));
+    const std::string h = bench::sha256_hex(data && len ? std::string(reinterpret_cast<const char*>(data), len) : std::string());
     std::memcpy(out, h.c_str(), 65);
 }
 void ym_image_list_sha256(const char* const* paths, int n, char out[65]) {
     std::vector<std::string> v;
-    for (int i = 0; i < n; ++i) v.emplace_back(paths[i] ? paths[i] : "");
+    for (int i = 0; paths && i < n; ++i) v.emplace_back(paths[i] ? paths[i] : "");
     const std::string h = bench::image_list_sha256(v);
     std::memcpy(out, h.c_str(), 65);
 }

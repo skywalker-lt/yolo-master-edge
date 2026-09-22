@@ -23,13 +23,9 @@ public enum YMCore {
     /// sha256 over the sorted basenames joined by "\n" (the `image_list_sha256` of the bench schema).
     public static func imageListSha256(_ paths: [String]) -> String {
         var out = [CChar](repeating: 0, count: 65)
-        var cstrs = paths.map { strdup($0) }
-        defer { cstrs.forEach { free($0) } }
-        cstrs.withUnsafeMutableBufferPointer { buf in
-            buf.baseAddress!.withMemoryRebound(to: UnsafePointer<CChar>?.self, capacity: paths.count) { p in
-                ym_image_list_sha256(p, Int32(paths.count), &out)
-            }
-        }
+        let cstrs: [UnsafePointer<CChar>?] = paths.map { UnsafePointer(strdup($0)) }
+        defer { cstrs.forEach { free(UnsafeMutablePointer(mutating: $0)) } }
+        cstrs.withUnsafeBufferPointer { ym_image_list_sha256($0.baseAddress, Int32(paths.count), &out) }
         return String(cString: out)
     }
 
@@ -123,7 +119,7 @@ public enum MapEvaluator {
     /// ultralytics images -> labels rule when `labelsDir` is nil, else `<labelsDir>/<stem>.txt`.
     public static func labelPath(forImage image: String, labelsDir: String?) -> String {
         var buf = [CChar](repeating: 0, count: 4096)
-        let n = ym_label_path_for(image, labelsDir, &buf, buf.count)
+        let n = labelsDir.map { ym_label_path_for(image, $0, &buf, buf.count) } ?? ym_label_path_for(image, nil, &buf, buf.count)
         return n > 0 ? String(cString: buf) : ""
     }
 }

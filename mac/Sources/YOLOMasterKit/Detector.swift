@@ -116,6 +116,9 @@ public final class Detector {
     public let isSegment: Bool
     public let nm: Int   // mask-coeff count (segmentation); 0 for detection
     public let end2end: Bool   // NMS-free head: output [1, max_det, 6] instead of [1, 4+nc, anchors]
+    public let modelURL: URL
+    /// The exporter's creator-defined metadata (names, imgsz, task, precision when stamped, ...).
+    public let metadata: [String: String]
 
     private let model: MLModel
     private let inputName: String
@@ -180,6 +183,8 @@ public final class Detector {
             loaded = try load(.cpu)
         }
         self.computeMode = effectiveCompute
+        self.modelURL = modelURL
+        self.metadata = meta
         self.model = loaded
 
         self.inputName = inName
@@ -465,7 +470,17 @@ public final class Detector {
     }
 
     // ---------- public inference ----------
-    public struct Result: Sendable { public let detections: [Detection]; public let inferMs: Double }
+    /// `inferMs` is the Core ML prediction alone; `preMs` letterbox + input tensor build; `postMs` decode + NMS
+    /// (the Linux runtime's pre / infer / post split, so bench numbers line up across platforms).
+    public struct Result: Sendable {
+        public let detections: [Detection]
+        public let inferMs: Double
+        public let preMs: Double
+        public let postMs: Double
+        public init(detections: [Detection], inferMs: Double, preMs: Double = 0, postMs: Double = 0) {
+            self.detections = detections; self.inferMs = inferMs; self.preMs = preMs; self.postMs = postMs
+        }
+    }
 
     /// Cached forward-pass output + letterbox geometry. Hold onto this and re-decode with
     /// different conf/iou via `decode(_:conf:iou:)` - no second model call. Post-processing
@@ -476,10 +491,12 @@ public final class Detector {
         fileprivate let scaleX, scaleY, padX, padY: CGFloat   // per-axis (scaleX==scaleY for letterbox)
         public let origW, origH: Int
         public let inferMs: Double
+        /// Preprocess wall time (letterbox draw + planar float tensor build), the Linux `pre_ms`.
+        public let preMs: Double
         fileprivate init(y: MLMultiArray, proto: MLMultiArray?, scaleX: CGFloat, scaleY: CGFloat, padX: CGFloat, padY: CGFloat,
-                         origW: Int, origH: Int, inferMs: Double) {
+                         origW: Int, origH: Int, inferMs: Double, preMs: Double = 0) {
             self.y = y; self.proto = proto; self.scaleX = scaleX; self.scaleY = scaleY; self.padX = padX; self.padY = padY
-            self.origW = origW; self.origH = origH; self.inferMs = inferMs
+            self.origW = origW; self.origH = origH; self.inferMs = inferMs; self.preMs = preMs
         }
 
         /// A copy retaining ONLY what mask rendering needs (proto tensor + letterbox geometry),
@@ -489,15 +506,17 @@ public final class Detector {
         public func maskOnly() -> RawOutput? {
             guard let p = proto, let tiny = try? MLMultiArray(shape: [1], dataType: .float32) else { return nil }
             return RawOutput(y: tiny, proto: p, scaleX: scaleX, scaleY: scaleY, padX: padX, padY: padY,
-                             origW: origW, origH: origH, inferMs: inferMs)
+                             origW: origW, origH: origH, inferMs: inferMs, preMs: preMs)
         }
     }
 
     /// Core ML forward pass only (letterbox → predict). Cache the result and re-`decode`.
     public func forward(_ image: CGImage) throws -> RawOutput {
+        let tp = Date()
         let lb = letterbox(image)
         guard let input = fillInput(lb.px) else { throw DetectorError.inputBuildFailed }
         let t0 = Date()
+        let preMs = t0.timeIntervalSince(tp) * 1000
         let out = try model.prediction(from: input)
         let infMs = Date().timeIntervalSince(t0) * 1000
         guard let y = out.featureValue(for: outputName)?.multiArrayValue, y.shape.count == 3 else {
@@ -505,7 +524,7 @@ public final class Detector {
         }
         let proto = isSegment ? out.featureValue(for: protoName)?.multiArrayValue : nil
         return RawOutput(y: y, proto: proto, scaleX: lb.scaleX, scaleY: lb.scaleY, padX: lb.padX, padY: lb.padY,
-                         origW: image.width, origH: image.height, inferMs: infMs)
+                         origW: image.width, origH: image.height, inferMs: infMs, preMs: preMs)
     }
 
     /// Low-latency forward from a camera `CVPixelBuffer` (BGRA). Wraps the buffer as a CGImage with a
@@ -527,6 +546,7 @@ public final class Detector {
         let cw = crop.width, ch = crop.height
         precondition(cw <= tile && ch <= tile, "tile crop exceeds tile size")
         let s = CGFloat(imgsz) / CGFloat(tile)   // 1 when tile == imgsz; <1 shrinks bigger tiles
+        let tp = Date()
         var px = [UInt8](repeating: 114, count: imgsz * imgsz * 4)
         px.withUnsafeMutableBytes { raw in
             guard let ctx = CGContext(data: raw.baseAddress, width: imgsz, height: imgsz, bitsPerComponent: 8,
@@ -539,6 +559,7 @@ public final class Detector {
         }
         guard let input = fillInput(px) else { throw DetectorError.inputBuildFailed }
         let t0 = Date()
+        let preMs = t0.timeIntervalSince(tp) * 1000
         let out = try model.prediction(from: input)
         let infMs = Date().timeIntervalSince(t0) * 1000
         guard let y = out.featureValue(for: outputName)?.multiArrayValue, y.shape.count == 3 else {
@@ -546,7 +567,7 @@ public final class Detector {
         }
         // proto deliberately nil: tile coeffs are meaningless against a full-image proto tensor.
         return RawOutput(y: y, proto: nil, scaleX: s, scaleY: s, padX: 0, padY: 0,
-                         origW: cw, origH: ch, inferMs: infMs)
+                         origW: cw, origH: ch, inferMs: infMs, preMs: preMs)
     }
 
     /// Cheap BGRA `CVPixelBuffer` → `CGImage` (one memcpy via a buffer-backed context; no Core Image).
@@ -568,11 +589,15 @@ public final class Detector {
         Detector.nms(candidates(raw, confFloor: conf), conf: conf, iou: iouT, maxDet: maxDet, mode: mode, sigma: sigma)
     }
 
-    /// Convenience: forward + decode in one call (used by the CLI). `inferMs` is model-only latency.
+    /// Convenience: forward + decode in one call (used by the CLI). `inferMs` is model-only latency;
+    /// `preMs` / `postMs` are the preprocess and decode + NMS stages around it.
     public func detect(_ image: CGImage, conf: Float = 0.25, iou iouT: CGFloat = 0.5,
                        mode: NMSMode = .standard, sigma: Float = 0.1, maxDet: Int = 300) throws -> Result {
         let raw = try forward(image)
-        return Result(detections: decode(raw, conf: conf, iou: iouT, mode: mode, sigma: sigma, maxDet: maxDet), inferMs: raw.inferMs)
+        let t0 = Date()
+        let dets = decode(raw, conf: conf, iou: iouT, mode: mode, sigma: sigma, maxDet: maxDet)
+        let postMs = Date().timeIntervalSince(t0) * 1000
+        return Result(detections: dets, inferMs: raw.inferMs, preMs: raw.preMs, postMs: postMs)
     }
 
     // ---------- segmentation masks ----------

@@ -37,18 +37,9 @@ run -m "$NCNN" -s "$YAML" --limit 3 --quiet --no-save | grep -q "frames=3" && ok
 echo "== bench mode + in-process accuracy =="
 rm -rf "$OUT/bench" "$OUT/valtxt"
 run -m "$ONNX" -s "$DIR" --limit 4 --quiet --no-save --bench cold --bench-iters 5 --bench-warmup 2 --bench-json "$OUT/bench/b.json" > "$OUT/bench_out.txt" 2>&1
-if grep -q "frames=4" "$OUT/bench_out.txt" && python3 - "$OUT/bench/b.json" <<'PY'
-import json, sys
-j = json.load(open(sys.argv[1]))
-assert j["schema_version"] == "yolomaster-bench/v1"
-assert j["cold"]["infer_ms"]["n"] == 5 and j["cold"]["probe_mode"] in ("infer_only", "full")
-assert j["dataset"]["frames"] == 4
-for k in ("n", "mean", "median", "p90", "p95", "p99", "min", "max"):
-    assert k in j["dataset"]["infer_ms"], k
-assert j["stats_convention"] == "floor_rank" and j["protocol"]["image_count"] == 4
-assert len(j["protocol"]["image_list_sha256"]) == 64 and j["environment"]["version"]
-PY
-then ok "T19 --bench cold writes a valid yolomaster-bench/v1 JSON ([summary] intact)"; else no T19; fi
+if grep -q "frames=4" "$OUT/bench_out.txt" && python3 "$ROOT/scripts/bench_schema_check.py" "$OUT/bench/b.json" --iters 5 --frames 4 --images 4 > /dev/null \
+   && python3 -c "import json,sys; assert json.load(open(sys.argv[1]))['environment']['version']" "$OUT/bench/b.json"
+then ok "T19 --bench cold writes a valid yolomaster-bench/v1 JSON ([summary] intact; scripts/bench_schema_check.py)"; else no T19; fi
 LABELS="$ROOT/visdrone50/labels/val"
 if [ -d "$LABELS" ]; then
   run -m "$ONNX" -s "$DIR" --quiet --no-save --conf 0.001 --iou 0.7 --multi-label --save-txt "$OUT/valtxt" > /dev/null 2>&1
