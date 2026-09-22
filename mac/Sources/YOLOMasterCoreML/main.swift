@@ -41,6 +41,7 @@ guard let modelPath = argValue("--model"), let srcPath = argValue("--source") el
         "[--slicing off|dense|sparse [--tile-size N] [--slicing-masks] [--max-det N]] [--cw-nms [--sigma 0.1]] " +
         "[--bench off|cold|sustained] [--bench-iters 50] [--bench-warmup 10] [--bench-minutes 2] [--bench-json PATH] " +
         "[--accuracy auto|LABELS_DIR] [--track off|botsort|bytetrack] [--track-buffer 30] " +
+        "[--cpu-preproc] [--dump-input DIR] " +
         "[--benchmark [--iters 200]]  (legacy alias of --bench cold)", 2)
 }
 let conf = Float(argValue("--conf", "0.25")!) ?? 0.25
@@ -82,13 +83,31 @@ let trackArg = (argValue("--track", "off")!).lowercased()
 let trackKind: TrackerKind? = trackArg == "off" ? nil : TrackerKind(rawValue: trackArg)
 if trackArg != "off" && trackKind == nil { die("--track must be off|botsort|bytetrack", 2) }
 let trackBuffer = Int(argValue("--track-buffer", "30")!) ?? 30
+let cpuPreproc = hasFlag("--cpu-preproc")          // default: Metal letterbox when a GPU exists
+let dumpInput = argValue("--dump-input")           // raw float32 NCHW input tensors, one .f32 per image (parity check)
 
 // ---------- backend (shared) ----------
 let detector: Detector
 do { detector = try Detector(modelURL: URL(fileURLWithPath: modelPath), compute: compute,
                              forceCompute: CommandLine.arguments.contains("--compute")) }
 catch { die("model load failed: \(error)", 3) }
-print("[model] \(detector.summary)")
+detector.preprocDevice = cpuPreproc ? .cpu : .gpu
+print("[model] \(detector.summary) preproc=\(detector.effectivePreprocDevice.rawValue)")
+if let dumpInput {
+    // the tensor the model would see, for scripts/preproc_compare.py against the Linux preprocess_nchw
+    let dir = URL(fileURLWithPath: dumpInput)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let src0 = URL(fileURLWithPath: srcPath)
+    var list = classifySource(src0) == .folder ? listImages(src0) : [src0]
+    if limit > 0 && list.count > limit { list = Array(list.prefix(limit)) }
+    var n = 0
+    for u in list {
+        guard let cg = loadCGImage(u), let bytes = detector.inputTensorBytes(cg) else { continue }
+        try? bytes.write(to: dir.appendingPathComponent(u.deletingPathExtension().lastPathComponent + ".f32"))
+        n += 1
+    }
+    print("[dump-input] \(n) tensors (\(detector.imgsz)x\(detector.imgsz) float32 NCHW, preproc=\(detector.effectivePreprocDevice.rawValue)) -> \(dir.path)")
+}
 
 // ---------- shared per-frame bookkeeping (txt dumps, bench samples, the Linux [summary] line) ----------
 var samples = BenchSamples()
@@ -152,7 +171,9 @@ if benchMode != .off {
     // the probe sweep doubles as the warm-up of the dataset pass (same order as the Linux CLI)
     let cold = BenchRunner.coldSweep(detector, warmup: benchWarmup, iters: benchIters)
     print("[bench] cold probe \(cold.probe_mode): infer median=\(g(cold.infer_ms.median))ms p90=\(g(cold.infer_ms.p90)) min=\(g(cold.infer_ms.min)) (n=\(cold.infer_ms.n))")
-    doc = BenchDocument(timestamp: YMCore.timestampUTC(), tool: "macos", model: BenchEnvironment.model(detector),
+    var card = BenchEnvironment.model(detector)
+    card.ep_note = "preproc=\(detector.effectivePreprocDevice.rawValue)"
+    doc = BenchDocument(timestamp: YMCore.timestampUTC(), tool: "macos", model: card,
                         environment: BenchEnvironment.collect(),
                         protocol: .init(mode: benchMode.rawValue, conf: conf, iou: Float(iouT),
                                         max_det: tilingMode == .off ? 300 : maxDet, multi_label: true,

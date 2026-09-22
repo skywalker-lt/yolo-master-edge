@@ -137,5 +137,32 @@ PY
   fi
 else skip "M4 (no PAN_MP4 and no ffmpeg)"; fi
 
+echo "== GPU (Metal) preprocessing =="
+rm -rf "$OUT/dump_gpu" "$OUT/dump_cpu"
+run --model "$MODEL" --source "$IMAGES" --limit 10 --compute "$COMPUTE" --no-save --dump-input "$OUT/dump_gpu" > "$OUT/dump_gpu.log"
+run --model "$MODEL" --source "$IMAGES" --limit 10 --compute "$COMPUTE" --no-save --cpu-preproc --dump-input "$OUT/dump_cpu" > "$OUT/dump_cpu.log"
+if grep -q "preproc=gpu" "$OUT/dump_gpu.log" && [ "$(ls "$OUT/dump_gpu"/*.f32 2>/dev/null | wc -l | tr -d ' ')" = "10" ]; then
+  ok "M5 Metal preprocessing active (10 input tensors dumped, preproc=gpu)"
+  grep "^\[summary\]" "$OUT/dump_gpu.log" | sed 's/^/  gpu /'; grep "^\[summary\]" "$OUT/dump_cpu.log" | sed 's/^/  cpu /'
+  if python3 -c "import cv2, numpy" 2>/dev/null; then
+    python3 "$ROOT/scripts/preproc_compare.py" "$IMAGES" "$OUT/dump_gpu" --imgsz "$(python3 -c "import json;print(json.load(open('$OUT/bench/b.json'))['model']['imgsz'])")" > "$OUT/cmp_gpu.txt" 2>&1 \
+      && ok "M5b Metal tensor within 1/255 of the Linux preprocess_nchw reference ($(tail -1 "$OUT/cmp_gpu.txt"))" \
+      || { no "M5b Metal tensor parity"; tail -4 "$OUT/cmp_gpu.txt"; }
+  else
+    skip "M5b (no cv2 here: copy $OUT/dump_gpu to a box with opencv and run scripts/preproc_compare.py $IMAGES <dump_gpu>)"
+  fi
+else no "M5 Metal preprocessing"; tail -3 "$OUT/dump_gpu.log"; fi
+if [ -n "$COCO500" ] && [ -d "$COCO500/labels" ] && [ -f "$OUT/acc_out.txt" ]; then
+  run --model "$MODEL" --source "$COCO500/images" --compute "$COMPUTE" --no-save --cpu-preproc \
+      --accuracy "$COCO500/labels" --bench-iters 1 --bench-warmup 0 --bench-json "$OUT/acc/acc_cpu.json" > "$OUT/acc_cpu_out.txt" 2>&1
+  if python3 - "$OUT/acc/acc.json" "$OUT/acc/acc_cpu.json" <<'PY'
+import json, sys
+g, c = [json.load(open(p))["accuracy"]["map5095"] for p in sys.argv[1:]]
+print(f"  mAP50-95 gpu-preproc {g:.4f} vs cpu-preproc {c:.4f} (diff {g - c:+.4f})")
+assert abs(g - c) <= 0.001, "preprocessing device moved mAP50-95 by more than 0.001"
+PY
+  then ok "M5c coco500 mAP50-95 unchanged between Metal and CPU preprocessing (within 0.001)"; else no "M5c mAP gpu vs cpu"; fi
+else skip "M5c (needs COCO500)"; fi
+
 echo "RESULT: $P passed, $F failed, $S skipped   (outputs in $OUT)"
 [ "$F" = "0" ]

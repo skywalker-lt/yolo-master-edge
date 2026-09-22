@@ -186,6 +186,7 @@ struct LiveCameraView: View {
     let modelURL: URL?
     let compute: ComputeMode
     let preprocess: Detector.PreprocessMode
+    var preprocDevice: PreprocDevice = .gpu          // Metal letterbox straight from the camera buffer (zero copy)
     let conf: Double, iou: Double
     let nmsMode: NMSMode, sigma: Double
     let maxDet: Int
@@ -204,13 +205,14 @@ struct LiveCameraView: View {
             .onChange(of: modelURL) { rebuild { cam.updateDetector($0) } }       // hot-swap model
             .onChange(of: compute) { rebuild { cam.updateDetector($0) } }        // hot-swap compute unit
             .onChange(of: preprocess) { rebuild { cam.updateDetector($0) } }     // hot-swap letterbox/stretch
+            .onChange(of: preprocDevice) { rebuild { cam.updateDetector($0) } }  // hot-swap CPU / Metal preprocessing
     }
     private func rebuild(_ apply: @escaping (Detector) -> Void) {
         guard let m = modelURL else { cam.errorMsg = "Choose a model first."; return }
-        let comp = compute, pp = preprocess
+        let comp = compute, pp = preprocess, pd = preprocDevice
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let d = try Detector(modelURL: m, compute: comp); d.preprocess = pp
+                let d = try Detector(modelURL: m, compute: comp); d.preprocess = pp; d.preprocDevice = pd
                 DispatchQueue.main.async { isSegment = d.isSegment; apply(d) }
             } catch {
                 DispatchQueue.main.async { cam.errorMsg = "Could not load model: \(error.localizedDescription)" }
