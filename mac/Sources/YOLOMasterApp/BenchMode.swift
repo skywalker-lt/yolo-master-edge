@@ -590,9 +590,10 @@ struct BenchDashboard: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
-    /// Model time against wall-clock seconds since the cell started. The window grows from 0 until it
-    /// spans `windowSeconds`, then rolls (the last minute is always in view). Raw samples as a thin
-    /// line, a 20-sample moving average on top, the window median as a rule; y follows the data.
+    /// Model time against wall-clock seconds since the cell started. While a run streams the window
+    /// grows from 0 until it spans `windowSeconds`, then rolls (the last minute is always in view);
+    /// once the run is done, and for history records, the entire series is shown. Decimated min/max
+    /// band, mean line and a smoothed trend, the median of what is shown as a rule; y follows the data.
     private static let windowSeconds = 60.0
     private var liveChart: some View {
         let all: [(t: Double, ms: Double)] = {
@@ -601,8 +602,9 @@ struct BenchDashboard: View {
             return c.samples.enumerated().map { ($0.offset < c.sampleTimes.count ? c.sampleTimes[$0.offset] : Double($0.offset), $0.element) }
         }()
         let tEnd = max(all.last?.t ?? 0, 1)
-        let tStart = max(0, tEnd - BenchDashboard.windowSeconds)
-        let window = all.filter { $0.t >= tStart }
+        // rolling minute while a run streams; the whole series once it is done (or for a history record)
+        let tStart = bench.running ? max(0, tEnd - BenchDashboard.windowSeconds) : 0
+        let window = tStart > 0 ? all.filter { $0.t >= tStart } : all
         let ys = window.map(\.ms)
         let med = ys.isEmpty ? 0 : StageStats(ys).median
         let lo = ys.min() ?? 0, hi = ys.max() ?? 1
@@ -634,7 +636,8 @@ struct BenchDashboard: View {
                 Text(bench.kind == .dataset ? "Model time per image" : "Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
                 if !window.isEmpty {
-                    Text(String(format: "last %.0f s · %d samples · median %.2f ms · last %.2f ms · band = min/max per %d", tEnd - tStart, window.count, med, window.last?.ms ?? 0, buckets))
+                    Text(String(format: "%@%.0f s · %d samples · median %.2f ms · last %.2f ms · band = min/max per %d",
+                                bench.running ? "last " : "full run ", tEnd - tStart, window.count, med, window.last?.ms ?? 0, buckets))
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
