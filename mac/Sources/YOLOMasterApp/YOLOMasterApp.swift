@@ -783,9 +783,9 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                 doc.protocol.dataset = images.lastPathComponent
                 doc.protocol.image_count = files.count
                 doc.protocol.image_list_sha256 = YMCore.imageListSha256(files.map { $0.path })
-                let o = AccuracyRunner.run(det, images: files, labels: labels?.path ?? "auto") { done, total in
+                let o = AccuracyRunner.run(det, images: files, labels: labels?.path ?? "auto", progress: { done, total in
                     if done % 5 == 0 { DispatchQueue.main.async { self.benchNote = "Accuracy: \(done)/\(total)…" } }
-                }
+                })
                 doc.accuracy = o.document()
                 doc.timestamp = YMCore.timestampUTC()
                 DispatchQueue.main.async {
