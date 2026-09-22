@@ -67,11 +67,27 @@ in-process accuracy equal to `eval_map_standalone.py` on the dump, tracking pers
 synthetic pan clip, the camera-motion axis check on a diagonal pan, Metal tensor parity and the
 mAP agreement between the two preprocessing devices.
 
+## Measured (Apple M4 Max, macOS 26.3, Core ML GPU compute unit, Metal preprocessing)
+
+`mac/tests/run_mac_tests.sh` 12/12 on both models. coco500 (the 500-image COCO val subset that is
+a release asset), val protocol, in process:
+
+| model | mAP50 / mAP50-95 | Linux ORT-CPU fp32, same images | model median | preprocess CPU -> Metal |
+|---|---|---|---|---|
+| v0.1-N | 0.5931 / 0.4306 | 0.5940 / 0.4309 | (bench archive pending) | 2.59 -> 1.83 ms |
+| v0.1-seg-N (boxes) | 0.5860 / 0.4271 | - | 3.65 ms | 2.56 -> 1.93 ms |
+
+The Metal input tensor is within 0.00294 of the Linux `preprocess_nchw` rule on the same decoded
+pixels (the CUDA kernel measured 0.0029 on Linux); the preprocessing device moves coco500 mAP50-95
+by at most 0.0005. Both trackers keep one id on all 30 frames of the synthetic pan clip; Vision's
+motion estimate on the diagonal pan is (4, 1) px for a true (3, 2): correct axes, integer-quantized.
+
 ## Notes
 
 - The iOS app consumes the same Kit and is unchanged: every Kit addition is additive and the
   preprocessing device defaults to CPU inside the Kit (the macOS CLI and app opt into Metal).
-- The accuracy pass takes a detection model; the bundled `v0.1-seg-N` runs the bench and
-  tracking but not the accuracy pass (segmentation candidates at conf 0.001 are too many).
+- The accuracy pass scores boxes only; a segmentation model runs it (its boxes against the COCO
+  labels, the `v0.1-seg-N` row above) but slower, since every candidate at conf 0.001 carries mask
+  coefficients.
 - Bench and accuracy always run single-pass at the model input size; slicing is not part of
   the protocol.

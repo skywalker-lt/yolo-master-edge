@@ -455,6 +455,20 @@ video and a Preprocess device picker (Metal GPU letterbox straight into the Core
 copy from the camera). BoT-SORT's camera motion on macOS comes from Vision's translational
 registration. See `mac/RELEASE_NOTES-1.2.0.md`.
 
+Measured on an Apple M4 Max (macOS 26.3, Core ML GPU compute unit, Metal preprocessing,
+`mac/tests/run_mac_tests.sh`, 12/12):
+
+| model | coco500 mAP50 / mAP50-95 on Core ML | Linux ORT-CPU fp32, same images | preprocess CPU -> Metal |
+|---|---|---|---|
+| v0.1-N (COCO) | 0.5931 / 0.4306 | 0.5940 / 0.4309 | 2.59 -> 1.83 ms |
+| v0.1-seg-N (COCO, boxes) | 0.5860 / 0.4271 | - | 2.56 -> 1.93 ms |
+
+The in-process number equals `scripts/eval_map_standalone.py` on the runner's own `--save-txt`
+dump within 0.0001 (ultralytics' unstable `argsort` on the many fp16 confidence ties decides the
+4th decimal), the Metal input tensor is within 0.00294 of the Linux `preprocess_nchw` rule on the
+same decoded pixels (the CUDA kernel: 0.0029) and switching the preprocessing device moves
+coco500 mAP50-95 by 0.0005 at most.
+
 ## 🤖 Jetson Orin (Native TensorRT)
 
 A prebuilt aarch64 runner for **Jetson Orin** (Nano / NX / AGX) on **JetPack 7** is attached to the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases) page. It bundles OpenCV and uses JetPack's TensorRT + CUDA; the per-device FP16 engine is built once with the included script.
@@ -482,11 +496,13 @@ Inference performed on full 548 VisDrone validation images against the PyTorch o
 | MNN (OpenCL) | RTX 5070Ti Laptop | 0.2034 | −0.02%  | 19.1 | 52.4  | 
 | INT8 mixed ¹ | CPU | 0.1952 | −0.84% | 137 ms  | 7.2   |
 | TensorRT FP16 | Jetson Orin Nano 4GB | 0.2029 | −0.34% | 27.8 ms | 35.7 |
-| Core ML | Apple M4 Max | N/A (no validator bundled) | N/A | 17.4 ms | 57.4  |
+| Core ML | Apple M4 Max | see ² | see ² | 17.4 ms | 57.4  |
 
 CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph. The Jetson row is a native TensorRT FP16 engine, measured on-device.
 
 > ¹ INT8 is *slower* than FP32 on CPU, its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is an **accuracy** proof (−0.84%, within budget); on the actual accelerator, note that even on the Orin's tensor cores FP16 wins here (the attention doesn't quantize, see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) Section 9).
+
+> ² Since Core ML Runner 1.2.0 the macOS runner scores itself in process (the same C++ scorer as the Linux CLI): on coco500 v0.1-N reaches 0.4306 mAP50-95 on Core ML vs 0.4309 on ORT-CPU fp32 (see the v1.2.0 section). The VisDrone EsMoE-N figure for this row is not measured yet; the latency stays the 1.1 measurement.
 
 See [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) for the full methodology, INT8 quantization deep-dive, and numerical parity analysis.
 
