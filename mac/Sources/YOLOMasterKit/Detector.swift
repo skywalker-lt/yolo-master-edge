@@ -40,9 +40,13 @@ public struct Detection: Sendable {
     public let score: Float
     public let rect: CGRect
     public let maskCoeffs: [Float]
-    public init(cls: Int, score: Float, rect: CGRect, maskCoeffs: [Float] = []) {
-        self.cls = cls; self.score = score; self.rect = rect; self.maskCoeffs = maskCoeffs
+    /// Track id when the detection came out of a `Tracker` (video / camera with tracking on); nil otherwise.
+    public let trackId: Int?
+    public init(cls: Int, score: Float, rect: CGRect, maskCoeffs: [Float] = [], trackId: Int? = nil) {
+        self.cls = cls; self.score = score; self.rect = rect; self.maskCoeffs = maskCoeffs; self.trackId = trackId
     }
+    /// The same detection tagged with a track id.
+    public func withTrackId(_ id: Int?) -> Detection { Detection(cls: cls, score: score, rect: rect, maskCoeffs: maskCoeffs, trackId: id) }
 }
 
 /// A rendered instance mask (segmentation): a proto-resolution tinted RGBA image, the unit

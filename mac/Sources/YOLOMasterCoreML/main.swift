@@ -27,6 +27,13 @@ func logErr(_ s: String) { FileHandle.standardError.write((s + "\n").data(using:
 func f1(_ v: Double) -> String { String(format: "%.1f", v) }
 func fps(_ ms: Double) -> String { f1(ms > 0 ? 1000 / ms : 0) }
 
+// --core-selftest: handshake with the portable C++ core (no model needed); exits 0 on known answers
+if hasFlag("--core-selftest") {
+    let r = CoreSelfTest.run()
+    print(r.report)
+    exit(r.ok ? 0 : 1)
+}
+
 guard let modelPath = argValue("--model"), let srcPath = argValue("--source") else {
     die("usage: yolomaster-coreml --model M.mlpackage --source img|dir/|vid.mp4 [--out o] " +
         "[--conf 0.25] [--iou 0.5] [--compute cpuAndGPU|all|cpu] [--style hud|solid|neon] " +

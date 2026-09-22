@@ -3,15 +3,18 @@
 // (Kalman on xyah, no compensation). No appearance model: association is IoU (optionally fused
 // with the detection score), exactly the tracker-only configuration of ultralytics' botsort.yaml
 // and bytetrack.yaml defaults, so ids are comparable with `yolo track`.
+//
+// The Kalman / association core is the portable mac/Sources/YOLOMasterCore/tracker_core.* (shared
+// with the Swift package); this header adds the OpenCV types, the optical-flow camera motion
+// estimate and the drawing.
 #pragma once
 #include <memory>
 #include <string>
 #include <vector>
+#include "tracker_core.hpp"
 #include "yolomaster.hpp"
 
 namespace yolomaster::track {
-
-enum class TrackState { New, Tracked, Lost, Removed };
 
 struct Track {
     int id = 0;

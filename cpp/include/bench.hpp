@@ -6,6 +6,10 @@
 // BenchStats and the iOS BenchView already compute, so device numbers stay comparable.
 // Sustained: median of the slowest quarter of all samples (the phones' lastQuarterMedian);
 // throttle_pct = (sustained - cold) / cold * 100.
+//
+// The statistics themselves (reduce, the sustained summary, sha256, timestamp) are the portable
+// mac/Sources/YOLOMasterCore/bench_stats.hpp shared with the Swift package; this header adds the
+// Backend-driven probes, the environment / model cards and the JSON rendering.
 #pragma once
 #include <atomic>
 #include <string>
@@ -13,16 +17,10 @@
 #include "json.hpp"
 #include "yolomaster.hpp"
 #include "map_metrics.hpp"
+#include "bench_stats.hpp"
 
 namespace yolomaster::bench {
 
-constexpr const char* kSchema = "yolomaster-bench/v1";
-
-struct StageStats {
-    size_t n = 0;
-    double mean = 0, median = 0, p90 = 0, p95 = 0, p99 = 0, min = 0, max = 0;
-};
-StageStats reduce(std::vector<double> samples);      // sorts a copy; n == 0 -> all zero
 nlohmann::json to_json(const StageStats& s);
 
 // Per-frame stage samples collected during a dataset pass.
@@ -89,10 +87,6 @@ SustainedResult sustained_loop(Backend& be, const Config& cfg, int warmup, doubl
 EnvInfo collect_env(const Backend& be, int threads);
 ModelInfo model_info(const Backend& be, const std::string& path, const std::string& backend,
                      const std::string& precision, const Config& cfg);
-// sha256 over the sorted basenames joined by '\n' (scripts/make_coco_subset.py hashes the same string)
-std::string image_list_sha256(const std::vector<std::string>& paths);
-std::string sha256_hex(const std::string& data);
-std::string timestamp_utc();
 nlohmann::json to_json(const BenchResult& r);
 
 } // namespace yolomaster::bench
