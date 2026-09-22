@@ -22,7 +22,7 @@ Python client.
 
 - `POST /v1/infer` (JSON, YOLO txt, COCO JSON or annotated JPEG), `POST /v1/infer/batch`, `POST /v1/video` (NDJSON stream), `WS /v1/stream` (keep-latest frame backpressure), `GET /metrics`, `GET /v1/stats`, `/healthz`, `/readyz`, model load/unload at runtime
 - One `Backend` per worker thread, bounded queues (503 + Retry-After), request deadlines (504), graceful drain on SIGTERM, TensorRT engines built from `.onnx` and cached per GPU
-- Measured on an L40S over the full COCO val2017 (5000 images), API vs bare CLI on every backend: see [`API_SERVER_RESULTS.md`](API_SERVER_RESULTS.md)
+- Measured on an L40S over the full COCO val2017 (5000 images), API vs bare CLI on every backend: see [`API_SERVER_RESULTS.md`](API_SERVER_RESULTS.md); the v1.2.0 / image 1.2.1 rerun on an L4 with GPU preprocessing is Tables 4 to 6 of the same document
 - Docs: [`docs/API.md`](docs/API.md), [`deploy/README.md`](deploy/README.md); build: `cmake -DBUILD_SERVER=ON` (run `scripts/server/fetch_uws.sh` once for uWebSockets)
 
 ```bash

@@ -48,6 +48,13 @@ API server 1.2.1
   `YM_API_KEYS` passthrough in `deploy/run.sh` and `docker-compose.yml`.
 - Tests: `tests/run_server_tests.sh` boots a second, hardened instance for
   `tests/server/test_hardened.py`; CPU-only GitHub Actions workflow.
+- Image `skywalker0501/yolomaster-api:1.2.1` (digest `sha256:65771d28...`, 5.26 GB) and the
+  full COCO val2017 comparison rerun with it on an NVIDIA L4 (21 cells, GPU preprocessing on
+  the TensorRT and ORT-CUDA rows): `API_SERVER_RESULTS.md` Tables 4 to 6. API overhead 1.6 to
+  1.9 ms, every cell parity-identical to the CLI, TensorRT fp16 v0.1-N 2.29 ms model time.
+- Linux bundles `yolomaster-edge-linux-x64-1.2.0.tar.gz` (CPU) and
+  `yolomaster-edge-linux-x64-gpu_cuda12-1.2.0.tar.gz` (CUDA 12, TensorRT, ORT-GPU, GPU
+  preprocessing for sm75 to sm90) with `SHA256SUMS-linux-1.2.0.txt`.
 
 ## 1.1.1
 
