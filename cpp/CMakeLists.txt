@@ -48,6 +48,18 @@ set(SRC  src/common.cpp src/slicing.cpp src/annotate_writers.cpp src/annotate_ex
          src/stb_impl.cpp src/map_metrics.cpp src/bench.cpp src/tracker.cpp)
 set(INCS include third_party ${OpenCV_INCLUDE_DIRS})
 set(LIBS ${OpenCV_LIBS})
+
+# The portable core (in-process mAP, BoT-SORT / ByteTrack, bench statistics, C shim) has no
+# OpenCV or JSON dependency and is shared verbatim with the Swift package: it lives under
+# mac/Sources/YOLOMasterCore because SwiftPM needs its targets inside the package, and CMake
+# reaches across. yolomaster_core links it PUBLIC; yolomaster_score links it alone, which keeps
+# the extraction honest (an OpenCV include there fails that link). The Android runtime CMake
+# adds the same directory when it next picks up these features.
+set(YM_CCORE_DIR "${CMAKE_SOURCE_DIR}/../mac/Sources/YOLOMasterCore")
+file(GLOB YM_CCORE_SRC "${YM_CCORE_DIR}/*.cpp")
+add_library(yolomaster_ccore STATIC ${YM_CCORE_SRC})
+target_include_directories(yolomaster_ccore PUBLIC "${YM_CCORE_DIR}" "${YM_CCORE_DIR}/include")
+set_target_properties(yolomaster_ccore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set(DEFS "")
 if(USE_GMC AND NOT PORTABLE)
   list(APPEND DEFS HAVE_GMC)
@@ -174,15 +186,16 @@ endif()
 
 add_library(yolomaster_core STATIC ${SRC})
 target_include_directories(yolomaster_core PUBLIC ${INCS})
-target_link_libraries(yolomaster_core PUBLIC ${LIBS})
+target_link_libraries(yolomaster_core PUBLIC ${LIBS} yolomaster_ccore)
 string(REPLACE ";" "," _YM_FLAGS "${DEFS};${CMAKE_BUILD_TYPE}")
 string(REGEX REPLACE "YM_[A-Z_]+=\"[^\"]*\",?" "" _YM_FLAGS "${_YM_FLAGS}")
 list(APPEND DEFS "YM_BUILD_FLAGS=\"${_YM_FLAGS}\"")
 target_compile_definitions(yolomaster_core PUBLIC ${DEFS})
 set_target_properties(yolomaster_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-add_executable(yolomaster_score src/score_main.cpp)
-target_link_libraries(yolomaster_score PRIVATE yolomaster_core)
+add_executable(yolomaster_score src/score_main.cpp src/stb_impl.cpp)   # portable core only, no OpenCV
+target_include_directories(yolomaster_score PRIVATE third_party)
+target_link_libraries(yolomaster_score PRIVATE yolomaster_ccore)
 if(USE_CUDA_PREPROC)
   add_executable(preproc_parity tests/preproc_parity.cpp)
   target_link_libraries(preproc_parity PRIVATE yolomaster_core)

@@ -1,7 +1,7 @@
 // yolomaster_score: score a directory of "class conf x1 y1 x2 y2" txt dumps against YOLO labels with
-// the in-process mAP (map_metrics.hpp). Prints the same line as scripts/eval_map.py so the two can
+// the in-process mAP (metrics_core.hpp, the portable core). Prints the same line as scripts/eval_map.py so the two can
 // be diffed: "images=N  mAP50=X.XXXX  mAP50-95=Y.YYYY".
-#include "map_metrics.hpp"
+#include "metrics_core.hpp"
 #include "stb_image.h"
 #include <algorithm>
 #include <cstdio>
