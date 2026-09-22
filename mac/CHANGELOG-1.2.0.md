@@ -93,7 +93,15 @@ bilinear), which is what makes `scripts/preproc_compare.py` meaningful.
 ## 7. Known limits
 
 - Tiles (`forwardPadded`) stay on the CPU path in this release.
-- BoT-SORT compensation is translational on macOS (no rotation / zoom term).
+- BoT-SORT compensation is translational on macOS (no rotation / zoom term); Vision quantizes the
+  translation to whole pixels of the registered frame (registered at up to 1280 px on the long side).
+- The in-process mAP agrees with `eval_map*.py` within 0.0005 on Core ML fp16 outputs, not to the
+  4th decimal: ultralytics sorts confidences and IoU matches with an unstable `np.argsort`, and fp16
+  outputs carry many exact ties after the six-digit rounding, so the reference's tie order is
+  implementation-defined (Linux fp32 outputs have no ties; T20 is exact there).
+- `scripts/preproc_compare.py` is a kernel check, not a decoder check: `--dump-input` also writes
+  the decoded source pixels (ImageIO and libjpeg differ by several levels on chroma) and the
+  reference letterbox runs on those.
 - `--accuracy` and the app's Accuracy pass take detection models only.
 - The Mac battery and the first Core ML mAP row require a Mac; nothing here was compiled on the
   Linux side except the portable core (g++ -std=c++17, the CMake build and the C-cleanliness

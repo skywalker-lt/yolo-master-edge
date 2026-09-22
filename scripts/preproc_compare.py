@@ -17,8 +17,23 @@ import cv2
 import numpy as np
 
 
-def reference(path, imgsz):
-    img = cv2.imread(path, cv2.IMREAD_COLOR)
+def load_source(stem, images_dir, dumps_dir):
+    """The BGR source: the runtime's own decoded pixels when it dumped them (<stem>.WxH.rgba|bgra next
+    to the tensor, so the JPEG decoder is out of the comparison), else the file decoded by cv2."""
+    for f in glob.glob(os.path.join(dumps_dir, stem + ".*x*.*")):
+        dims, order = f.rsplit(".", 2)[1:]
+        if order not in ("rgba", "bgra"):
+            continue
+        w, h = (int(v) for v in dims.split("x"))
+        px = np.fromfile(f, np.uint8).reshape(h, w, 4)
+        return (px[:, :, 2::-1] if order == "rgba" else px[:, :, :3]).copy(), "runtime pixels"
+    imgs = [p for p in glob.glob(os.path.join(images_dir, stem + ".*")) if p.lower().endswith((".jpg", ".jpeg", ".png", ".bmp"))]
+    if not imgs:
+        return None, "no source"
+    return cv2.imread(imgs[0], cv2.IMREAD_COLOR), "cv2 decode"
+
+
+def reference(img, imgsz):
     h, w = img.shape[:2]
     r = min(imgsz / w, imgsz / h)
     nw, nh = int(round(w * r)), int(round(h * r))
@@ -43,15 +58,16 @@ def main():
         return 2
     worst = 0.0
     bad = 0
+    source_kind = ""
     for d in dumps:
         stem = os.path.splitext(os.path.basename(d))[0]
-        imgs = [p for p in glob.glob(os.path.join(a.images, stem + ".*")) if p.lower().endswith((".jpg", ".jpeg", ".png", ".bmp"))]
-        if not imgs:
+        img, source_kind = load_source(stem, a.images, a.dumps)
+        if img is None:
             print(f"  {stem}: no source image", file=sys.stderr)
             bad += 1
             continue
         got = np.fromfile(d, np.float32)
-        ref = reference(imgs[0], a.imgsz)
+        ref = reference(img, a.imgsz)
         if got.size != ref.size:
             print(f"  {stem}: size {got.size} != {ref.size}", file=sys.stderr)
             bad += 1
@@ -64,7 +80,7 @@ def main():
         print(f"  {stem}: max|diff|={m:.5f} mean={float(diff.mean()):.6f} pad={pad_diff:.5f}{flag}")
         if m > a.tol:
             bad += 1
-    print(f"{len(dumps)} tensors, worst {worst:.5f} (tol {a.tol:.5f}): {'OK' if bad == 0 else str(bad) + ' failed'}")
+    print(f"{len(dumps)} tensors ({source_kind}), worst {worst:.5f} (tol {a.tol:.5f}): {'OK' if bad == 0 else str(bad) + ' failed'}")
     return 0 if bad == 0 else 1
 
 

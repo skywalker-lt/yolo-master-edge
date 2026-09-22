@@ -103,7 +103,17 @@ if let dumpInput {
     var n = 0
     for u in list {
         guard let cg = loadCGImage(u), let bytes = detector.inputTensorBytes(cg) else { continue }
-        try? bytes.write(to: dir.appendingPathComponent(u.deletingPathExtension().lastPathComponent + ".f32"))
+        let stem = u.deletingPathExtension().lastPathComponent
+        try? bytes.write(to: dir.appendingPathComponent(stem + ".f32"))
+        // the decoded source pixels the preprocessing saw (ImageIO's JPEG decoder differs from libjpeg by a
+        // few levels), so scripts/preproc_compare.py can isolate the kernel from the decoder
+        if let sp = MetalPreprocessor.sourcePixels(cg) {
+            var tight = Data(capacity: sp.width * sp.height * 4)
+            sp.data.withUnsafeBytes { raw in
+                for y in 0..<sp.height { tight.append(raw.baseAddress!.advanced(by: y * sp.bytesPerRow).assumingMemoryBound(to: UInt8.self), count: sp.width * 4) }
+            }
+            try? tight.write(to: dir.appendingPathComponent("\(stem).\(sp.width)x\(sp.height).\(sp.bgra ? "bgra" : "rgba")"))
+        }
         n += 1
     }
     print("[dump-input] \(n) tensors (\(detector.imgsz)x\(detector.imgsz) float32 NCHW, preproc=\(detector.effectivePreprocDevice.rawValue)) -> \(dir.path)")

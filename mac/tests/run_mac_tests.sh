@@ -83,7 +83,18 @@ if [ -n "$COCO500" ] && [ -d "$COCO500/labels" ]; then
       --save-txt "$OUT/valtxt" --bench-json "$OUT/acc/acc.json" > "$OUT/acc_out.txt" 2>&1
   GOT=$(grep "^\[accuracy\]" "$OUT/acc_out.txt" | sed 's/^\[accuracy\] //')
   REF=$(python3 "$ROOT/scripts/eval_map_standalone.py" --preds "$OUT/valtxt/val" --images "$COCO500/images" --labels "$COCO500/labels" 2>/dev/null | grep "^images=")
-  if [ -n "$REF" ] && [ "$REF" = "$GOT" ]; then ok "M3 in-process accuracy == eval_map_standalone.py on the val dump ($GOT)"
+  # ultralytics (and the standalone port of it) sorts confidences and IoU matches with an UNSTABLE
+  # np.argsort; Core ML fp16 outputs carry many exact ties after the six-digit rounding, so the
+  # reference's tie order is implementation-defined and the 4th decimal can differ (Linux fp32
+  # outputs have no ties, which is why T20 is exact). Agreement within 0.0005 is the Mac contract.
+  if [ -n "$REF" ] && python3 - "$REF" "$GOT" <<'PY'
+import re, sys
+def parse(s):
+    m = re.search(r"images=(\d+)\s+mAP50=([\d.]+)\s+mAP50-95=([\d.]+)", s); return int(m.group(1)), float(m.group(2)), float(m.group(3))
+(ri, r50, r95), (gi, g50, g95) = parse(sys.argv[1]), parse(sys.argv[2])
+assert ri == gi and abs(r50 - g50) <= 0.0005 and abs(r95 - g95) <= 0.0005, (sys.argv[1], sys.argv[2])
+PY
+  then ok "M3 in-process accuracy agrees with eval_map_standalone.py on the val dump within 0.0005 (got $GOT; ref $REF)"
   else echo "  ref: $REF"; echo "  got: $GOT"; no "M3 accuracy"; fi
   python3 "$ROOT/scripts/bench_schema_check.py" "$OUT/acc/acc.json" --accuracy > /dev/null && ok "M3b accuracy block in the bench JSON" || no "M3b"
 else skip "M3 (set COCO500=/path/to/coco500 with labels/)"; fi
@@ -146,7 +157,7 @@ if grep -q "preproc=gpu" "$OUT/dump_gpu.log" && [ "$(ls "$OUT/dump_gpu"/*.f32 2>
   grep "^\[summary\]" "$OUT/dump_gpu.log" | sed 's/^/  gpu /'; grep "^\[summary\]" "$OUT/dump_cpu.log" | sed 's/^/  cpu /'
   if python3 -c "import cv2, numpy" 2>/dev/null; then
     python3 "$ROOT/scripts/preproc_compare.py" "$IMAGES" "$OUT/dump_gpu" --imgsz "$(python3 -c "import json;print(json.load(open('$OUT/bench/b.json'))['model']['imgsz'])")" > "$OUT/cmp_gpu.txt" 2>&1 \
-      && ok "M5b Metal tensor within 1/255 of the Linux preprocess_nchw reference ($(tail -1 "$OUT/cmp_gpu.txt"))" \
+      && ok "M5b Metal tensor within 1/255 of the Linux preprocess_nchw rule on the same decoded pixels ($(tail -1 "$OUT/cmp_gpu.txt"))" \
       || { no "M5b Metal tensor parity"; tail -4 "$OUT/cmp_gpu.txt"; }
   else
     skip "M5b (no cv2 here: copy $OUT/dump_gpu to a box with opencv and run scripts/preproc_compare.py $IMAGES <dump_gpu>)"

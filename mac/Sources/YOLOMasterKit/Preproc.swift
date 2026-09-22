@@ -26,7 +26,7 @@ public struct PreprocGeometry: Sendable {
     public let scaleX, scaleY: CGFloat
 }
 
-final class MetalPreprocessor {
+public final class MetalPreprocessor {
     private struct Params {   // mirrors the MSL struct below (all 4-byte members, no padding surprises)
         var src_w: Int32, src_h: Int32, out_w: Int32, out_h: Int32, pad_x: Int32, pad_y: Int32, imgsz: Int32
         var fx: Float, fy: Float
@@ -98,34 +98,40 @@ final class MetalPreprocessor {
     }
 
     // ---- sources ----
-    /// A texture holding the CGImage's pixels. 32-bit RGBA / BGRA providers are uploaded as they are;
-    /// anything else is rendered once into an RGBA raster at native size (a copy, not a resample).
-    func texture(from image: CGImage) -> MTLTexture? {
+    /// The pixels a CGImage contributes to the kernel: 32-bit RGBA / BGRA providers as they are, anything
+    /// else rendered once into an RGBA raster at native size (a copy, not a resample). Public so the
+    /// parity dump can write exactly what the kernel saw (`--dump-input`).
+    public struct SourcePixels {
+        public let data: Data
+        public let width, height, bytesPerRow: Int
+        public let bgra: Bool          // byte order in `data`: BGRA when true, RGBA otherwise
+    }
+    public static func sourcePixels(_ image: CGImage) -> SourcePixels? {
         let w = image.width, h = image.height
-        var format = MTLPixelFormat.rgba8Unorm
-        var bytes: Data? = nil
-        var bytesPerRow = w * 4
         if image.bitsPerPixel == 32, image.bitsPerComponent == 8, let data = image.dataProvider?.data as Data? {
             let alpha = image.alphaInfo
-            let order = image.bitmapInfo.intersection(.byteOrderMask)
-            let little = order == .byteOrder32Little
+            let little = image.bitmapInfo.intersection(.byteOrderMask) == .byteOrder32Little
             let first = alpha == .premultipliedFirst || alpha == .noneSkipFirst || alpha == .first
             let last = alpha == .premultipliedLast || alpha == .noneSkipLast || alpha == .last
-            if little && first { format = .bgra8Unorm; bytes = data; bytesPerRow = image.bytesPerRow }        // BGRA in memory
-            else if !little && last { format = .rgba8Unorm; bytes = data; bytesPerRow = image.bytesPerRow }   // RGBA in memory
+            if little && first { return SourcePixels(data: data, width: w, height: h, bytesPerRow: image.bytesPerRow, bgra: true) }
+            if !little && last { return SourcePixels(data: data, width: w, height: h, bytesPerRow: image.bytesPerRow, bgra: false) }
         }
-        if bytes == nil {
-            var px = [UInt8](repeating: 0, count: w * h * 4)
-            let ok = px.withUnsafeMutableBytes { raw -> Bool in
-                guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
-                ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-                return true
-            }
-            guard ok else { return nil }
-            bytes = Data(px); bytesPerRow = w * 4; format = .rgba8Unorm
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        let ok = px.withUnsafeMutableBytes { raw -> Bool in
+            guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
         }
-        guard let data = bytes else { return nil }
+        return ok ? SourcePixels(data: Data(px), width: w, height: h, bytesPerRow: w * 4, bgra: false) : nil
+    }
+
+    func texture(from image: CGImage) -> MTLTexture? {
+        guard let src = MetalPreprocessor.sourcePixels(image) else { return nil }
+        let w = src.width, h = src.height
+        let format: MTLPixelFormat = src.bgra ? .bgra8Unorm : .rgba8Unorm
+        let bytesPerRow = src.bytesPerRow
+        let data = src.data
         if uploadTexture == nil || uploadTexture!.width != w || uploadTexture!.height != h || uploadTexture!.pixelFormat != format {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: w, height: h, mipmapped: false)
             d.usage = [.shaderRead]
