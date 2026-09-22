@@ -76,10 +76,10 @@ public struct BenchDocument: Codable {
     public var dataset: Dataset?
     public var accuracy: Accuracy?
 
-    public init(timestamp: String, tool: String, model: Model, environment: Environment, protocol: ProtocolInfo,
+    public init(timestamp: String, tool: String, model: Model, environment: Environment, protocol proto: ProtocolInfo,
                 cold: Cold? = nil, sustained: Sustained? = nil, dataset: Dataset? = nil, accuracy: Accuracy? = nil) {
         self.timestamp = timestamp; self.tool = tool; self.model = model; self.environment = environment
-        self.protocol = `protocol`; self.cold = cold; self.sustained = sustained; self.dataset = dataset; self.accuracy = accuracy
+        self.protocol = proto; self.cold = cold; self.sustained = sustained; self.dataset = dataset; self.accuracy = accuracy
     }
 
     public func json() throws -> Data {
