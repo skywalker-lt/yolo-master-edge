@@ -518,31 +518,54 @@ struct BenchDashboard: View {
         return bench.lastRecord
     }
 
+    /// The protocol being shown: the record's for a history record, else the live selection.
+    private var shownKind: BenchKind { selectedRecord != nil ? (shownRecord?.kind ?? bench.kind) : (bench.running || bench.lastRecord == nil ? bench.kind : bench.lastRecord!.kind) }
+    /// Cell colours: one per (model, unit), stable across the charts and the table.
+    private func cellColor(_ index: Int) -> Color {
+        let palette: [Color] = [brand, .orange, .green, .purple, .pink, .teal, .indigo, .brown]
+        return palette[index % palette.count]
+    }
+
     var body: some View {
+        ScrollView {
         VStack(spacing: 14) {
             header
             HStack(alignment: .top, spacing: 14) {
                 VStack(spacing: 14) {
                     statCards
-                    liveChart.frame(minHeight: 220)
-                    if bench.kind == .sustained || (shownCells.first?.sustained != nil) { sustainedChart.frame(height: 160) }
+                    switch shownKind {
+                    case .sustained:
+                        timeChart.frame(height: 260)
+                        sustainedChart.frame(height: 170)
+                    case .dataset:
+                        timeChart.frame(height: 300)
+                    case .cold:
+                        histogramChart.frame(height: 260)
+                        if shownCells.count > 1 || (bench.running && !bench.cells.isEmpty) { comparisonChart.frame(height: 170) }
+                    case .accuracy:
+                        if let acc = (selectedRecord == nil ? bench.liveCell?.accuracy ?? shownCells.first?.accuracy : shownCells.first?.accuracy) {
+                            accuracyChart(acc).frame(height: 260)
+                        } else {
+                            accuracyPending.frame(height: 260)
+                        }
+                        if shownCells.count > 1 { comparisonChart.frame(height: 170) }
+                    }
                 }
                 thermometer.frame(width: 96)
             }
             if !shownCells.isEmpty {
                 resultsTable
-                if let acc = shownCells.first(where: { $0.accuracy != nil })?.accuracy { accuracyChart(acc).frame(height: 180) }
             } else if !bench.running {
-                Spacer()
                 VStack(spacing: 6) {
                     Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 40)).foregroundStyle(.tertiary)
                     Text("Pick models, compute units and a protocol in the sidebar, then Run.").font(.callout).foregroundStyle(.secondary)
                     Text("Every run streams here as it happens and is kept in History.").font(.caption).foregroundStyle(.tertiary)
                 }
-                Spacer()
+                .frame(maxWidth: .infinity, minHeight: 160)
             }
         }
         .padding(16)
+        }
     }
 
     private var header: some View {
@@ -595,76 +618,184 @@ struct BenchDashboard: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
-    /// Model time against wall-clock seconds since the cell started. While a run streams the window
-    /// grows from 0 until it spans `windowSeconds`, then rolls (the last minute is always in view);
-    /// once the run is done, and for history records, the entire series is shown. Decimated min/max
-    /// band, mean line and a smoothed trend, the median of what is shown as a rule; y follows the data.
-    private static let windowSeconds = 60.0
-    private var liveChart: some View {
-        let all: [(t: Double, ms: Double)] = {
-            if (bench.running || selectedRecord == nil) && !bench.liveSamples.isEmpty { return bench.liveSamples }
-            guard let c = shownCells.first else { return [] }
-            return c.samples.enumerated().map { ($0.offset < c.sampleTimes.count ? c.sampleTimes[$0.offset] : Double($0.offset), $0.element) }
-        }()
-        let tEnd = max(all.map(\.t).max() ?? 0, 1)
-        // rolling minute while a run streams; the whole series once it is done (or for a history record)
-        let tStart = bench.running ? max(0, tEnd - BenchDashboard.windowSeconds) : 0
-        let window = tStart > 0 ? all.filter { $0.t >= tStart } : all
-        let ys = window.map(\.ms)
-        let med = ys.isEmpty ? 0 : StageStats(ys).median
-        let lo = ys.min() ?? 0, hi = ys.max() ?? 1
-        let pad = max((hi - lo) * 0.08, 0.05)
-        // a minute at 100+ fps is thousands of samples: decimate to <= 400 buckets (min / max band + mean),
-        // then smooth the means; the chart redraws ten times a second on the streamed data
-        let buckets = max(1, Int((Double(window.count) / 400).rounded(.up)))
-        var band: [(t: Double, lo: Double, hi: Double, mean: Double)] = []
-        band.reserveCapacity(window.count / buckets + 1)
-        var i = 0
-        while i < window.count {
-            let slice = window[i..<min(i + buckets, window.count)]
-            let v = slice.map(\.ms)
-            band.append((slice[slice.startIndex].t, v.min() ?? 0, v.max() ?? 0, v.reduce(0, +) / Double(v.count)))
-            i += buckets
+    /// One series of (seconds since the cell started, model ms).
+    private struct Series { let name: String; let color: Color; let points: [(t: Double, ms: Double)] }
+    /// While a run streams: the current cell, a rolling last-minute window. Once it is done (and for
+    /// history records): every cell's full series overlaid from its own 0 s, one colour per cell.
+    private var seriesToShow: (series: [Series], tStart: Double, tEnd: Double) {
+        if bench.running, let c = bench.liveCell {
+            let pts = bench.liveSamples
+            let tEnd = max(pts.map(\.t).max() ?? 0, 1)
+            return ([Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: brand, points: pts)],
+                    max(0, tEnd - BenchDashboard.windowSeconds), tEnd)
         }
-        let trend: [(t: Double, ms: Double)] = {
-            var out: [(t: Double, ms: Double)] = []; out.reserveCapacity(band.count)
-            var sum = 0.0
-            for (k, b) in band.enumerated() {
-                sum += b.mean
-                if k >= 8 { sum -= band[k - 8].mean }
-                out.append((b.t, sum / Double(min(k + 1, 8))))
-            }
-            return out
-        }()
+        let cells = shownCells
+        let series = cells.enumerated().map { k, c in
+            Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellColor(k),
+                   points: c.samples.enumerated().map { ($0.offset < c.sampleTimes.count ? c.sampleTimes[$0.offset] : Double($0.offset), $0.element) })
+        }
+        let tEnd = max(series.flatMap { $0.points.map(\.t) }.max() ?? 0, 1)
+        return (series, 0, tEnd)
+    }
+    private static let windowSeconds = 60.0
+    /// Percentile-bounded y range so a single outlier never compresses the trace (values beyond it are clamped).
+    private static func yRange(_ values: [Double]) -> ClosedRange<Double> {
+        guard values.count > 1 else { let v = values.first ?? 0; return (v - 0.5)...(v + 0.5) }
+        let sorted = values.sorted()
+        let lo = sorted[Int(Double(sorted.count) * 0.01)], hi = sorted[min(Int(Double(sorted.count) * 0.99), sorted.count - 1)]
+        let pad = max((hi - lo) * 0.10, 0.05)
+        return (lo - pad)...(hi + pad)
+    }
+    private struct Bucket: Identifiable { let id: Int; let series: String; let t, lo, hi, mean, trend: Double }
+    /// Decimate one series to <= 400 buckets (min / max band + mean) and smooth the means.
+    private static func decimate(_ pts: [(t: Double, ms: Double)], name: String, from tStart: Double, into range: ClosedRange<Double>) -> [Bucket] {
+        let window = tStart > 0 ? pts.filter { $0.t >= tStart } : pts
+        guard !window.isEmpty else { return [] }
+        let size = max(1, Int((Double(window.count) / 400).rounded(.up)))
+        var out: [Bucket] = []; out.reserveCapacity(window.count / size + 1)
+        var i = 0, sum = 0.0, means: [Double] = []
+        let clamp: (Double) -> Double = { min(max($0, range.lowerBound), range.upperBound) }
+        while i < window.count {
+            let slice = window[i..<min(i + size, window.count)]
+            let v = slice.map(\.ms)
+            let mean = v.reduce(0, +) / Double(v.count)
+            means.append(mean); sum += mean
+            if means.count > 8 { sum -= means[means.count - 9] }
+            out.append(Bucket(id: out.count, series: name, t: slice[slice.startIndex].t, lo: clamp(v.min() ?? 0), hi: clamp(v.max() ?? 0),
+                              mean: clamp(mean), trend: clamp(sum / Double(min(means.count, 8)))))
+            i += size
+        }
+        return out
+    }
+
+    private var timeChart: some View {
+        let shown = seriesToShow
+        let visible = shown.series.flatMap { s in (shown.tStart > 0 ? s.points.filter { $0.t >= shown.tStart } : s.points).map(\.ms) }
+        let range = BenchDashboard.yRange(visible)
+        let med = visible.isEmpty ? 0 : StageStats(visible).median
+        let buckets = shown.series.map { BenchDashboard.decimate($0.points, name: $0.name, from: shown.tStart, into: range) }
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(bench.kind == .dataset ? "Model time per image" : "Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(shownKind == .dataset ? "Model time per image" : "Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                if !window.isEmpty {
-                    Text(String(format: "%@%.0f s · %d samples · median %.2f ms · last %.2f ms · band = min/max per %d",
-                                bench.running ? "last " : "full run ", tEnd - tStart, window.count, med, window.last?.ms ?? 0, buckets))
+                if !visible.isEmpty {
+                    Text(String(format: "%@%.0f s · %d samples · median %.2f ms · y = p1..p99", bench.running ? "last " : "full run ",
+                                shown.tEnd - shown.tStart, visible.count, med))
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
             Chart {
-                ForEach(Array(band.enumerated()), id: \.offset) { _, b in
-                    AreaMark(x: .value("s", b.t), yStart: .value("min", b.lo), yEnd: .value("max", b.hi))
-                        .foregroundStyle(brand.opacity(0.18))
-                    LineMark(x: .value("s", b.t), y: .value("ms", b.mean), series: .value("series", "raw"))
-                        .foregroundStyle(brand.opacity(0.45)).lineStyle(StrokeStyle(lineWidth: 0.8))
+                ForEach(Array(buckets.enumerated()), id: \.offset) { k, bs in
+                    ForEach(bs) { b in
+                        AreaMark(x: .value("s", b.t), yStart: .value("min", b.lo), yEnd: .value("max", b.hi), series: .value("series", b.series + " band"))
+                            .foregroundStyle(shown.series[k].color.opacity(0.16))
+                        LineMark(x: .value("s", b.t), y: .value("ms", b.trend), series: .value("series", b.series))
+                            .foregroundStyle(by: .value("series", b.series)).lineStyle(StrokeStyle(lineWidth: 2)).interpolationMethod(.monotone)
+                    }
                 }
-                ForEach(Array(trend.enumerated()), id: \.offset) { _, p in
-                    LineMark(x: .value("s", p.t), y: .value("ms", p.ms), series: .value("series", "trend"))
-                        .foregroundStyle(brand).lineStyle(StrokeStyle(lineWidth: 2)).interpolationMethod(.monotone)
+                if !visible.isEmpty && shown.series.count == 1 {
+                    RuleMark(y: .value("median", med)).foregroundStyle(.secondary.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                 }
-                if !window.isEmpty { RuleMark(y: .value("median", med)).foregroundStyle(.secondary.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3])) }
             }
+            .chartForegroundStyleScale(domain: shown.series.map(\.name), range: shown.series.map(\.color))
             .chartYAxisLabel("ms").chartXAxisLabel("seconds")
-            .chartXScale(domain: tStart...max(tEnd, tStart + 1))
-            .chartYScale(domain: (lo - pad)...(hi + pad))
-            .chartLegend(.hidden)
+            .chartXScale(domain: shown.tStart...max(shown.tEnd, shown.tStart + 1))
+            .chartYScale(domain: range)
+            .chartLegend(shown.series.count > 1 ? .visible : .hidden)
         }
         .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+
+    /// Cold sweep: the latency distribution of the timed iterations (fills up live), with the
+    /// median / p90 / p99 marked. After a sweep every cell's distribution is overlaid.
+    private var histogramChart: some View {
+        let shown = seriesToShow
+        let all = shown.series.flatMap { $0.points.map(\.ms) }
+        let range = BenchDashboard.yRange(all)
+        let binCount = 40
+        let width = (range.upperBound - range.lowerBound) / Double(binCount)
+        struct Bin: Identifiable { let id: String; let series: String; let x: Double; let n: Int }
+        var bins: [Bin] = []
+        for s in shown.series {
+            var counts = [Int](repeating: 0, count: binCount)
+            for v in s.points.map(\.ms) {
+                let k = min(max(Int((v - range.lowerBound) / width), 0), binCount - 1)
+                counts[k] += 1
+            }
+            for (k, n) in counts.enumerated() where n > 0 { bins.append(Bin(id: "\(s.name)#\(k)", series: s.name, x: range.lowerBound + (Double(k) + 0.5) * width, n: n)) }
+        }
+        let stats = all.count > 1 ? StageStats(all) : nil
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Latency distribution of the timed iterations").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                if let st = stats { Text(String(format: "%d samples · median %.2f · p90 %.2f · p99 %.2f ms", st.n, st.median, st.p90, st.p99)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
+            }
+            Chart {
+                ForEach(bins) { b in
+                    BarMark(x: .value("ms", b.x), y: .value("count", b.n), width: .fixed(6))
+                        .foregroundStyle(by: .value("series", b.series)).opacity(shown.series.count > 1 ? 0.7 : 0.9)
+                }
+                if let st = stats, shown.series.count == 1 {
+                    RuleMark(x: .value("median", st.median)).foregroundStyle(.primary).lineStyle(StrokeStyle(lineWidth: 1.5)).annotation(position: .top, alignment: .leading) { Text("median").font(.caption2) }
+                    RuleMark(x: .value("p90", st.p90)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3])).annotation(position: .top, alignment: .leading) { Text("p90").font(.caption2).foregroundStyle(.secondary) }
+                    RuleMark(x: .value("p99", st.p99)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3])).annotation(position: .top, alignment: .leading) { Text("p99").font(.caption2).foregroundStyle(.secondary) }
+                }
+            }
+            .chartForegroundStyleScale(domain: shown.series.map(\.name), range: shown.series.map(\.color))
+            .chartXAxisLabel("ms").chartYAxisLabel("iterations")
+            .chartXScale(domain: range)
+            .chartLegend(shown.series.count > 1 ? .visible : .hidden)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+
+    /// Cells side by side: median with the p90 whisker (cold / sustained / dataset) or mAP50-95 (accuracy).
+    private var comparisonChart: some View {
+        let cells = bench.running ? bench.cells : shownCells
+        let accuracyMode = shownKind == .accuracy
+        struct Row: Identifiable { let id: UUID; let name: String; let value: Double; let hi: Double }
+        let rows = cells.map { c -> Row in
+            if accuracyMode { return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.accuracy?.map5095 ?? 0, hi: c.accuracy?.map50 ?? 0) }
+            return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.cold?.median ?? 0, hi: c.cold?.p90 ?? 0)
+        }
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(accuracyMode ? "Cells side by side: mAP50-95 (bar) and mAP50 (tick)" : "Cells side by side: median (bar) and p90 (tick)")
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Chart {
+                ForEach(Array(rows.enumerated()), id: \.offset) { k, r in
+                    BarMark(x: .value("value", r.value), y: .value("cell", r.name)).foregroundStyle(cellColor(k).opacity(0.85))
+                        .annotation(position: .trailing) { Text(accuracyMode ? String(format: "%.4f", r.value) : String(format: "%.2f ms", r.value)).font(.caption2.monospacedDigit()) }
+                    if r.hi > 0 { PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).symbol(.diamond).foregroundStyle(.primary).symbolSize(30) }
+                }
+            }
+            .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
+            .chartXScale(domain: accuracyMode ? 0...1 : 0...max((rows.map(\.hi).max() ?? 1) * 1.15, 0.1))
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+
+    private var accuracyPending: some View {
+        VStack(spacing: 8) {
+            if bench.running {
+                ProgressView(value: bench.progress ?? 0).frame(width: 260)
+                Text(bench.phase).font(.caption).foregroundStyle(.secondary)
+                if bench.liveSamples.count > 1 {
+                    let st = StageStats(bench.liveSamples.map(\.ms))
+                    Text(String(format: "%d images scored · model median %.2f ms", st.n, st.median)).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                }
+            } else {
+                Image(systemName: "checkmark.seal").font(.system(size: 30)).foregroundStyle(.tertiary)
+                Text("The per-class AP chart appears once the accuracy pass has scored the set.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
@@ -691,10 +822,7 @@ struct BenchDashboard: View {
                 }
             }
             .chartYAxisLabel("ms").chartXAxisLabel("seconds")
-            .chartYScale(domain: {
-                let ys = points.map(\.med); let lo = ys.min() ?? 0, hi = ys.max() ?? 1; let pad = max((hi - lo) * 0.15, 0.05)
-                return (lo - pad)...(hi + pad)
-            }())
+            .chartYScale(domain: BenchDashboard.yRange(points.map(\.med)))
             .chartLegend(.hidden)
         }
         .padding(12)
