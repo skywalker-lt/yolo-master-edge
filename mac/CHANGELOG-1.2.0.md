@@ -76,7 +76,7 @@ the tracker over cached candidates in frame order, filtering the output back to 
 `runVideo` (CLI) tracks inline; the app records `MotionLog` during `inferVideo` and recomputes
 tracks off-main on every settings change (superseding runs are cancelled), feeding playback,
 scrubbing and `exportVideoCached(tracked:)`. `VisionCameraMotion` registers the previous frame
-onto the current one with `VNTranslationalImageRegistrationRequest` at a long side of 480 px and
+onto the current one with `VNTranslationalImageRegistrationRequest` at a long side of up to 1280 px (y negated to top-down) and
 scales the translation back; `YM_MOTION_DEBUG=1` prints every estimate.
 
 ## 6. Metal preprocessing
