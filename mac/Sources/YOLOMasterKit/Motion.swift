@@ -4,8 +4,11 @@
 // VNTranslationalImageRegistrationRequest registers the previous frame (floating) onto the current
 // one (reference) and returns the pixel-space translation; the rotation / scale block stays the
 // identity. That is the translational subset of what estimateAffinePartial2D fits: exact for pans
-// and handheld drift, an approximation when the camera rolls or zooms between two frames. Frames
-// are registered downscaled (long side `maxSide`) and the translation scaled back up.
+// and handheld drift, an approximation when the camera rolls or zooms between two frames. Vision's
+// pixel space has a bottom-left origin (the y component is negated to the tracker's top-down
+// convention) and the translation is quantized to whole pixels of the registered frames, so frames
+// are registered at up to `maxSide` on the long side (verified on the diagonal-pan clip of the Mac
+// battery: tx = +3, ty = +2 per frame come back as +3, +2).
 // YM_MOTION_DEBUG=1 prints every estimate to stderr (used to verify the axis convention on the
 // synthetic diagonal-pan clip of the Mac test script).
 import Foundation
@@ -20,7 +23,7 @@ public final class VisionCameraMotion: CameraMotionEstimator {
     public private(set) var frames = 0, estimated = 0
 
     /// `maxSide`: frames larger than this on their long side are registered downscaled.
-    public init(maxSide: CGFloat = 480) { self.maxSide = maxSide }
+    public init(maxSide: CGFloat = 1280) { self.maxSide = maxSide }
 
     public func reset() { previous = nil; frames = 0; estimated = 0 }
 
@@ -34,7 +37,7 @@ public final class VisionCameraMotion: CameraMotionEstimator {
         let handler = VNImageRequestHandler(cgImage: small, options: [:])
         guard (try? handler.perform([request])) != nil, let obs = request.results?.first else { return nil }
         let t = obs.alignmentTransform            // pixel space of the registered (downscaled) frames
-        let tx = Double(t.tx) / Double(scale), ty = Double(t.ty) / Double(scale)
+        let tx = Double(t.tx) / Double(scale), ty = -Double(t.ty) / Double(scale)   // y-up -> top-down
         if debug { FileHandle.standardError.write("[motion] frame \(frames) tx=\(tx) ty=\(ty)\n".data(using: .utf8)!) }
         // reject wild solutions (a registration failure returns huge or NaN offsets)
         guard tx.isFinite, ty.isFinite, abs(tx) < Double(frame.width) / 2, abs(ty) < Double(frame.height) / 2 else { return nil }
