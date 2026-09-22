@@ -32,8 +32,7 @@ public final class VisionCameraMotion: CameraMotionEstimator {
         guard let prev = previous, prev.width == small.width, prev.height == small.height else { return nil }
         let request = VNTranslationalImageRegistrationRequest(targetedCGImage: prev, options: [:])
         let handler = VNImageRequestHandler(cgImage: small, options: [:])
-        guard (try? handler.perform([request])) != nil,
-              let obs = request.results?.first as? VNImageTranslationalAlignmentObservation else { return nil }
+        guard (try? handler.perform([request])) != nil, let obs = request.results?.first else { return nil }
         let t = obs.alignmentTransform            // pixel space of the registered (downscaled) frames
         let tx = Double(t.tx) / Double(scale), ty = Double(t.ty) / Double(scale)
         if debug { FileHandle.standardError.write("[motion] frame \(frames) tx=\(tx) ty=\(ty)\n".data(using: .utf8)!) }
