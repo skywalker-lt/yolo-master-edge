@@ -172,13 +172,22 @@ public enum BenchRunner {
     }
 
     /// `warmup` untimed then `iters` timed Core ML predictions on the probe (probe_mode "infer_only").
-    public static func coldSweep(_ det: Detector, warmup: Int, iters: Int) -> BenchDocument.Cold {
+    /// `onSample(index, ms)` streams every timed iteration (a live chart); `cancel()` stops early and
+    /// the statistics cover what was collected.
+    public static func coldSweep(_ det: Detector, warmup: Int, iters: Int,
+                                 cancel: (() -> Bool)? = nil, onSample: ((Int, Double) -> Void)? = nil) -> BenchDocument.Cold {
         guard let probe = probeImage(det.imgsz) else { return BenchDocument.Cold(infer_ms: StageStats([]), probe_mode: "infer_only") }
-        for _ in 0..<max(warmup, 0) { _ = try? det.inferOnly(probe) }
+        for _ in 0..<max(warmup, 0) {
+            if cancel?() == true { break }
+            _ = try? det.inferOnly(probe)
+        }
         var v: [Double] = []
         v.reserveCapacity(max(iters, 0))
-        for _ in 0..<max(iters, 0) {
-            autoreleasepool { if let t = try? det.inferOnly(probe) { v.append(t) } }
+        for i in 0..<max(iters, 0) {
+            if cancel?() == true { break }
+            autoreleasepool {
+                if let t = try? det.inferOnly(probe) { v.append(t); onSample?(i, t) }
+            }
         }
         return BenchDocument.Cold(infer_ms: StageStats(v), probe_mode: "infer_only")
     }
@@ -186,7 +195,8 @@ public enum BenchRunner {
     /// Timed loop for `minutes` after `warmup`; cold baseline = median of the first `coldIters`;
     /// one sparkline median and one thermal-state sample per second. `cancel()` stops early.
     public static func sustainedLoop(_ det: Detector, warmup: Int, minutes: Double, coldIters: Int = 50,
-                                     cancel: (() -> Bool)? = nil, tick: ((Double, Double) -> Void)? = nil) -> BenchDocument.Sustained {
+                                     cancel: (() -> Bool)? = nil, tick: ((Double, Double) -> Void)? = nil,
+                                     onSample: ((Int, Double) -> Void)? = nil) -> BenchDocument.Sustained {
         var r = BenchDocument.Sustained(infer_ms: StageStats([]), cold_median_ms: 0, sustained_median_ms: 0, throttle_pct: 0,
                                         sparkline: [], duration_s: 0, probe_mode: "infer_only", thermal: [])
         guard let probe = probeImage(det.imgsz) else { return r }
@@ -200,6 +210,7 @@ public enum BenchRunner {
             if elapsed >= budget && all.count >= coldIters { break }
             guard let t = (try? autoreleasepool { try det.inferOnly(probe) }) else { break }
             all.append(t); second.append(t)
+            onSample?(all.count - 1, t)
             if Date().timeIntervalSince(secStart) >= 1 {
                 r.sparkline.append(StageStats(second).median)
                 r.thermal?.append(thermalName(ProcessInfo.processInfo.thermalState))
@@ -255,7 +266,8 @@ public enum AccuracyRunner {
     /// the number equals scoring a --save-txt dump. `dump` receives every image's detections.
     public static func run(_ det: Detector, images: [URL], labels spec: String, resize: Int = 0,
                            dump: ((URL, [Detection]) -> Void)? = nil,
-                           progress: ((Int, Int) -> Void)? = nil) -> Outcome {
+                           progress: ((Int, Int) -> Void)? = nil,
+                           onInfer: ((Int, Double) -> Void)? = nil) -> Outcome {
         let ldir = labelsDir(spec)
         var evals: [ImageEval] = []
         evals.reserveCapacity(images.count)
@@ -267,6 +279,7 @@ public enum AccuracyRunner {
                 guard let res = try? det.detect(cg, conf: AccuracyProtocolValues.confFloor, iou: AccuracyProtocolValues.iou,
                                                 maxDet: AccuracyProtocolValues.maxDet) else { return }
                 infer.append(res.inferMs)
+                onInfer?(i, res.inferMs)
                 dump?(src, res.detections)
                 let gts = MapEvaluator.loadLabels(MapEvaluator.labelPath(forImage: src.path, labelsDir: ldir),
                                                   imageWidth: cg.width, imageHeight: cg.height)

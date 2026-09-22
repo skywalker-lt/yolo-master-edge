@@ -699,113 +699,6 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         return panel.runModal() == .OK ? panel.url : nil
     }
 
-    // ---- benchmark mode (the yolomaster-bench/v1 document, same as the CLI's --bench / --accuracy) ----
-    @Published var bench: BenchDocument?          // last run (cold / sustained / accuracy merged in)
-    @Published var benchBusy = false
-    @Published var benchNote = ""                 // one-line progress / result text
-    private var benchCancel = OSAllocatedUnfairLock(initialState: false)
-
-    private func benchDocument(_ det: Detector, model: URL, mode: BenchMode, warmup: Int, iters: Int, minutes: Double,
-                               conf: Double, iou: Double, probeMode: String) -> BenchDocument {
-        var card = BenchEnvironment.model(det)
-        card.ep_note = "preproc=\(det.effectivePreprocDevice.rawValue)"
-        return BenchDocument(timestamp: YMCore.timestampUTC(), tool: "macos", model: card,
-                      environment: BenchEnvironment.collect(),
-                      protocol: .init(mode: mode.rawValue, conf: Float(conf), iou: Float(iou), max_det: 300, multi_label: true,
-                                      slicing: "off", tile_size: 0, warmup: warmup, iters: iters, minutes: minutes,
-                                      probe: "gray114", probe_mode: probeMode, dataset: "", image_count: 0,
-                                      image_list_sha256: YMCore.imageListSha256([])))
-    }
-    /// Cold sweep (warmup untimed, iters timed probes) or sustained loop (minutes) on the loaded model.
-    func runBench(model: URL, compute: ComputeMode, mode: BenchMode, warmup: Int = 10, iters: Int = 50, minutes: Double = 2,
-                  conf: Double, iou: Double) {
-        guard !benchBusy else { return }
-        benchBusy = true; benchNote = mode == .sustained ? "Sustained run: \(Int(minutes)) min…" : "Cold sweep…"
-        benchCancel.withLock { $0 = false }
-        let k = model.path + "|" + compute.rawValue
-        queue.async { [weak self] in
-            guard let self else { return }
-            do {
-                let det = try self.reuseDetector(model: model, compute: compute, key: k)
-                det.preprocDevice = self.preprocDevice
-                var doc = self.bench ?? self.benchDocument(det, model: model, mode: mode, warmup: warmup, iters: iters, minutes: minutes,
-                                                          conf: conf, iou: iou, probeMode: "infer_only")
-                // a new model / compute unit starts a fresh document; the same one accumulates cold + sustained + accuracy
-                if doc.model.path != model.path || doc.model.execution_provider != BenchEnvironment.model(det).execution_provider {
-                    doc = self.benchDocument(det, model: model, mode: mode, warmup: warmup, iters: iters, minutes: minutes,
-                                             conf: conf, iou: iou, probeMode: "infer_only")
-                }
-                doc.protocol.mode = mode.rawValue; doc.protocol.warmup = warmup; doc.protocol.iters = iters; doc.protocol.minutes = minutes
-                doc.timestamp = YMCore.timestampUTC()
-                if mode == .sustained {
-                    let su = BenchRunner.sustainedLoop(det, warmup: warmup, minutes: minutes, coldIters: iters,
-                                                       cancel: { self.benchCancel.withLock { $0 } },
-                                                       tick: { elapsed, med in
-                        DispatchQueue.main.async { self.benchNote = String(format: "Sustained %.0fs: %.2f ms (this second)", elapsed, med) } })
-                    doc.sustained = su
-                    DispatchQueue.main.async {
-                        self.bench = doc; self.benchBusy = false
-                        self.benchNote = String(format: "Sustained %.0fs: cold %.2f ms, sustained %.2f ms, throttle %+.1f%%",
-                                                su.duration_s, su.cold_median_ms, su.sustained_median_ms, su.throttle_pct)
-                    }
-                } else {
-                    let cold = BenchRunner.coldSweep(det, warmup: warmup, iters: iters)
-                    doc.cold = cold
-                    DispatchQueue.main.async {
-                        self.bench = doc; self.benchBusy = false
-                        self.benchNote = String(format: "Cold: median %.2f ms, p90 %.2f, p99 %.2f (n=%d)",
-                                                cold.infer_ms.median, cold.infer_ms.p90, cold.infer_ms.p99, cold.infer_ms.n)
-                    }
-                }
-            } catch { DispatchQueue.main.async { self.benchNote = "Bench failed: \(error.localizedDescription)"; self.benchBusy = false } }
-        }
-    }
-    func cancelBench() { benchCancel.withLock { $0 = true } }
-    /// Accuracy pass at the val protocol over `images` with YOLO labels (`labels` nil = the ultralytics
-    /// images -> labels rule next to the images), scored in process through the portable core.
-    func runAccuracy(model: URL, compute: ComputeMode, images: URL, labels: URL?, conf: Double, iou: Double) {
-        guard !benchBusy else { return }
-        let files = listImages(images)
-        guard !files.isEmpty else { benchNote = "No images in \(images.lastPathComponent)"; return }
-        benchBusy = true; benchNote = "Accuracy: 0/\(files.count)…"
-        let k = model.path + "|" + compute.rawValue
-        queue.async { [weak self] in
-            guard let self else { return }
-            do {
-                let det = try self.reuseDetector(model: model, compute: compute, key: k)
-                det.preprocDevice = self.preprocDevice
-                if det.isSegment { throw NSError(domain: "bench", code: 1, userInfo: [NSLocalizedDescriptionKey: "the accuracy pass takes a detection model (seg candidates at conf 0.001 are too many)"]) }
-                var doc = self.bench ?? self.benchDocument(det, model: model, mode: .cold, warmup: 0, iters: 0, minutes: 0,
-                                                          conf: conf, iou: iou, probeMode: "infer_only")
-                if doc.model.path != model.path || doc.model.execution_provider != BenchEnvironment.model(det).execution_provider {
-                    doc = self.benchDocument(det, model: model, mode: .cold, warmup: 0, iters: 0, minutes: 0, conf: conf, iou: iou, probeMode: "infer_only")
-                }
-                doc.protocol.dataset = images.lastPathComponent
-                doc.protocol.image_count = files.count
-                doc.protocol.image_list_sha256 = YMCore.imageListSha256(files.map { $0.path })
-                let o = AccuracyRunner.run(det, images: files, labels: labels?.path ?? "auto", progress: { done, total in
-                    if done % 5 == 0 { DispatchQueue.main.async { self.benchNote = "Accuracy: \(done)/\(total)…" } }
-                })
-                doc.accuracy = o.document()
-                doc.timestamp = YMCore.timestampUTC()
-                DispatchQueue.main.async {
-                    self.bench = doc; self.benchBusy = false
-                    self.benchNote = String(format: "mAP50 %.4f  mAP50-95 %.4f  (%d images, %d classes)", o.map.map50, o.map.map5095, o.map.images, o.map.perClass.count)
-                }
-            } catch { DispatchQueue.main.async { self.benchNote = "Accuracy failed: \(error.localizedDescription)"; self.benchBusy = false } }
-        }
-    }
-    func saveBenchJSON() {
-        guard let doc = bench else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "bench-\(doc.model.id)-\(doc.model.execution_provider).json"
-        panel.allowedContentTypes = [.json]
-        panel.message = "Save the yolomaster-bench/v1 document"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try doc.json().write(to: url); benchNote = "Saved \(url.lastPathComponent)" }
-        catch { benchNote = "Save failed: \(error.localizedDescription)" }
-    }
-
     private func reuseDetector(model: URL, compute: ComputeMode, key k: String) throws -> Detector {
         if let d = detector, key == k { return d }
         let d = try Detector(modelURL: model, compute: compute); detector = d; key = k; return d
@@ -1046,6 +939,10 @@ struct ContentView: View {
     @State private var showInfo = false          // About & Licenses sheet
     @State private var trackMode = "off"         // video: off | bytetrack | botsort (ids over the cached candidates)
     @State private var preprocDevice: PreprocDevice = .gpu   // letterbox on the Metal GPU (default) or the CPU path
+    // ---- the two major modes: Inference (everything of 1.1) and Bench (its own sidebar + dashboard) ----
+    @State private var appMode: AppMode = .inference
+    @StateObject private var bench = BenchModel()
+    @State private var selectedBenchRecord: UUID?
     @FocusState private var kbFocused: Bool
 
     private enum PickTarget { case model, source }
@@ -1078,15 +975,29 @@ struct ContentView: View {
         HStack(spacing: 0) {
             controls.frame(width: 300).padding(16)
             Divider()
-            if !cameraOn && sourceKind == .folder && engine.hasResults && !engine.exporting {
-                FinderView(images: folderImages, selected: $selectedIndex, mode: $finderMode, iconSize: $iconSize) { selectAndShow($0) }
-                    .frame(width: 380)
-                Divider()
+            if appMode == .bench {
+                BenchDashboard(bench: bench, store: bench.store, selectedRecord: selectedBenchRecord, brand: brandColor)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                if !cameraOn && sourceKind == .folder && engine.hasResults && !engine.exporting {
+                    FinderView(images: folderImages, selected: $selectedIndex, mode: $finderMode, iconSize: $iconSize) { selectAndShow($0) }
+                        .frame(width: 380)
+                    Divider()
+                }
+                VStack(spacing: 0) {
+                    preview.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(alignment: .bottom) { if engine.busy && !cameraOn { progressBar } }
+                    if !cameraOn && sourceKind == .video && engine.hasResults && !engine.exporting { scrubberBar }
+                }
             }
-            VStack(spacing: 0) {
-                preview.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay(alignment: .bottom) { if engine.busy && !cameraOn { progressBar } }
-                if !cameraOn && sourceKind == .video && engine.hasResults && !engine.exporting { scrubberBar }
+        }
+        .onChange(of: appMode) {
+            // Bench owns the machine while it runs: leave the camera and playback behind, and seed the
+            // bench model list with the model Inference is using
+            if appMode == .bench {
+                if cameraOn { stopCamera() }
+                if pc.isPlaying { pc.pause() }
+                if let m = modelURL { bench.addModel(m) }
             }
         }
         .sheet(isPresented: $showInfo) { InfoView() }
@@ -1217,7 +1128,7 @@ struct ContentView: View {
     }
     // ---- live camera (session lifecycle + detector build handled inside LiveCameraView) ----
     private func toggleVideoPlayback() -> KeyPress.Result {   // extracted so the view body type-checks
-        guard sourceKind == .video, engine.hasResults, !cameraOn else { return .ignored }
+        guard appMode == .inference, sourceKind == .video, engine.hasResults, !cameraOn else { return .ignored }
         pc.togglePlay()
         return .handled
     }
@@ -1254,6 +1165,7 @@ struct ContentView: View {
         }
     }
     private func step(_ dir: Int, vertical: Bool) {
+        guard appMode == .inference else { return }
         switch sourceKind {
         case .folder where engine.hasResults && !folderImages.isEmpty:
             // Finder icon-view semantics: left/right move within the CURRENT ROW only (no
@@ -1296,7 +1208,16 @@ struct ContentView: View {
                 Button { showInfo = true } label: { Image(systemName: "info.circle").font(.system(size: 16)) }
                     .buttonStyle(.borderless).help("About & Licenses")
             }
+            Picker("", selection: $appMode) {
+                ForEach(AppMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            .disabled(engine.busy || bench.running)
 
+            if appMode == .bench {
+                BenchSidebar(bench: bench, store: bench.store, selectedRecord: $selectedBenchRecord, brand: brandColor)
+                Text("© 2026 Thomas Li").font(.system(size: 9)).foregroundStyle(.tertiary)
+            } else {
             ScrollView {
                 VStack(spacing: 14) {
                     sectionBox("Files", "folder") {
@@ -1419,7 +1340,6 @@ struct ContentView: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
-                    sectionBox("Bench", "gauge.with.dots.needle.67percent") { benchContent }
                     sectionBox("Inference", "chart.bar.doc.horizontal") { summaryContent }
                 }
             }
@@ -1427,6 +1347,7 @@ struct ContentView: View {
 
             actionRow
             Text("© 2026 Thomas Li").font(.system(size: 9)).foregroundStyle(.tertiary)
+            }
         }
     }
 
@@ -1794,88 +1715,6 @@ struct ContentView: View {
         String(format: "%.1f", ms) + (isVideoSource ? " ms/frame · " : " ms/img · ")
             + String(format: "%.1f", fps) + (isVideoSource ? " fps" : " img/s")
     }
-    // ---- benchmark panel: cold / sustained probes and the on-device accuracy pass on the loaded model ----
-    @State private var benchMinutes = 2.0
-    @ViewBuilder private var benchContent: some View {
-        if modelURL == nil {
-            Text("Load a model to benchmark it.").font(.caption2).foregroundStyle(.secondary)
-        } else {
-            HStack(spacing: 8) {
-                Button { runBenchCold() } label: { Label("Cold sweep", systemImage: "bolt.fill").frame(maxWidth: .infinity) }
-                    .disabled(engine.benchBusy || engine.busy || cameraOn)
-                Button { runBenchSustained() } label: { Label("Sustained", systemImage: "flame.fill").frame(maxWidth: .infinity) }
-                    .disabled(engine.benchBusy || engine.busy || cameraOn)
-            }.controlSize(.small)
-            HStack(spacing: 8) {
-                Button { runBenchAccuracy() } label: { Label("Accuracy…", systemImage: "checkmark.seal").frame(maxWidth: .infinity) }
-                    .disabled(engine.benchBusy || engine.busy || cameraOn)
-                if engine.benchBusy {
-                    Button { engine.cancelBench() } label: { Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity) }
-                } else {
-                    Button { engine.saveBenchJSON() } label: { Label("Save JSON…", systemImage: "square.and.arrow.down").frame(maxWidth: .infinity) }
-                        .disabled(engine.bench == nil)
-                }
-            }.controlSize(.small)
-            sliderRow("Sustained minutes", $benchMinutes, 0.5...10).disabled(engine.benchBusy)
-            if !engine.benchNote.isEmpty {
-                Text(engine.benchNote).font(.caption2).foregroundStyle(engine.benchBusy ? .secondary : .primary)
-            }
-            if let b = engine.bench {
-                Divider()
-                statRow("Compute", b.model.execution_provider)
-                if let c = b.cold {
-                    statRow("Cold median", String(format: "%.2f ms  (%.1f fps)", c.infer_ms.median, c.infer_ms.median > 0 ? 1000 / c.infer_ms.median : 0))
-                    statRow("Cold p90 / p99", String(format: "%.2f / %.2f ms", c.infer_ms.p90, c.infer_ms.p99))
-                }
-                if let su = b.sustained {
-                    statRow("Sustained", String(format: "%.2f ms  (%+.1f%% vs cold)", su.sustained_median_ms, su.throttle_pct))
-                    if !su.sparkline.isEmpty { sparkline(su.sparkline).frame(height: 28) }
-                    if let th = su.thermal, let last = th.last { statRow("Thermal", "\(last) at the end") }
-                }
-                if let a = b.accuracy {
-                    statRow("mAP50 / 50-95", String(format: "%.4f / %.4f", a.map50, a.map5095))
-                    statRow("Images / classes", "\(a.images) / \(a.per_class.count)")
-                }
-                Text("Same probe, statistics and protocol as the Linux CLI's --bench / --accuracy (yolomaster-bench/v1).")
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-    }
-    private func sparkline(_ v: [Double]) -> some View {
-        Canvas { ctx, size in
-            guard v.count > 1, let mx = v.max(), mx > 0 else { return }
-            let mn = v.min() ?? 0
-            let span = max(mx - mn, mx * 0.05)
-            var path = Path()
-            for (i, y) in v.enumerated() {
-                let px = size.width * CGFloat(i) / CGFloat(v.count - 1)
-                let py = size.height - (size.height - 2) * CGFloat((y - mn) / span) - 1
-                if i == 0 { path.move(to: CGPoint(x: px, y: py)) } else { path.addLine(to: CGPoint(x: px, y: py)) }
-            }
-            ctx.stroke(path, with: .color(.accentColor), lineWidth: 1.5)
-        }
-    }
-    private func runBenchCold() {
-        guard let m = modelURL else { return }
-        engine.runBench(model: m, compute: compute, mode: .cold, conf: conf, iou: iou)
-    }
-    private func runBenchSustained() {
-        guard let m = modelURL else { return }
-        engine.runBench(model: m, compute: compute, mode: .sustained, minutes: benchMinutes, conf: conf, iou: iou)
-    }
-    private func runBenchAccuracy() {
-        guard let m = modelURL else { return }
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        panel.message = "Choose the images folder of a labelled set (labels are read from the sibling labels/ folder, as ultralytics does)"
-        panel.prompt = "Score"
-        guard panel.runModal() == .OK, let images = panel.url else { return }
-        // <set>/images -> <set>/labels when it exists, else the auto rule per image
-        let sibling = images.deletingLastPathComponent().appendingPathComponent("labels")
-        let labels = FileManager.default.fileExists(atPath: sibling.path) ? sibling : nil
-        engine.runAccuracy(model: m, compute: compute, images: images, labels: labels, conf: conf, iou: iou)
-    }
-
     private func statRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label).font(.caption).foregroundStyle(.secondary)
