@@ -129,7 +129,8 @@ final class BenchModel: ObservableObject {
     @Published var minutes = 2.0
     @Published var datasetURL: URL?             // dataset / accuracy: the images folder
     @Published var datasetLimit = 0.0           // 0 = all
-    @Published var conf = 0.25, iou = 0.5       // dataset pass only
+    @Published var conf = 0.25                  // dataset pass only
+    @Published var iou = 0.5
     // live
     @Published private(set) var running = false
     @Published private(set) var phase = ""          // what is happening now
