@@ -107,6 +107,8 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     @Published var tileStats: TileStats?       // tiled modes: tiles run/total (+fallback/cap), nil when off
 
     private var detector: Detector?
+    /// Preprocessing device applied to every detector the engine drives (the sidebar Preprocess picker).
+    var preprocDevice: PreprocDevice = .gpu
     private var resultsTiled = false           // current image/folder cache was built tiled
     private var tiledMasksKept = false         // tiled cache retained global-pass masks (keepGlobalMasks)
     private var currentRaw: Detector.RawOutput?    // cached forward pass for the shown image (seg masks need protos)
@@ -166,7 +168,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
             guard let self else { return }
             do {
                 let det = try self.reuseDetector(model: model, compute: compute, key: k)
-                det.preprocess = preprocess
+                det.preprocess = preprocess; det.preprocDevice = self.preprocDevice
                 let s: InferSummary
                 var stats: TileStats? = nil
                 if tiling.mode == .off {
@@ -203,7 +205,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
             guard let self else { return }
             do {
                 let det = try self.reuseDetector(model: model, compute: compute, key: k)
-                det.preprocess = preprocess
+                det.preprocess = preprocess; det.preprocDevice = self.preprocDevice
                 self.detNames = det.classNames
                 let (items, summary, stats) = inferFolder(det, input: input, confFloor: 0.05, tiling: tiling) { done, total in
                     DispatchQueue.main.async {
@@ -315,7 +317,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
             guard let self else { return }
             do {
                 let det = try Detector(modelURL: model, compute: compute)
-                det.preprocess = preprocess
+                det.preprocess = preprocess; det.preprocDevice = self.preprocDevice
                 self.detNames = det.classNames
                 // camera motion per frame is recorded now (a few ms of Vision per frame) so tracking can be
                 // switched on / re-tuned later without re-reading the video
@@ -705,7 +707,9 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
 
     private func benchDocument(_ det: Detector, model: URL, mode: BenchMode, warmup: Int, iters: Int, minutes: Double,
                                conf: Double, iou: Double, probeMode: String) -> BenchDocument {
-        BenchDocument(timestamp: YMCore.timestampUTC(), tool: "macos", model: BenchEnvironment.model(det),
+        var card = BenchEnvironment.model(det)
+        card.ep_note = "preproc=\(det.effectivePreprocDevice.rawValue)"
+        return BenchDocument(timestamp: YMCore.timestampUTC(), tool: "macos", model: card,
                       environment: BenchEnvironment.collect(),
                       protocol: .init(mode: mode.rawValue, conf: Float(conf), iou: Float(iou), max_det: 300, multi_label: true,
                                       slicing: "off", tile_size: 0, warmup: warmup, iters: iters, minutes: minutes,
@@ -723,6 +727,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
             guard let self else { return }
             do {
                 let det = try self.reuseDetector(model: model, compute: compute, key: k)
+                det.preprocDevice = self.preprocDevice
                 var doc = self.bench ?? self.benchDocument(det, model: model, mode: mode, warmup: warmup, iters: iters, minutes: minutes,
                                                           conf: conf, iou: iou, probeMode: "infer_only")
                 // a new model / compute unit starts a fresh document; the same one accumulates cold + sustained + accuracy
@@ -768,6 +773,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
             guard let self else { return }
             do {
                 let det = try self.reuseDetector(model: model, compute: compute, key: k)
+                det.preprocDevice = self.preprocDevice
                 if det.isSegment { throw NSError(domain: "bench", code: 1, userInfo: [NSLocalizedDescriptionKey: "the accuracy pass takes a detection model (seg candidates at conf 0.001 are too many)"]) }
                 var doc = self.bench ?? self.benchDocument(det, model: model, mode: .cold, warmup: 0, iters: 0, minutes: 0,
                                                           conf: conf, iou: iou, probeMode: "infer_only")
@@ -1039,6 +1045,7 @@ struct ContentView: View {
     @State private var cameraMirror = true       // live-camera selfie mirror (toggled from the stage)
     @State private var showInfo = false          // About & Licenses sheet
     @State private var trackMode = "off"         // video: off | bytetrack | botsort (ids over the cached candidates)
+    @State private var preprocDevice: PreprocDevice = .gpu   // letterbox on the Metal GPU (default) or the CPU path
     @FocusState private var kbFocused: Bool
 
     private enum PickTarget { case model, source }
@@ -1110,6 +1117,12 @@ struct ContentView: View {
         tuningObservers
             .onChange(of: preprocess) {   // preprocessing changes the forward pass -> re-infer (not a cheap re-render)
                 if cameraOn { return }    // LiveCameraView hot-swaps the detector itself
+                guard !engine.busy, engine.hasResults || engine.resultImage != nil else { return }
+                runInfer()
+            }
+            .onChange(of: preprocDevice) {   // same: the tensor changes, so the cached forward passes do
+                engine.preprocDevice = preprocDevice
+                if cameraOn { return }
                 guard !engine.busy, engine.hasResults || engine.resultImage != nil else { return }
                 runInfer()
             }
@@ -1305,10 +1318,16 @@ struct ContentView: View {
                                 Text("Stretch").tag(Detector.PreprocessMode.stretch)
                             }.pickerStyle(.segmented).labelsHidden().disabled(cameraOn)
                         }
-                        if cameraOn {
-                            Text("Stop the camera to change the input fit.")
-                                .font(.caption2).foregroundStyle(.secondary)
+                        segRow("Device") {
+                            Picker("", selection: $preprocDevice) {
+                                Text("GPU (Metal)").tag(PreprocDevice.gpu)
+                                Text("CPU").tag(PreprocDevice.cpu)
+                            }.pickerStyle(.segmented).labelsHidden()
                         }
+                        Text(preprocDevice == .gpu
+                             ? "Letterbox, RGB conversion and the input tensor are built by a Metal kernel; the camera feed is read without a copy."
+                             : "Core Graphics letterbox + vDSP tensor build (the 1.1 path).")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                     sectionBox("Slicing", "square.grid.3x3") {
                         segRow("Mode") {
@@ -1544,7 +1563,7 @@ struct ContentView: View {
         ZStack {
             Color(nsColor: .underPageBackgroundColor)
             if cameraOn {
-                LiveCameraView(modelURL: modelURL, compute: compute, preprocess: preprocess,
+                LiveCameraView(modelURL: modelURL, compute: compute, preprocess: preprocess, preprocDevice: preprocDevice,
                                conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet,
                                overlay: overlay, style: style, label: label,
                                isSegment: $cameraIsSegment, mirror: $cameraMirror).padding(12)

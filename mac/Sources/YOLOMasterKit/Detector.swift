@@ -233,6 +233,15 @@ public final class Detector {
     /// whole image to imgsz×imgsz (no padding; the size the model was trained on), distorting aspect.
     public enum PreprocessMode: String, CaseIterable, Sendable { case letterbox, stretch }
     public var preprocess: PreprocessMode = .letterbox
+    /// Where the letterbox + tensor build runs: `.cpu` (CGContext + vDSP, the 1.1.x path) or `.gpu`
+    /// (the Metal kernel in Preproc.swift, integer pads, bilinear). Falls back to the CPU path when
+    /// Metal is unavailable. Default cpu so existing hosts (the iOS app) are unchanged; the macOS CLI
+    /// and app opt in.
+    public var preprocDevice: PreprocDevice = .cpu
+    private lazy var metal: MetalPreprocessor? = MetalPreprocessor()
+    private var gpuActive: Bool { preprocDevice == .gpu && metal != nil }
+    /// The preprocessing path actually in use (a `.gpu` request without Metal reports `.cpu`).
+    public var effectivePreprocDevice: PreprocDevice { gpuActive ? .gpu : .cpu }
 
     private struct LB { let px: [UInt8]; let scaleX: CGFloat; let scaleY: CGFloat; let padX: CGFloat; let padY: CGFloat }
 
@@ -491,12 +500,14 @@ public final class Detector {
         fileprivate let scaleX, scaleY, padX, padY: CGFloat   // per-axis (scaleX==scaleY for letterbox)
         public let origW, origH: Int
         public let inferMs: Double
-        /// Preprocess wall time (letterbox draw + planar float tensor build), the Linux `pre_ms`.
+        /// Preprocess wall time (letterbox + tensor build, or texture upload + Metal kernel + wait), the Linux `pre_ms`.
         public let preMs: Double
+        /// GPU command-buffer time of the Metal preprocess (0 on the CPU path); a sub-metric of `preMs`.
+        public let preGpuMs: Double
         fileprivate init(y: MLMultiArray, proto: MLMultiArray?, scaleX: CGFloat, scaleY: CGFloat, padX: CGFloat, padY: CGFloat,
-                         origW: Int, origH: Int, inferMs: Double, preMs: Double = 0) {
+                         origW: Int, origH: Int, inferMs: Double, preMs: Double = 0, preGpuMs: Double = 0) {
             self.y = y; self.proto = proto; self.scaleX = scaleX; self.scaleY = scaleY; self.padX = padX; self.padY = padY
-            self.origW = origW; self.origH = origH; self.inferMs = inferMs; self.preMs = preMs
+            self.origW = origW; self.origH = origH; self.inferMs = inferMs; self.preMs = preMs; self.preGpuMs = preGpuMs
         }
 
         /// A copy retaining ONLY what mask rendering needs (proto tensor + letterbox geometry),
@@ -506,12 +517,22 @@ public final class Detector {
         public func maskOnly() -> RawOutput? {
             guard let p = proto, let tiny = try? MLMultiArray(shape: [1], dataType: .float32) else { return nil }
             return RawOutput(y: tiny, proto: p, scaleX: scaleX, scaleY: scaleY, padX: padX, padY: padY,
-                             origW: origW, origH: origH, inferMs: inferMs, preMs: preMs)
+                             origW: origW, origH: origH, inferMs: inferMs, preMs: preMs, preGpuMs: preGpuMs)
         }
     }
 
     /// Core ML forward pass only (letterbox → predict). Cache the result and re-`decode`.
     public func forward(_ image: CGImage) throws -> RawOutput {
+        if gpuActive, let mp = metal {
+            let tp = Date()
+            guard let tex = mp.texture(from: image),
+                  let o = mp.run(texture: tex, srcW: image.width, srcH: image.height, imgsz: imgsz, stretch: preprocess == .stretch)
+            else { return try forwardCPU(image) }          // any Metal hiccup: the CPU path, same contract
+            return try predict(o, preMs: Date().timeIntervalSince(tp) * 1000, origW: image.width, origH: image.height)
+        }
+        return try forwardCPU(image)
+    }
+    private func forwardCPU(_ image: CGImage) throws -> RawOutput {
         let tp = Date()
         let lb = letterbox(image)
         guard let input = fillInput(lb.px) else { throw DetectorError.inputBuildFailed }
@@ -526,12 +547,49 @@ public final class Detector {
         return RawOutput(y: y, proto: proto, scaleX: lb.scaleX, scaleY: lb.scaleY, padX: lb.padX, padY: lb.padY,
                          origW: image.width, origH: image.height, inferMs: infMs, preMs: preMs)
     }
+    /// Prediction on a Metal-preprocessed tensor (integer-pad geometry).
+    private func predict(_ o: MetalPreprocessor.Output, preMs: Double, origW: Int, origH: Int) throws -> RawOutput {
+        guard let input = try? MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: o.array)]) else {
+            throw DetectorError.inputBuildFailed
+        }
+        let t0 = Date()
+        let out = try model.prediction(from: input)
+        let infMs = Date().timeIntervalSince(t0) * 1000
+        guard let y = out.featureValue(for: outputName)?.multiArrayValue, y.shape.count == 3 else {
+            throw DetectorError.badOutput
+        }
+        let proto = isSegment ? out.featureValue(for: protoName)?.multiArrayValue : nil
+        let g = o.geometry
+        return RawOutput(y: y, proto: proto, scaleX: g.scaleX, scaleY: g.scaleY, padX: CGFloat(g.padX), padY: CGFloat(g.padY),
+                         origW: origW, origH: origH, inferMs: infMs, preMs: preMs, preGpuMs: o.gpuMs)
+    }
 
-    /// Low-latency forward from a camera `CVPixelBuffer` (BGRA). Wraps the buffer as a CGImage with a
-    /// single copy (no CIContext) then runs the same letterbox → predict path. For real-time streaming.
+    /// Low-latency forward from a camera `CVPixelBuffer` (BGRA). On the GPU path the buffer is read by
+    /// the Metal kernel directly (zero copy through the texture cache); on the CPU path it is wrapped
+    /// as a CGImage with a single copy (no CIContext) then letterboxed as usual.
     public func forward(_ pixelBuffer: CVPixelBuffer) throws -> RawOutput {
+        if gpuActive, let mp = metal, let (tex, holder) = mp.texture(from: pixelBuffer) {
+            let tp = Date()
+            let w = CVPixelBufferGetWidth(pixelBuffer), h = CVPixelBufferGetHeight(pixelBuffer)
+            if let o = mp.run(texture: tex, srcW: w, srcH: h, imgsz: imgsz, stretch: preprocess == .stretch) {
+                _ = holder   // keeps the CVMetalTexture alive through the pass
+                return try predict(o, preMs: Date().timeIntervalSince(tp) * 1000, origW: w, origH: h)
+            }
+        }
         guard let cg = Detector.cgImage(from: pixelBuffer) else { throw DetectorError.inputBuildFailed }
         return try forward(cg)
+    }
+
+    /// The model input tensor for `image` on the current preprocessing device (no prediction), as
+    /// raw float32 NCHW bytes: what `--dump-input` writes for the Linux parity check.
+    public func inputTensorBytes(_ image: CGImage) -> Data? {
+        if gpuActive, let mp = metal, let tex = mp.texture(from: image),
+           let o = mp.run(texture: tex, srcW: image.width, srcH: image.height, imgsz: imgsz, stretch: preprocess == .stretch) {
+            return Data(bytes: o.array.dataPointer, count: 3 * imgsz * imgsz * MemoryLayout<Float>.size)
+        }
+        let lb = letterbox(image)
+        guard let input = fillInput(lb.px), let arr = input.featureValue(for: inputName)?.multiArrayValue else { return nil }
+        return Data(bytes: arr.dataPointer, count: 3 * imgsz * imgsz * MemoryLayout<Float>.size)
     }
 
     /// Forward a tile crop, padded bottom-right with gray 114 to tileSize×tileSize and (when
