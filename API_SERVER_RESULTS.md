@@ -3,7 +3,8 @@
 All numbers in this document are MEASURED on one machine in one session unless a row is
 labelled REFERENCE. Nothing here is a claim about upstream YOLO-Master; the models are the
 released v0.1-N and EsMoE-N COCO checkpoints exported by this repo (A3 exports) plus the
-MoEPruner-pruned v0.1-N from project03.
+MoEPruner-pruned v0.1-N from project03. Tables 1 to 3 are the v1.1.x server on the L40S with
+CPU preprocessing; the v1.2.0 rerun on an L4 with GPU preprocessing is Tables 4 to 6 below.
 
 ## Environment
 
@@ -205,6 +206,136 @@ model and about 1 ms is HTTP; optimisation (fp16, pruning) moves the model term,
 request term, so the remaining lever is decode (a libjpeg-turbo or nvJPEG decoder would take
 the request under 5 ms) and worker count.
 
+## v1.2.0 rerun on an L4 with GPU preprocessing (preproc=cuda)
+
+The tables above are the v1.1.x server on the L40S pod with CPU letterboxing in every cell. The
+v1.2.0 runtime moves letterbox + normalize + NCHW onto the GPU for TensorRT and ORT-CUDA
+(`GPU_PREPROC_RESULTS.md` has the kernel parity, the coco500 accuracy check and the per-stage
+timing on an RTX PRO 4500). The full 5000-image comparison was rerun once more for the 1.2.1
+image, this time on an NVIDIA L4 pod because the L40S pod no longer exists. Same protocol as
+above (`scripts/server/run_comparison.sh`, 21 cells, the two ncnn fp16 cells n/a on x86, MNN
+CUDA dropped from the grid after its fp16 verdict). Cross-machine numbers are not comparable
+with Tables 1 to 3; the within-table comparisons (CLI vs API, backend vs backend) are.
+
+| item | L4 pod (this section) | L40S pod (Tables 1 to 3) |
+|---|---|---|
+| GPU | NVIDIA L4 24 GB, driver 580.159.04, max SM clock 2040 MHz, 72 W | L40S 46 GB, 2520 MHz, 350 W |
+| CPU | AMD EPYC 7702 (Zen 2), 128 vCPUs visible, quota 13.6 cores (`cpu.cfs_quota_us` 1360000/100000) | EPYC 9374F (Zen 4), quota 13.6 cores |
+| RAM | 503 GB | 1.5 TB |
+| runtime | yolo-master-edge 1.2.0, server 1.2.1, `-DUSE_CUDA_PREPROC=ON`, sm_89 | 1.1.x |
+| TensorRT / ORT / ncnn / MNN | 10.16.1 / 1.20.1 GPU / 20260526 / 3.6.1 CPU | same |
+| CUDA graphs | off (default; `cuda_graph=1` is opt-in per model) | not available |
+
+### Table 4: L4, v1.2.0, latency (ms) and accuracy, preproc=cuda on the GPU rows
+
+| model | backend | execution provider | CLI model | API model | CLI end-to-end | API client p50 | API client p95 | API client p99 | HTTP overhead | mAP50-95 CLI | mAP50-95 API | parity |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| v0.1-N fp32 | TensorRT | TRT-CUDA-fp32, preproc=cuda | 3.22 | 3.75 | 4.66 | 16.34 | 21.67 | 25.02 | 1.62 | 0.4176 | 0.4176 | OK |
+| v0.1-N fp16 | TensorRT | TRT-CUDA-fp16, preproc=cuda | 2.29 | 3.54 | 3.62 | 16.46 | 22.08 | 25.18 | 1.72 | 0.4176 | 0.4176 | OK |
+| v0.1-N pruned fp32 | TensorRT | TRT-CUDA-fp32, preproc=cuda | 2.70 | 3.28 | 4.12 | 15.94 | 21.28 | 24.12 | 1.74 | 0.4176 | 0.4176 | OK |
+| EsMoE-N fp32 | TensorRT | TRT-CUDA-fp32, preproc=cuda | 2.69 | 3.53 | 4.09 | 16.15 | 21.41 | 24.47 | 1.73 | 0.4155 | 0.4155 | OK |
+| EsMoE-N fp16 | TensorRT | TRT-CUDA-fp16, preproc=cuda | 2.12 | 3.09 | 3.45 | 14.89 | 20.78 | 23.74 | 1.81 | 0.4152 | 0.4152 | OK |
+| v0.1-N fp32 | ORT CUDA | ort-CUDA, preproc=cuda | 7.15 | 10.17 | 8.53 | 19.53 | 27.31 | 30.07 | 1.67 | 0.4176 | 0.4176 | OK |
+| v0.1-N fp16 | ORT CUDA | ort-CUDA, preproc=cuda | 7.83 | 7.78 | 9.26 | 16.53 | 25.73 | 28.97 | 1.82 | 0.4175 | 0.4175 | OK |
+| v0.1-N pruned fp32 | ORT CUDA | ort-CUDA, preproc=cuda | 6.22 | 8.85 | 7.61 | 19.35 | 26.41 | 29.47 | 1.77 | 0.4177 | 0.4176 | OK |
+| EsMoE-N fp32 | ORT CUDA | ort-CUDA, preproc=cuda | 5.96 | 5.89 | 7.31 | 15.23 | 24.56 | 27.65 | 1.88 | 0.4154 | 0.4154 | OK |
+| EsMoE-N fp16 | ORT CUDA | ort-CUDA, preproc=cuda | 6.00 | 6.56 | 7.29 | 16.28 | 24.32 | 27.05 | 1.82 | 0.4147 | 0.4147 | OK |
+| v0.1-N fp32 | ncnn CPU | ncnn-CPU-fp32 | 107.78 | 108.14 | 110.83 | 116.67 | 124.41 | 128.01 | 1.90 | 0.4177 | 0.4177 | OK |
+| v0.1-N pruned fp32 | ncnn CPU | ncnn-CPU-fp32 | 108.36 | 107.42 | 110.40 | 115.96 | 123.22 | 128.65 | 1.92 | 0.4177 | 0.4177 | OK |
+| EsMoE-N fp32 | ncnn CPU | ncnn-CPU-fp32 | 114.68 | 113.15 | 117.64 | 121.74 | 128.25 | 132.55 | 1.93 | 0.4154 | 0.4153 | OK |
+| v0.1-N fp32 | MNN CPU | MNN-CPU | 167.35 | 166.15 | 169.35 | 174.54 | 184.82 | 190.00 | 1.83 | 0.4177 | 0.4177 | OK |
+| v0.1-N fp16 | MNN CPU | MNN-CPU | 167.75 | 167.15 | 169.78 | 175.55 | 186.30 | 191.48 | 1.89 | 0.4176 | 0.4176 | OK |
+| v0.1-N pruned fp32 | MNN CPU | MNN-CPU | 150.06 | 150.55 | 152.09 | 158.98 | 170.92 | 179.77 | 1.90 | 0.4177 | 0.4177 | OK |
+| EsMoE-N fp32 | MNN CPU | MNN-CPU | 85.28 | 88.78 | 87.28 | 97.56 | 108.56 | 112.91 | 1.93 | 0.4154 | 0.4154 | OK |
+| EsMoE-N fp16 | MNN CPU | MNN-CPU | 97.27 | 94.50 | 99.44 | 102.89 | 112.89 | 118.07 | 1.60 | 0.4157 | 0.4157 | OK |
+
+### Table 5: L4, v1.2.0, throughput (images/s over the 5000-image run)
+
+| model | backend | CLI sequential | API c=1 | API c=8 (workers) |
+|---|---|---|---|---|
+| v0.1-N fp32 | TensorRT | 62.8 | 40.8 | 103.8 (1) |
+| v0.1-N fp16 | TensorRT | 70.0 | 40.0 | 116.0 (1) |
+| v0.1-N pruned fp32 | TensorRT | 67.2 | 42.7 | 111.2 (1) |
+| EsMoE-N fp32 | TensorRT | 68.5 | 42.0 | 112.0 (1) |
+| EsMoE-N fp16 | TensorRT | 69.4 | 44.6 | 118.3 (1) |
+| v0.1-N fp32 | ORT CUDA | 48.7 | 35.7 | 77.7 (1) |
+| v0.1-N fp16 | ORT CUDA | 46.8 | 39.4 | 72.4 (1) |
+| v0.1-N pruned fp32 | ORT CUDA | 51.5 | 36.7 | 82.3 (1) |
+| EsMoE-N fp32 | ORT CUDA | 51.6 | 39.7 | 82.0 (1) |
+| EsMoE-N fp16 | ORT CUDA | 54.2 | 40.2 | 81.8 (1) |
+| v0.1-N fp32 | ncnn CPU | 8.2 | 7.9 | 16.5 (2) |
+| v0.1-N pruned fp32 | ncnn CPU | 8.2 | 8.0 | 16.5 (2) |
+| EsMoE-N fp32 | ncnn CPU | 7.7 | 7.7 | 16.1 (2) |
+| v0.1-N fp32 | MNN CPU | 5.5 | 5.4 | 8.5 (2) |
+| v0.1-N fp16 | MNN CPU | 5.5 | 5.4 | 8.4 (2) |
+| v0.1-N pruned fp32 | MNN CPU | 6.1 | 5.9 | 9.8 (2) |
+| EsMoE-N fp32 | MNN CPU | 9.9 | 9.4 | 13.2 (2) |
+| EsMoE-N fp16 | MNN CPU | 9.0 | 9.0 | 13.7 (2) |
+
+### Table 6: L4, v1.2.0, API server stage breakdown at c=1 (server p50, ms)
+
+| model | backend | queue | decode | pre | infer | post | total | client p50 |
+|---|---|---|---|---|---|---|---|---|
+| v0.1-N fp32 | TensorRT | 0.03 | 8.83 | 0.21 | 3.75 | 1.63 | 14.68 | 16.34 |
+| v0.1-N fp16 | TensorRT | 0.03 | 9.02 | 0.21 | 3.54 | 1.70 | 14.71 | 16.46 |
+| v0.1-N pruned fp32 | TensorRT | 0.03 | 8.82 | 0.21 | 3.28 | 1.62 | 14.17 | 15.94 |
+| EsMoE-N fp32 | TensorRT | 0.03 | 8.74 | 0.21 | 3.53 | 1.66 | 14.40 | 16.15 |
+| EsMoE-N fp16 | TensorRT | 0.02 | 8.01 | 0.20 | 3.09 | 1.50 | 13.06 | 14.89 |
+| v0.1-N fp32 | ORT CUDA | 0.03 | 6.62 | 0.20 | 10.17 | 1.44 | 17.84 | 19.53 |
+| v0.1-N fp16 | ORT CUDA | 0.02 | 5.39 | 0.20 | 7.78 | 1.12 | 14.68 | 16.53 |
+| v0.1-N pruned fp32 | ORT CUDA | 0.03 | 6.86 | 0.21 | 8.85 | 1.48 | 17.55 | 19.35 |
+| EsMoE-N fp32 | ORT CUDA | 0.02 | 5.90 | 0.20 | 5.89 | 1.15 | 13.33 | 15.23 |
+| EsMoE-N fp16 | ORT CUDA | 0.02 | 6.19 | 0.20 | 6.56 | 1.20 | 14.44 | 16.28 |
+| v0.1-N fp32 | ncnn CPU | 0.02 | 4.40 | 0.81 | 108.14 | 1.02 | 114.75 | 116.67 |
+| v0.1-N pruned fp32 | ncnn CPU | 0.02 | 4.43 | 0.80 | 107.42 | 1.00 | 114.02 | 115.96 |
+| EsMoE-N fp32 | ncnn CPU | 0.02 | 4.46 | 0.81 | 113.15 | 1.02 | 119.79 | 121.74 |
+| v0.1-N fp32 | MNN CPU | 0.02 | 4.41 | 0.77 | 166.15 | 1.02 | 172.69 | 174.54 |
+| v0.1-N fp16 | MNN CPU | 0.02 | 4.43 | 0.79 | 167.15 | 1.03 | 173.64 | 175.55 |
+| v0.1-N pruned fp32 | MNN CPU | 0.02 | 4.44 | 0.82 | 150.55 | 1.04 | 157.06 | 158.98 |
+| EsMoE-N fp32 | MNN CPU | 0.02 | 4.54 | 0.83 | 88.78 | 1.06 | 95.61 | 97.56 |
+| EsMoE-N fp16 | MNN CPU | 0.02 | 4.56 | 0.79 | 94.50 | 1.05 | 101.27 | 102.89 |
+
+Notes on Tables 4 to 6. The GPU rows carry `preproc=cuda`: `pre` is now the host letterbox
+arithmetic plus the pinned copy and the kernel (0.2 ms in the server, 0.18 ms in the CLI), and
+`infer` is enqueue plus the device-to-host copy, so the columns are not the same quantities as in
+Tables 1 to 3 (there the float H2D sat inside TensorRT's `infer` and the CPU NCHW loop in `pre`).
+CPU rows are unchanged in meaning. The pruned ncnn row uses the dense SDPA export regenerated
+from the pruned checkpoint in this release (`models/p03_v01n_ncnn`).
+
+**Parity and accuracy hold with the GPU kernel in the loop.** All 18 reported cells match
+between API and CLI dumps within 0.01 px and every mAP50-95 pair agrees to four decimals except
+the pruned ORT-CUDA cell (0.4177 vs 0.4176, a fourth-decimal rounding boundary; the per-box parity check passes). TensorRT fp32 and
+ORT-CUDA fp32 land on the same 0.4176 / 0.4155 as the CPU-preprocessed L40S run, so the bilinear
+kernel's sub-1/255 difference from `cv::resize` is invisible at COCO scale, as the coco500 check
+in `GPU_PREPROC_RESULTS.md` predicted.
+
+**The API overhead is unchanged at 1.6 to 1.9 ms on this slower CPU.** Client p50 minus server
+queue + total is 1.6 to 1.9 ms in every cell (0.8 to 1.5 ms on the Zen 4 pod); it scales with the
+core, not with the backend.
+
+**On the L4 the request is even more decode-bound.** stb decodes a COCO JPEG in 8 to 9 ms on the
+Zen 2 core that serves a GPU model (4.4 ms on the CPU rows, whose six ncnn or MNN threads keep
+the cores clocked up; the single GPU worker alternates one decode with a GPU wait and the core
+idles between). With preprocessing at 0.2 ms and the model at 2.3 to 3.5 ms, decode is 60% of a
+15 to 16 ms request. The GPU itself reports 9% utilisation and 37 W at c=1: the L4 clocks down
+between requests, which is why the model time measured inside the server (3.5 ms) is above the
+back-to-back CLI figure (2.3 ms) on TensorRT; on the L40S the two agreed because the requests
+arrived faster than the clock governor reacts. The lever is the same as before: a faster decoder
+(libjpeg-turbo or nvJPEG) and more workers per GPU model, not the model.
+
+**Backend ranking is the same.** TensorRT beats ORT-CUDA by 2.2 to 3.4x on the CLI model time
+(v0.1-N 3.22 vs 7.15 ms fp32), fp16 engines save 21 to 29% (v0.1-N 2.29 ms, EsMoE-N 2.12 ms)
+at a cost of 0 to 0.0003 mAP, and the pruned v0.1-N is 16% faster than the unpruned one on
+TensorRT and 13% on ORT-CUDA at identical accuracy. On ORT-CUDA the fp16 ONNX gains nothing (v0.1-N 7.83 vs
+7.15 ms, EsMoE-N 6.00 vs 5.96); the routing casts still cost what fp16 saves. ncnn on this
+Zen 2 quota runs v0.1-N in 108 ms and EsMoE-N in 115 ms (106 / 114 on Zen 4), MNN 150 to 168 ms
+for v0.1-N and 85 to 97 ms for EsMoE-N; two CPU workers double ncnn throughput at c=8 (8 to 16
+img/s) and MNN scales by 1.4 to 1.7x.
+
+Raw per-cell artifacts of this run (CLI logs and txt dumps, bench JSON, server stats and logs,
+GPU/CPU samples, scores) are in `/data/results/api_bench_l4_v120.tar.gz` (537 MB, txt dumps
+included); the rendered tables come from `python scripts/server/results_tables.py <dir>`.
+
 ## Reproduce
 
 ```
@@ -216,10 +347,18 @@ python scripts/server/summarize_comparison.py /data/results/api_bench
 
 Raw per-cell artifacts (CLI logs, bench JSON, server stats, GPU/CPU samples, scores) are in
 `api_bench.tgz` on mdb (`/yolotmp/api_bench.tgz`, txt dumps excluded); they are not committed.
+For the v1.2.0 rerun the pod scripts are `deploy/pod/bootstrap_l40s.sh`, `deploy/pod/build_gpu.sh`
+(`SM=89 USE_CUDA_PREPROC=ON`) and `deploy/pod/prepare_models_pod.sh`; `run_comparison.sh` is
+unchanged.
 
 ## Deliverables
 
-- Docker image `docker.io/skywalker0501/yolomaster-api:1.2.0` (also `:latest`), digest
+- Docker image `docker.io/skywalker0501/yolomaster-api:1.2.1` (also `:latest`), digest
+  `sha256:65771d282d093d2082f729ad410cf3c5abfbacb50c859f8b26a6b6a6e7e54b43`, 5.26 GB: the v1.2.0
+  runtime (GPU preprocessing, bench, tracking) and the 1.2.1 server (auth, rate limit, tracing,
+  OpenAPI); same base image and layer layout as 1.2.0 below, TensorRT builder resources for
+  sm75/80/86/89/90. This is the image Tables 4 to 6 were measured with.
+- Docker image `docker.io/skywalker0501/yolomaster-api:1.2.0`, digest
   `sha256:00e72c118237a5386ad0cc305350079f5773ee48fe619c5cfdbf3c8080b26cd2`, 5.25 GB compressed:
   `nvidia/cuda:12.9.1-cudnn-runtime-ubuntu22.04` plus the `/opt/yolomaster` layer (server, CLI,
   ORT-GPU 1.20.1, TensorRT 10.16 runtime + builder resources for sm80/86/89/90, ncnn, MNN 3.6 with
