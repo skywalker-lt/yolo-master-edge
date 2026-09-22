@@ -580,27 +580,50 @@ struct BenchDashboard: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
-    /// Per-iteration latency: the live series while running (last 600 points), the stored series otherwise.
+    /// Per-iteration latency: the live series while running (a rolling window of the last 600 points),
+    /// the stored series otherwise. Raw samples as a thin line, a 20-point moving average on top, the
+    /// window median as a rule; axes follow the window (x) and the data with 8% padding (y).
     private var liveChart: some View {
         let series: [Double] = (bench.running || selectedRecord == nil) && !bench.liveSamples.isEmpty ? bench.liveSamples : (shownCells.first?.samples ?? [])
         let window = series.count > 600 ? Array(series.suffix(600)) : series
         let offset = series.count - window.count
         let med = window.isEmpty ? 0 : StageStats(window).median
+        let lo = window.min() ?? 0, hi = window.max() ?? 1
+        let pad = max((hi - lo) * 0.08, 0.05)
+        let trend: [Double] = {
+            var out: [Double] = []; out.reserveCapacity(window.count)
+            var sum = 0.0
+            for (i, v) in window.enumerated() {
+                sum += v
+                if i >= 20 { sum -= window[i - 20] }
+                out.append(sum / Double(min(i + 1, 20)))
+            }
+            return out
+        }()
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(bench.kind == .dataset ? "Model time per image" : "Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                if !window.isEmpty { Text(String(format: "median %.2f ms · last %.2f ms", med, window.last ?? 0)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
+                if !window.isEmpty {
+                    Text(String(format: "window %d · median %.2f ms · last %.2f ms", window.count, med, window.last ?? 0))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                }
             }
             Chart {
                 ForEach(Array(window.enumerated()), id: \.offset) { i, v in
-                    LineMark(x: .value("iteration", i + offset), y: .value("ms", v)).interpolationMethod(.monotone).foregroundStyle(brand)
-                    AreaMark(x: .value("iteration", i + offset), y: .value("ms", v)).interpolationMethod(.monotone).foregroundStyle(brand.opacity(0.10))
+                    LineMark(x: .value("iteration", i + offset), y: .value("ms", v), series: .value("series", "raw"))
+                        .foregroundStyle(brand.opacity(0.35)).lineStyle(StrokeStyle(lineWidth: 0.8))
+                }
+                ForEach(Array(trend.enumerated()), id: \.offset) { i, v in
+                    LineMark(x: .value("iteration", i + offset), y: .value("ms", v), series: .value("series", "trend"))
+                        .foregroundStyle(brand).lineStyle(StrokeStyle(lineWidth: 2)).interpolationMethod(.monotone)
                 }
                 if !window.isEmpty { RuleMark(y: .value("median", med)).foregroundStyle(.secondary.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3])) }
             }
             .chartYAxisLabel("ms").chartXAxisLabel(bench.kind == .dataset ? "image" : "iteration")
-            .chartYScale(domain: .automatic(includesZero: false))
+            .chartXScale(domain: offset...(offset + max(window.count - 1, 1)))
+            .chartYScale(domain: (lo - pad)...(hi + pad))
+            .chartLegend(.hidden)
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
@@ -628,7 +651,12 @@ struct BenchDashboard: View {
                     PointMark(x: .value("s", p.t), y: .value("ms", p.med)).foregroundStyle(thermalColor(p.thermal)).symbolSize(18)
                 }
             }
-            .chartYAxisLabel("ms").chartXAxisLabel("seconds").chartYScale(domain: .automatic(includesZero: false))
+            .chartYAxisLabel("ms").chartXAxisLabel("seconds")
+            .chartYScale(domain: {
+                let ys = points.map(\.med); let lo = ys.min() ?? 0, hi = ys.max() ?? 1; let pad = max((hi - lo) * 0.15, 0.05)
+                return (lo - pad)...(hi + pad)
+            }())
+            .chartLegend(.hidden)
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
