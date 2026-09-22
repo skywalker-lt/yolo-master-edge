@@ -291,7 +291,7 @@ public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
     -> (items: [FolderItem], summary: InferSummary, tileStats: TileStats?) {
     let files = listImages(input)
     var out: [FolderItem] = []; out.reserveCapacity(files.count)
-    var times: [Double] = []
+    var times: [Double] = [], pres: [Double] = []
     var stats: TileStats? = tiling.mode == .off ? nil : TileStats()
     let t0 = Date()
     for (i, url) in files.enumerated() {
@@ -300,7 +300,7 @@ public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
                 if let raw = try? det.forward(cg) {
                     out.append(FolderItem(url: url, candidates: det.candidates(raw, confFloor: confFloor),
                                           width: cg.width, height: cg.height))
-                    times.append(raw.inferMs)
+                    times.append(raw.inferMs); pres.append(raw.preMs)
                 }
             } else if let tiled = try? det.tiledCandidates(cg, config: tiling, confFloor: confFloor) {
                 out.append(FolderItem(url: url, candidates: tiled.candidates,
@@ -311,7 +311,7 @@ public func inferFolder(_ det: Detector, input: URL, confFloor: Float = 0.05,
         }
         progress?(i + 1, files.count)
     }
-    return (out, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000), stats)
+    return (out, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000, pre: pres), stats)
 }
 
 /// Phase 3: write annotated images from cached candidates + the tuned params - NO inference.
@@ -360,7 +360,40 @@ func videoOrientation(_ t: CGAffineTransform) -> CGImagePropertyOrientation {
 }
 
 /// Phase 1: stream + forward every frame once, caching per-frame candidates + timing.
-public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
+/// Per-frame camera motion collected while a video is inferred once, so tracking can later be
+/// (re)run over the cached candidates without touching the video again. Index-aligned with `frames`.
+public final class MotionLog {
+    public let estimator: CameraMotionEstimator
+    public private(set) var entries: [CameraMotion?] = []
+    public init(estimator: CameraMotionEstimator) { self.estimator = estimator }
+    func record(_ frame: CGImage) { entries.append(estimator.estimate(frame)) }
+    public func motion(at index: Int) -> CameraMotion? { index < entries.count ? entries[index] : nil }
+}
+
+/// Tracks over cached per-frame candidates: NMS at the given settings then the tracker, frame by frame
+/// in order (the pure function of cache + motions + settings the GUI re-runs when a slider moves).
+public func trackCached(_ framesCands: [[Detection]], conf: Float, iou: CGFloat, maxDet: Int = 300,
+                        nmsMode: NMSMode = .standard, sigma: Float = 0.1,
+                        kind: TrackerKind, fps: Double, trackBuffer: Int = 30, motions: MotionLog? = nil,
+                        shouldStop: (() -> Bool)? = nil, each: ((Int, [Detection]) -> Void)? = nil) -> [[Detection]] {
+    let tracker = Tracker(kind: kind, fps: fps, trackBuffer: trackBuffer)
+    // the second association wants the low-score candidates the user's conf would drop
+    let floor = min(conf, tracker.config.detectorFloor)
+    var out: [[Detection]] = []
+    out.reserveCapacity(framesCands.count)
+    for (i, cands) in framesCands.enumerated() {
+        if shouldStop?() == true { break }
+        let dets = Detector.nms(cands, conf: floor, iou: iou, maxDet: maxDet, mode: nmsMode, sigma: sigma)
+        let tracked = tracker.update(dets, motion: kind == .botSort ? motions?.motion(at: i) : nil)
+        // show only tracks at or above the user's conf, like untracked playback would
+        let shown = tracked.filter { $0.score >= conf }
+        out.append(shown)
+        each?(i, shown)
+    }
+    return out
+}
+
+public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05, motionLog: MotionLog? = nil,
                        progress: ((_ done: Int, _ estTotal: Int) -> Void)? = nil) async throws -> (frames: [[Detection]], raws: [Detector.RawOutput?], summary: InferSummary, fps: Double, size: CGSize) {
     let asset = AVURLAsset(url: input)
     guard let tracks = try? await asset.loadTracks(withMediaType: .video), let track = tracks.first else { throw PipelineError.noVideoTrack }
@@ -378,7 +411,7 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
     let rout = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
     rout.alwaysCopiesSampleData = false; reader.add(rout); reader.startReading()
     let cictx = CIContext()
-    var frames: [[Detection]] = [], raws: [Detector.RawOutput?] = [], times: [Double] = [], n = 0
+    var frames: [[Detection]] = [], raws: [Detector.RawOutput?] = [], times: [Double] = [], pres: [Double] = [], n = 0
     let seg = det.isSegment   // only seg needs the proto tensor cached (for masks); else keep memory flat
     let t0 = Date()
     // 3-stage pipeline: frame decode (CIImage->CGImage, the expensive CPU step) for frame n+1
@@ -407,8 +440,9 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
     var nextDecode = Task.detached { decodeOne() }
     while let cg = await nextDecode.value {
         nextDecode = Task.detached { decodeOne() }            // decode n+1 while forwarding n
+        motionLog?.record(cg)                                 // sequential, index-aligned with frames
         if let raw = try? det.forward(cg) {
-            times.append(raw.inferMs)
+            times.append(raw.inferMs); pres.append(raw.preMs)
             candTasks.append(Task.detached { (det.candidates(raw, confFloor: confFloor), seg ? raw.maskOnly() : nil) })
         } else {
             candTasks.append(Task { ([], nil) })              // keeps frame/candidate alignment
@@ -418,7 +452,7 @@ public func inferVideo(_ det: Detector, input: URL, confFloor: Float = 0.05,
         if n % 4 == 0 { progress?(n, estTotal) }
     }
     while !candTasks.isEmpty { await drainOne() }
-    return (frames, raws, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000), Double(fps), CGSize(width: natW, height: natH))
+    return (frames, raws, InferSummary(times, wallMs: Date().timeIntervalSince(t0) * 1000, pre: pres), Double(fps), CGSize(width: natW, height: natH))
 }
 
 /// Phase 3: re-stream frames in order, apply cached candidates[i] + tuned params, encode. NO inference.
@@ -427,6 +461,7 @@ public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]
                               conf: Float, iou: CGFloat, style: BoxStyle, label: LabelMode, resize: Int = 0,
                               raws: [Detector.RawOutput?] = [], detector: Detector? = nil, overlay: SegOverlay = .both,
                               nmsMode: NMSMode = .standard, sigma: Float = 0.1, maxDet: Int = 300,
+                              tracked: [[Detection]]? = nil,
                               progress: ((_ done: Int, _ total: Int) -> Void)? = nil) async throws -> VideoStats {
     let seg = detector?.isSegment == true && overlay != .boxes
     let asset = AVURLAsset(url: input)
@@ -458,8 +493,10 @@ public func exportVideoCached(input: URL, output: URL, framesCands: [[Detection]
         let ci = CIImage(cvPixelBuffer: pb).oriented(orient)   // upright, matching AVPlayer
         guard var cg = cictx.createCGImage(ci, from: ci.extent) else { n += 1; continue }
         if resize > 0 { cg = resizeExact(cg, outW, outH) }
-        let dets = Detector.nms(n < framesCands.count ? framesCands[n] : [], conf: conf, iou: iou,
-                                maxDet: maxDet, mode: nmsMode, sigma: sigma)
+        // `tracked` (from trackCached, index-aligned) replaces the per-frame NMS when tracking is on
+        let dets = tracked.map { n < $0.count ? $0[n] : [] }
+            ?? Detector.nms(n < framesCands.count ? framesCands[n] : [], conf: conf, iou: iou,
+                            maxDet: maxDet, mode: nmsMode, sigma: sigma)
         var masks: [MaskBitmap] = []
         if seg, let det = detector, n < raws.count, let raw = raws[n] { masks = dets.compactMap { det.maskImage($0, raw) } }
         let drawBoxes = !(detector?.isSegment == true && overlay == .masks)

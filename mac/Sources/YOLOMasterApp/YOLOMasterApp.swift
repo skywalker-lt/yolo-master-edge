@@ -127,11 +127,22 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     @Published private(set) var videoSize: CGSize = .zero
     private var videoInput: URL?
     private let queue = DispatchQueue(label: "com.yolomaster.inference")
+    // ---- tracking over the cached video: a pure function of (cached candidates, per-frame camera
+    // motion recorded during inference, conf / IoU / NMS settings, tracker kind), recomputed off-main
+    // whenever one of them changes and never touching the video again ----
+    @Published var trackKind: TrackerKind? = nil        // nil = off
+    @Published private(set) var trackGen = 0             // bumped when a tracked pass lands
+    @Published private(set) var trackCount = 0           // distinct ids in the current tracked pass
+    private var videoMotion: MotionLog? = nil
+    private var videoTracks: [[Detection]]? = nil
+    private var videoTracksKey = ""
+    private var trackCancel: OSAllocatedUnfairLock<Bool>?
 
     func resetResults() {
         hasResults = false; folderCache = []; folderInput = nil; videoCache = []; videoInput = nil; videoURL = nil; videoSize = .zero; outputURL = nil
         resultImage = nil; detCount = 0; currentCG = nil; currentCands = []; currentRaw = nil
         videoRaws = []; videoDet = nil
+        videoMotion = nil; videoTracks = nil; videoTracksKey = ""; trackCount = 0
         infer = nil; classCounts = []; tileStats = nil; resultsTiled = false; tiledMasksKept = false
         imageInput = nil
         baked = []; bakedKey = ""; bakeGen += 1; detsCacheKey = ""; detsCacheVal = []
@@ -163,7 +174,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                     self.currentCG = cg; self.currentCands = det.candidates(raw); self.currentMs = raw.inferMs
                     self.currentRaw = det.isSegment ? raw : nil
                     self.resultsTiled = false
-                    s = InferSummary([raw.inferMs], wallMs: raw.inferMs)
+                    s = InferSummary([raw.inferMs], wallMs: raw.inferMs + raw.preMs, pre: [raw.preMs])
                 } else {
                     let t0 = Date()
                     let tiled = try det.tiledCandidates(cg, config: tiling)
@@ -294,6 +305,8 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         // re-inferring a seg video otherwise holds both generations at once (GBs) and pushes
         // the machine into memory pressure that outlives the run.
         videoCache = []; videoRaws = []; videoDet = nil
+        videoMotion = nil; videoTracks = nil; videoTracksKey = ""; trackCount = 0
+        trackCancel?.withLock { $0 = true }; trackCancel = nil
         baked = []; bakedKey = ""; bakeGen += 1
         bakeCancel?.withLock { $0 = true }; bakeCancel = nil
         detsCacheKey = ""; detsCacheVal = []
@@ -304,7 +317,10 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                 let det = try Detector(modelURL: model, compute: compute)
                 det.preprocess = preprocess
                 self.detNames = det.classNames
-                let (frames, raws, summary, fps, size) = try await inferVideo(det, input: input, confFloor: 0.05) { done, est in
+                // camera motion per frame is recorded now (a few ms of Vision per frame) so tracking can be
+                // switched on / re-tuned later without re-reading the video
+                let motion = MotionLog(estimator: VisionCameraMotion())
+                let (frames, raws, summary, fps, size) = try await inferVideo(det, input: input, confFloor: 0.05, motionLog: motion) { done, est in
                     DispatchQueue.main.async {
                         self.progress = est > 0 ? min(1, Double(done) / Double(est)) : nil
                         self.status = "Inferring frame \(done)…"
@@ -314,6 +330,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
                 DispatchQueue.main.async {
                     self.videoRunGen += 1
                     self.videoCache = frames; self.videoRaws = raws; self.videoDet = det.isSegment ? det : nil
+                    self.videoMotion = motion
                     self.modelIsSegment = det.isSegment
                     self.videoFps = fps; self.videoInput = input; self.videoURL = input; self.videoSize = size
                     self.modelInfo = info; self.infer = summary; self.hasResults = !frames.isEmpty
@@ -348,6 +365,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     func detsAt(time: Double, conf: Double, iou: Double, nmsMode: NMSMode = .standard, sigma: Double = 0.1, maxDet: Int = 300) -> [Detection] {
         guard !videoCache.isEmpty else { return [] }
         let idx = videoFrameIndex(time)
+        if let tr = currentTracks(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: maxDet), idx < tr.count { return tr[idx] }
         if idx < baked.count, bakedKey == bakeKey(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: maxDet),
            let b = baked[idx] { return b }
         let key = "\(videoRunGen)|\(idx)|\(conf)|\(iou)|\(nmsMode.rawValue)|\(sigma)|\(maxDet)"
@@ -358,6 +376,39 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
     }
     private func bakeKey(conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double, maxDet: Int) -> String {
         "\(videoRunGen)|\(conf)|\(iou)|\(nmsMode.rawValue)|\(sigma)|\(maxDet)"
+    }
+    private func trackKey(conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double, maxDet: Int) -> String {
+        "\(trackKind?.rawValue ?? "off")|" + bakeKey(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: maxDet)
+    }
+    /// The tracked per-frame detections for these settings, if the pass for them has landed.
+    private func currentTracks(conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double, maxDet: Int) -> [[Detection]]? {
+        guard trackKind != nil, videoTracksKey == trackKey(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: maxDet) else { return nil }
+        return videoTracks
+    }
+    /// (Re)run the tracker over the cached video for these settings, off-main; a newer request
+    /// cancels the running one. Publishes `trackGen` when the pass lands (the view re-renders).
+    func ensureTracked(conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double, maxDet: Int) {
+        let key = trackKey(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: maxDet)
+        guard key != videoTracksKey, !videoCache.isEmpty else { return }
+        trackCancel?.withLock { $0 = true }
+        guard let kind = trackKind else { videoTracks = nil; videoTracksKey = key; trackCount = 0; trackGen += 1; return }
+        let token = OSAllocatedUnfairLock(initialState: false)
+        trackCancel = token
+        let cache = videoCache, motions = videoMotion, fps = videoFps
+        status = "Tracking (\(kind.rawValue))…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let tracks = trackCached(cache, conf: Float(conf), iou: CGFloat(iou), maxDet: maxDet, nmsMode: nmsMode, sigma: Float(sigma),
+                                     kind: kind, fps: fps, motions: motions, shouldStop: { token.withLock { $0 } })
+            if token.withLock({ $0 }) { return }   // superseded
+            var ids = Set<Int>()
+            for f in tracks { for d in f { if let id = d.trackId { ids.insert(id) } } }
+            DispatchQueue.main.async {
+                guard let self, !token.withLock({ $0 }) else { return }
+                self.videoTracks = tracks; self.videoTracksKey = key; self.trackCount = ids.count
+                self.status = "Tracked \(ids.count) objects (\(kind.rawValue)) - play / scrub, then Export"
+                self.trackGen += 1
+            }
+        }
     }
     /// Re-bake the whole video's post-NMS detections at the given settings (no-op if already
     /// baked for them). Runs on a global queue in 32-frame chunks; a newer bake supersedes.
@@ -413,6 +464,7 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         let fps: Double, size: CGSize
         let conf: Float, iou: CGFloat, nmsMode: NMSMode, sigma: Float, maxDet: Int
         let style: BoxStyle, label: LabelMode, overlay: SegOverlay
+        let tracked: [[Detection]]?      // the tracked pass for these settings when tracking is on and it has landed
     }
     private func overlaySnapshot(conf: Double, iou: Double, nmsMode: NMSMode, sigma: Double, maxDet: Int,
                                  style: BoxStyle, label: LabelMode, overlay: SegOverlay) -> OverlaySnapshot? {
@@ -420,11 +472,13 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         return OverlaySnapshot(cache: videoCache, raws: videoRaws, det: videoDet, names: detNames,
                                fps: videoFps, size: videoSize,
                                conf: Float(conf), iou: CGFloat(iou), nmsMode: nmsMode, sigma: Float(sigma), maxDet: maxDet,
-                               style: style, label: label, overlay: overlay)
+                               style: style, label: label, overlay: overlay,
+                               tracked: currentTracks(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: maxDet))
     }
     private static func compose(_ s: OverlaySnapshot, idx: Int, maskCap: Int) -> CGImage? {
         guard s.cache.indices.contains(idx) else { return nil }
-        let dets = Detector.nms(s.cache[idx], conf: s.conf, iou: s.iou, maxDet: s.maxDet, mode: s.nmsMode, sigma: s.sigma)
+        let dets = s.tracked.flatMap { idx < $0.count ? $0[idx] : nil }
+            ?? Detector.nms(s.cache[idx], conf: s.conf, iou: s.iou, maxDet: s.maxDet, mode: s.nmsMode, sigma: s.sigma)
         let w = Int(s.size.width), h = Int(s.size.height)
         var base: CGImage? = nil
         if let det = s.det, s.overlay != .boxes, s.raws.indices.contains(idx), let raw = s.raws[idx] {
@@ -501,11 +555,18 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         busy = true; exporting = true; progress = 0; outputURL = nil; status = "Exporting video…"
         let out = input.deletingLastPathComponent().appendingPathComponent(input.deletingPathExtension().lastPathComponent + "_annotated.mp4")
         let frames = videoCache, names = detNames, rw = videoRaws, det = videoDet
+        // tracked frames: the landed pass for these settings, else computed here (fast: no inference)
+        var tracked = currentTracks(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: maxDet)
+        if tracked == nil, let kind = trackKind {
+            tracked = trackCached(frames, conf: Float(conf), iou: CGFloat(iou), maxDet: maxDet, nmsMode: nmsMode, sigma: Float(sigma),
+                                  kind: kind, fps: videoFps, motions: videoMotion)
+        }
+        let trackedFrames = tracked
         Task { [weak self] in
             guard let self else { return }
             do {
                 let stats = try await exportVideoCached(input: input, output: out, framesCands: frames, names: names, conf: Float(conf), iou: CGFloat(iou), style: style, label: label, raws: rw, detector: det, overlay: overlay,
-                                                        nmsMode: nmsMode, sigma: Float(sigma), maxDet: maxDet) { done, total in
+                                                        nmsMode: nmsMode, sigma: Float(sigma), maxDet: maxDet, tracked: trackedFrames) { done, total in
                     DispatchQueue.main.async { self.progress = total > 0 ? Double(done) / Double(total) : nil; self.status = "Exporting \(done)/\(total)…" }
                 }
                 DispatchQueue.main.async {
@@ -634,6 +695,109 @@ final class InferenceEngine: ObservableObject, @unchecked Sendable {   // state 
         panel.message = message
         panel.prompt = "Export"
         return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    // ---- benchmark mode (the yolomaster-bench/v1 document, same as the CLI's --bench / --accuracy) ----
+    @Published var bench: BenchDocument?          // last run (cold / sustained / accuracy merged in)
+    @Published var benchBusy = false
+    @Published var benchNote = ""                 // one-line progress / result text
+    private var benchCancel = OSAllocatedUnfairLock(initialState: false)
+
+    private func benchDocument(_ det: Detector, model: URL, mode: BenchMode, warmup: Int, iters: Int, minutes: Double,
+                               conf: Double, iou: Double, probeMode: String) -> BenchDocument {
+        BenchDocument(timestamp: YMCore.timestampUTC(), tool: "macos", model: BenchEnvironment.model(det),
+                      environment: BenchEnvironment.collect(),
+                      protocol: .init(mode: mode.rawValue, conf: Float(conf), iou: Float(iou), max_det: 300, multi_label: true,
+                                      slicing: "off", tile_size: 0, warmup: warmup, iters: iters, minutes: minutes,
+                                      probe: "gray114", probe_mode: probeMode, dataset: "", image_count: 0,
+                                      image_list_sha256: YMCore.imageListSha256([])))
+    }
+    /// Cold sweep (warmup untimed, iters timed probes) or sustained loop (minutes) on the loaded model.
+    func runBench(model: URL, compute: ComputeMode, mode: BenchMode, warmup: Int = 10, iters: Int = 50, minutes: Double = 2,
+                  conf: Double, iou: Double) {
+        guard !benchBusy else { return }
+        benchBusy = true; benchNote = mode == .sustained ? "Sustained run: \(Int(minutes)) min…" : "Cold sweep…"
+        benchCancel.withLock { $0 = false }
+        let k = model.path + "|" + compute.rawValue
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let det = try self.reuseDetector(model: model, compute: compute, key: k)
+                var doc = self.bench ?? self.benchDocument(det, model: model, mode: mode, warmup: warmup, iters: iters, minutes: minutes,
+                                                          conf: conf, iou: iou, probeMode: "infer_only")
+                // a new model / compute unit starts a fresh document; the same one accumulates cold + sustained + accuracy
+                if doc.model.path != model.path || doc.model.execution_provider != BenchEnvironment.model(det).execution_provider {
+                    doc = self.benchDocument(det, model: model, mode: mode, warmup: warmup, iters: iters, minutes: minutes,
+                                             conf: conf, iou: iou, probeMode: "infer_only")
+                }
+                doc.protocol.mode = mode.rawValue; doc.protocol.warmup = warmup; doc.protocol.iters = iters; doc.protocol.minutes = minutes
+                doc.timestamp = YMCore.timestampUTC()
+                if mode == .sustained {
+                    let su = BenchRunner.sustainedLoop(det, warmup: warmup, minutes: minutes, coldIters: iters,
+                                                       cancel: { self.benchCancel.withLock { $0 } },
+                                                       tick: { elapsed, med in
+                        DispatchQueue.main.async { self.benchNote = String(format: "Sustained %.0fs: %.2f ms (this second)", elapsed, med) } })
+                    doc.sustained = su
+                    DispatchQueue.main.async {
+                        self.bench = doc; self.benchBusy = false
+                        self.benchNote = String(format: "Sustained %.0fs: cold %.2f ms, sustained %.2f ms, throttle %+.1f%%",
+                                                su.duration_s, su.cold_median_ms, su.sustained_median_ms, su.throttle_pct)
+                    }
+                } else {
+                    let cold = BenchRunner.coldSweep(det, warmup: warmup, iters: iters)
+                    doc.cold = cold
+                    DispatchQueue.main.async {
+                        self.bench = doc; self.benchBusy = false
+                        self.benchNote = String(format: "Cold: median %.2f ms, p90 %.2f, p99 %.2f (n=%d)",
+                                                cold.infer_ms.median, cold.infer_ms.p90, cold.infer_ms.p99, cold.infer_ms.n)
+                    }
+                }
+            } catch { DispatchQueue.main.async { self.benchNote = "Bench failed: \(error.localizedDescription)"; self.benchBusy = false } }
+        }
+    }
+    func cancelBench() { benchCancel.withLock { $0 = true } }
+    /// Accuracy pass at the val protocol over `images` with YOLO labels (`labels` nil = the ultralytics
+    /// images -> labels rule next to the images), scored in process through the portable core.
+    func runAccuracy(model: URL, compute: ComputeMode, images: URL, labels: URL?, conf: Double, iou: Double) {
+        guard !benchBusy else { return }
+        let files = listImages(images)
+        guard !files.isEmpty else { benchNote = "No images in \(images.lastPathComponent)"; return }
+        benchBusy = true; benchNote = "Accuracy: 0/\(files.count)…"
+        let k = model.path + "|" + compute.rawValue
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let det = try self.reuseDetector(model: model, compute: compute, key: k)
+                if det.isSegment { throw NSError(domain: "bench", code: 1, userInfo: [NSLocalizedDescriptionKey: "the accuracy pass takes a detection model (seg candidates at conf 0.001 are too many)"]) }
+                var doc = self.bench ?? self.benchDocument(det, model: model, mode: .cold, warmup: 0, iters: 0, minutes: 0,
+                                                          conf: conf, iou: iou, probeMode: "infer_only")
+                if doc.model.path != model.path || doc.model.execution_provider != BenchEnvironment.model(det).execution_provider {
+                    doc = self.benchDocument(det, model: model, mode: .cold, warmup: 0, iters: 0, minutes: 0, conf: conf, iou: iou, probeMode: "infer_only")
+                }
+                doc.protocol.dataset = images.lastPathComponent
+                doc.protocol.image_count = files.count
+                doc.protocol.image_list_sha256 = YMCore.imageListSha256(files.map { $0.path })
+                let o = AccuracyRunner.run(det, images: files, labels: labels?.path ?? "auto") { done, total in
+                    if done % 5 == 0 { DispatchQueue.main.async { self.benchNote = "Accuracy: \(done)/\(total)…" } }
+                }
+                doc.accuracy = o.document()
+                doc.timestamp = YMCore.timestampUTC()
+                DispatchQueue.main.async {
+                    self.bench = doc; self.benchBusy = false
+                    self.benchNote = String(format: "mAP50 %.4f  mAP50-95 %.4f  (%d images, %d classes)", o.map.map50, o.map.map5095, o.map.images, o.map.perClass.count)
+                }
+            } catch { DispatchQueue.main.async { self.benchNote = "Accuracy failed: \(error.localizedDescription)"; self.benchBusy = false } }
+        }
+    }
+    func saveBenchJSON() {
+        guard let doc = bench else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "bench-\(doc.model.id)-\(doc.model.execution_provider).json"
+        panel.allowedContentTypes = [.json]
+        panel.message = "Save the yolomaster-bench/v1 document"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try doc.json().write(to: url); benchNote = "Saved \(url.lastPathComponent)" }
+        catch { benchNote = "Save failed: \(error.localizedDescription)" }
     }
 
     private func reuseDetector(model: URL, compute: ComputeMode, key k: String) throws -> Detector {
@@ -874,6 +1038,7 @@ struct ContentView: View {
     @State private var cameraIsSegment = false   // set by LiveCameraView once its detector is built
     @State private var cameraMirror = true       // live-camera selfie mirror (toggled from the stage)
     @State private var showInfo = false          // About & Licenses sheet
+    @State private var trackMode = "off"         // video: off | bytetrack | botsort (ids over the cached candidates)
     @FocusState private var kbFocused: Bool
 
     private enum PickTarget { case model, source }
@@ -936,6 +1101,8 @@ struct ContentView: View {
             .onChange(of: style) { rerender() }
             .onChange(of: label) { rerender() }
             .onChange(of: overlay) { rerender() }
+            .onChange(of: trackMode) { engine.trackKind = TrackerKind(rawValue: trackMode); rerender() }
+            .onChange(of: engine.trackGen) { if sourceKind == .video { refreshVideoOverlays() } }   // a tracked pass landed
     }
 
     /// Stage 3: observers that re-infer or re-target the source / follow playback.
@@ -1056,8 +1223,9 @@ struct ContentView: View {
     private func refreshVideoOverlays() {
         guard sourceKind == .video, engine.hasResults else { return }
         let t: Double = pc.displayTime
-        // Baked-playback contract: keep the whole-video post-NMS bake current for the settings
-        // (cheap key compare when nothing changed; settings are locked during playback anyway).
+        // Tracking is a pure function of the cache + settings: keep the tracked pass current (a cheap
+        // key compare when nothing changed; settings are locked during playback anyway).
+        engine.ensureTracked(conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet)
         engine.setVideoFrameStats(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet, throttled: pc.isPlaying)
         if !pc.isPlaying {   // paused/scrub: one full-detail compose; the loop owns playback
             engine.requestOverlayFrame(time: t, conf: conf, iou: iou, nmsMode: nmsMode, sigma: sigma, maxDet: effectiveMaxDet,
@@ -1188,6 +1356,19 @@ struct ContentView: View {
                             Text("Survivor boxes are refined by score-weighted averaging over overlapping candidates.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
+                        if sourceKind == .video && !cameraOn {
+                            segRow("Tracking") {
+                                Picker("", selection: $trackMode) {
+                                    Text("Off").tag("off"); Text("ByteTrack").tag("bytetrack"); Text("BoT-SORT").tag("botsort")
+                                }.pickerStyle(.segmented).labelsHidden().disabled(videoTuningLocked)
+                            }
+                            if trackMode != "off" {
+                                Text(trackMode == "botsort"
+                                     ? "Kalman + two-stage IoU association with camera-motion compensation (Vision); ids persist across frames and the export."
+                                     : "Kalman + two-stage IoU association; ids persist across frames and the export.")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
                     }
                     sectionBox("Appearance", "paintbrush.fill") {
                         if isSegModel && tiledActive && !tilingMasks {
@@ -1219,6 +1400,7 @@ struct ContentView: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
+                    sectionBox("Bench", "gauge.with.dots.needle.67percent") { benchContent }
                     sectionBox("Inference", "chart.bar.doc.horizontal") { summaryContent }
                 }
             }
@@ -1516,6 +1698,8 @@ struct ContentView: View {
             Divider()
             statRow(isVideoSource ? "Frames" : (s.count > 1 ? "Images" : "Frame"), "\(s.count)")
             statRow("Model-only", speedText(s.meanMs, s.fps))
+            if s.preMeanMs > 0 { statRow("Preprocess", String(format: "%.2f ms", s.preMeanMs)) }
+            if s.postMeanMs > 0 { statRow("Postprocess", String(format: "%.2f ms", s.postMeanMs)) }
             statRow("Overall", speedText(s.wallMeanMs, s.wallFps))
             if s.count > 1 {
                 statRow("Model min/max", String(format: "%.1f / %.1f ms", s.minMs, s.maxMs))
@@ -1530,6 +1714,7 @@ struct ContentView: View {
             }
             if nmsMode == .clusterWeighted { statRow("NMS", nmsMode.label) }
             Divider()
+            if engine.trackKind != nil, isVideoSource { statRow("Tracks", "\(engine.trackCount) ids (\(trackMode))") }
             statRow("Detections", "\(engine.detCount)  (this frame)")
             if !engine.classCounts.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1590,6 +1775,88 @@ struct ContentView: View {
         String(format: "%.1f", ms) + (isVideoSource ? " ms/frame · " : " ms/img · ")
             + String(format: "%.1f", fps) + (isVideoSource ? " fps" : " img/s")
     }
+    // ---- benchmark panel: cold / sustained probes and the on-device accuracy pass on the loaded model ----
+    @State private var benchMinutes = 2.0
+    @ViewBuilder private var benchContent: some View {
+        if modelURL == nil {
+            Text("Load a model to benchmark it.").font(.caption2).foregroundStyle(.secondary)
+        } else {
+            HStack(spacing: 8) {
+                Button { runBenchCold() } label: { Label("Cold sweep", systemImage: "bolt.fill").frame(maxWidth: .infinity) }
+                    .disabled(engine.benchBusy || engine.busy || cameraOn)
+                Button { runBenchSustained() } label: { Label("Sustained", systemImage: "flame.fill").frame(maxWidth: .infinity) }
+                    .disabled(engine.benchBusy || engine.busy || cameraOn)
+            }.controlSize(.small)
+            HStack(spacing: 8) {
+                Button { runBenchAccuracy() } label: { Label("Accuracy…", systemImage: "checkmark.seal").frame(maxWidth: .infinity) }
+                    .disabled(engine.benchBusy || engine.busy || cameraOn)
+                if engine.benchBusy {
+                    Button { engine.cancelBench() } label: { Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity) }
+                } else {
+                    Button { engine.saveBenchJSON() } label: { Label("Save JSON…", systemImage: "square.and.arrow.down").frame(maxWidth: .infinity) }
+                        .disabled(engine.bench == nil)
+                }
+            }.controlSize(.small)
+            sliderRow("Sustained minutes", $benchMinutes, 0.5...10).disabled(engine.benchBusy)
+            if !engine.benchNote.isEmpty {
+                Text(engine.benchNote).font(.caption2).foregroundStyle(engine.benchBusy ? .secondary : .primary)
+            }
+            if let b = engine.bench {
+                Divider()
+                statRow("Compute", b.model.execution_provider)
+                if let c = b.cold {
+                    statRow("Cold median", String(format: "%.2f ms  (%.1f fps)", c.infer_ms.median, c.infer_ms.median > 0 ? 1000 / c.infer_ms.median : 0))
+                    statRow("Cold p90 / p99", String(format: "%.2f / %.2f ms", c.infer_ms.p90, c.infer_ms.p99))
+                }
+                if let su = b.sustained {
+                    statRow("Sustained", String(format: "%.2f ms  (%+.1f%% vs cold)", su.sustained_median_ms, su.throttle_pct))
+                    if !su.sparkline.isEmpty { sparkline(su.sparkline).frame(height: 28) }
+                    if let th = su.thermal, let last = th.last { statRow("Thermal", "\(last) at the end") }
+                }
+                if let a = b.accuracy {
+                    statRow("mAP50 / 50-95", String(format: "%.4f / %.4f", a.map50, a.map5095))
+                    statRow("Images / classes", "\(a.images) / \(a.per_class.count)")
+                }
+                Text("Same probe, statistics and protocol as the Linux CLI's --bench / --accuracy (yolomaster-bench/v1).")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+    }
+    private func sparkline(_ v: [Double]) -> some View {
+        Canvas { ctx, size in
+            guard v.count > 1, let mx = v.max(), mx > 0 else { return }
+            let mn = v.min() ?? 0
+            let span = max(mx - mn, mx * 0.05)
+            var path = Path()
+            for (i, y) in v.enumerated() {
+                let px = size.width * CGFloat(i) / CGFloat(v.count - 1)
+                let py = size.height - (size.height - 2) * CGFloat((y - mn) / span) - 1
+                if i == 0 { path.move(to: CGPoint(x: px, y: py)) } else { path.addLine(to: CGPoint(x: px, y: py)) }
+            }
+            ctx.stroke(path, with: .color(.accentColor), lineWidth: 1.5)
+        }
+    }
+    private func runBenchCold() {
+        guard let m = modelURL else { return }
+        engine.runBench(model: m, compute: compute, mode: .cold, conf: conf, iou: iou)
+    }
+    private func runBenchSustained() {
+        guard let m = modelURL else { return }
+        engine.runBench(model: m, compute: compute, mode: .sustained, minutes: benchMinutes, conf: conf, iou: iou)
+    }
+    private func runBenchAccuracy() {
+        guard let m = modelURL else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        panel.message = "Choose the images folder of a labelled set (labels are read from the sibling labels/ folder, as ultralytics does)"
+        panel.prompt = "Score"
+        guard panel.runModal() == .OK, let images = panel.url else { return }
+        // <set>/images -> <set>/labels when it exists, else the auto rule per image
+        let sibling = images.deletingLastPathComponent().appendingPathComponent("labels")
+        let labels = FileManager.default.fileExists(atPath: sibling.path) ? sibling : nil
+        engine.runAccuracy(model: m, compute: compute, images: images, labels: labels, conf: conf, iou: iou)
+    }
+
     private func statRow(_ label: String, _ value: String) -> some View {
         HStack {
             Text(label).font(.caption).foregroundStyle(.secondary)
