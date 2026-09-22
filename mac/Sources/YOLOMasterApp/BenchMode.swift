@@ -52,6 +52,7 @@ struct BenchCell: Identifiable, Codable {
     var dataset: BenchDocument.Dataset?
     var accuracy: BenchDocument.Accuracy?
     var samples: [Double] = []           // the per-iteration series (model ms; dataset: total ms)
+    var sampleTimes: [Double] = []       // seconds since the cell's run started, parallel to samples
     var thermal: [Int] = []              // thermal level per second (sustained) or per sample bucket
     var document: BenchDocument?
     var headlineMs: Double? { cold?.median ?? sustained?.sustained_median_ms ?? dataset?.infer_ms.median ?? accuracy?.timings["infer_ms"]?.median }
@@ -135,7 +136,8 @@ final class BenchModel: ObservableObject {
     @Published private(set) var running = false
     @Published private(set) var phase = ""          // what is happening now
     @Published private(set) var progress: Double?   // 0...1 when known
-    @Published private(set) var liveSamples: [Double] = []
+    @Published private(set) var liveSamples: [(t: Double, ms: Double)] = []   // t = seconds since the cell's run started
+    @Published private(set) var liveStart = Date()
     @Published private(set) var liveSeconds: [(t: Double, med: Double, thermal: Int)] = []
     @Published private(set) var liveCell: BenchCell?
     @Published private(set) var thermal = thermalLevel(ProcessInfo.processInfo.thermalState)
@@ -149,7 +151,8 @@ final class BenchModel: ObservableObject {
     private var cancelFlag = false
     private let cancelLock = NSLock()
     private var thermalTimer: Timer?
-    private var pendingSamples: [Double] = []
+    private var pendingSamples: [(t: Double, ms: Double)] = []
+    private var cellStart = Date()
     private var flushScheduled = false
     private var detectors: [String: Detector] = [:]
 
@@ -182,12 +185,13 @@ final class BenchModel: ObservableObject {
 
     // streaming: samples are batched onto the main thread at ~20 Hz so the chart never starves the run
     private func push(_ ms: Double) {
+        let t = Date().timeIntervalSince(cellStart)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.pendingSamples.append(ms)
+            self.pendingSamples.append((t, ms))
             if !self.flushScheduled {
                 self.flushScheduled = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     self.liveSamples.append(contentsOf: self.pendingSamples); self.pendingSamples.removeAll(); self.flushScheduled = false
                 }
             }
@@ -221,7 +225,9 @@ final class BenchModel: ObservableObject {
                         continue
                     }
                     var cell = BenchCell(modelName: name, modelPath: url.path, compute: c, preproc: det.effectivePreprocDevice.rawValue)
-                    self.main { self.liveCell = cell }
+                    self.cellStart = Date()
+                    let cellStart = self.cellStart
+                    self.main { self.liveCell = cell; self.liveStart = cellStart }
                     var card = BenchEnvironment.model(det); card.ep_note = "preproc=\(det.effectivePreprocDevice.rawValue)"
                     var doc = BenchDocument(timestamp: YMCore.timestampUTC(), tool: "macos", model: card, environment: BenchEnvironment.collect(),
                                             protocol: .init(mode: kind == .sustained ? "sustained" : "cold", conf: conf, iou: Float(iou), max_det: 300,
@@ -238,7 +244,7 @@ final class BenchModel: ObservableObject {
                     case .cold:
                         self.main { self.phase = "\(name) · \(c.rawValue): warm-up \(warm), then \(iters) timed iterations" }
                         let cold = BenchRunner.coldSweep(det, warmup: warm, iters: iters, cancel: { self.isCancelled }) { i, ms in
-                            cell.samples.append(ms); self.push(ms); sampleThermal()
+                            cell.samples.append(ms); cell.sampleTimes.append(Date().timeIntervalSince(cellStart)); self.push(ms); sampleThermal()
                             if i % 5 == 0 { let p = Double(i + 1) / Double(max(iters, 1)); self.main { self.progress = p } }
                         }
                         cell.cold = cold.infer_ms; doc.cold = cold
@@ -251,7 +257,9 @@ final class BenchModel: ObservableObject {
                                                                thermalTrack.append(th)
                                                                self.main { self.liveSeconds.append((elapsed, med, th)); self.progress = min(1, elapsed / (minutes * 60)) }
                                                            },
-                                                           onSample: { _, ms in cell.samples.append(ms); self.push(ms) })
+                                                           onSample: { _, ms in
+                                                               cell.samples.append(ms); cell.sampleTimes.append(Date().timeIntervalSince(cellStart)); self.push(ms)
+                                                           })
                         cell.sustained = su; doc.sustained = su
                         var coldStats = StageStats(Array(cell.samples.prefix(max(iters, 1))))
                         coldStats.n = min(cell.samples.count, max(iters, 1))
@@ -268,7 +276,7 @@ final class BenchModel: ObservableObject {
                             if self.isCancelled { break }
                             autoreleasepool {
                                 guard let cg = loadCGImage(f), let r = try? det.detect(cg, conf: conf, iou: iou) else { return }
-                                samples.add(r); cell.samples.append(r.inferMs); self.push(r.inferMs); sampleThermal()
+                                samples.add(r); cell.samples.append(r.inferMs); cell.sampleTimes.append(Date().timeIntervalSince(cellStart)); self.push(r.inferMs); sampleThermal()
                             }
                             if i % 5 == 0 { let p = Double(i + 1) / Double(files.count); self.main { self.progress = p } }
                         }
@@ -288,7 +296,9 @@ final class BenchModel: ObservableObject {
                                                    progress: { done, total in
                                                        if done % 5 == 0 { let p = Double(done) / Double(total); self.main { self.progress = p } }
                                                    },
-                                                   onInfer: { _, ms in cell.samples.append(ms); self.push(ms); sampleThermal() })
+                                                   onInfer: { _, ms in
+                                                       cell.samples.append(ms); cell.sampleTimes.append(Date().timeIntervalSince(cellStart)); self.push(ms); sampleThermal()
+                                                   })
                         cell.accuracy = o.document(); doc.accuracy = o.document()
                         doc.protocol.image_count = files.count; doc.protocol.image_list_sha256 = YMCore.imageListSha256(files.map { $0.path })
                         cell.cold = o.inferMs
@@ -551,7 +561,7 @@ struct BenchDashboard: View {
     }
 
     private var liveStats: StageStats? {
-        if bench.running || selectedRecord == nil { return bench.liveSamples.count > 1 ? StageStats(bench.liveSamples) : shownCells.first?.cold }
+        if bench.running || selectedRecord == nil { return bench.liveSamples.count > 1 ? StageStats(bench.liveSamples.map(\.ms)) : shownCells.first?.cold }
         return shownCells.first?.cold
     }
     private var statCards: some View {
@@ -580,23 +590,42 @@ struct BenchDashboard: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
-    /// Per-iteration latency: the live series while running (a rolling window of the last 600 points),
-    /// the stored series otherwise. Raw samples as a thin line, a 20-point moving average on top, the
-    /// window median as a rule; axes follow the window (x) and the data with 8% padding (y).
+    /// Model time against wall-clock seconds since the cell started. The window grows from 0 until it
+    /// spans `windowSeconds`, then rolls (the last minute is always in view). Raw samples as a thin
+    /// line, a 20-sample moving average on top, the window median as a rule; y follows the data.
+    private static let windowSeconds = 60.0
     private var liveChart: some View {
-        let series: [Double] = (bench.running || selectedRecord == nil) && !bench.liveSamples.isEmpty ? bench.liveSamples : (shownCells.first?.samples ?? [])
-        let window = series.count > 600 ? Array(series.suffix(600)) : series
-        let offset = series.count - window.count
-        let med = window.isEmpty ? 0 : StageStats(window).median
-        let lo = window.min() ?? 0, hi = window.max() ?? 1
+        let all: [(t: Double, ms: Double)] = {
+            if (bench.running || selectedRecord == nil) && !bench.liveSamples.isEmpty { return bench.liveSamples }
+            guard let c = shownCells.first else { return [] }
+            return c.samples.enumerated().map { ($0.offset < c.sampleTimes.count ? c.sampleTimes[$0.offset] : Double($0.offset), $0.element) }
+        }()
+        let tEnd = max(all.last?.t ?? 0, 1)
+        let tStart = max(0, tEnd - BenchDashboard.windowSeconds)
+        let window = all.filter { $0.t >= tStart }
+        let ys = window.map(\.ms)
+        let med = ys.isEmpty ? 0 : StageStats(ys).median
+        let lo = ys.min() ?? 0, hi = ys.max() ?? 1
         let pad = max((hi - lo) * 0.08, 0.05)
-        let trend: [Double] = {
-            var out: [Double] = []; out.reserveCapacity(window.count)
+        // a minute at 100+ fps is thousands of samples: decimate to <= 400 buckets (min / max band + mean),
+        // then smooth the means; the chart redraws ten times a second on the streamed data
+        let buckets = max(1, Int((Double(window.count) / 400).rounded(.up)))
+        var band: [(t: Double, lo: Double, hi: Double, mean: Double)] = []
+        band.reserveCapacity(window.count / buckets + 1)
+        var i = 0
+        while i < window.count {
+            let slice = window[i..<min(i + buckets, window.count)]
+            let v = slice.map(\.ms)
+            band.append((slice[slice.startIndex].t, v.min() ?? 0, v.max() ?? 0, v.reduce(0, +) / Double(v.count)))
+            i += buckets
+        }
+        let trend: [(t: Double, ms: Double)] = {
+            var out: [(t: Double, ms: Double)] = []; out.reserveCapacity(band.count)
             var sum = 0.0
-            for (i, v) in window.enumerated() {
-                sum += v
-                if i >= 20 { sum -= window[i - 20] }
-                out.append(sum / Double(min(i + 1, 20)))
+            for (k, b) in band.enumerated() {
+                sum += b.mean
+                if k >= 8 { sum -= band[k - 8].mean }
+                out.append((b.t, sum / Double(min(k + 1, 8))))
             }
             return out
         }()
@@ -605,23 +634,25 @@ struct BenchDashboard: View {
                 Text(bench.kind == .dataset ? "Model time per image" : "Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
                 if !window.isEmpty {
-                    Text(String(format: "window %d · median %.2f ms · last %.2f ms", window.count, med, window.last ?? 0))
+                    Text(String(format: "last %.0f s · %d samples · median %.2f ms · last %.2f ms · band = min/max per %d", tEnd - tStart, window.count, med, window.last?.ms ?? 0, buckets))
                         .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
             Chart {
-                ForEach(Array(window.enumerated()), id: \.offset) { i, v in
-                    LineMark(x: .value("iteration", i + offset), y: .value("ms", v), series: .value("series", "raw"))
-                        .foregroundStyle(brand.opacity(0.35)).lineStyle(StrokeStyle(lineWidth: 0.8))
+                ForEach(Array(band.enumerated()), id: \.offset) { _, b in
+                    AreaMark(x: .value("s", b.t), yStart: .value("min", b.lo), yEnd: .value("max", b.hi))
+                        .foregroundStyle(brand.opacity(0.18))
+                    LineMark(x: .value("s", b.t), y: .value("ms", b.mean), series: .value("series", "raw"))
+                        .foregroundStyle(brand.opacity(0.45)).lineStyle(StrokeStyle(lineWidth: 0.8))
                 }
-                ForEach(Array(trend.enumerated()), id: \.offset) { i, v in
-                    LineMark(x: .value("iteration", i + offset), y: .value("ms", v), series: .value("series", "trend"))
+                ForEach(Array(trend.enumerated()), id: \.offset) { _, p in
+                    LineMark(x: .value("s", p.t), y: .value("ms", p.ms), series: .value("series", "trend"))
                         .foregroundStyle(brand).lineStyle(StrokeStyle(lineWidth: 2)).interpolationMethod(.monotone)
                 }
                 if !window.isEmpty { RuleMark(y: .value("median", med)).foregroundStyle(.secondary.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3])) }
             }
-            .chartYAxisLabel("ms").chartXAxisLabel(bench.kind == .dataset ? "image" : "iteration")
-            .chartXScale(domain: offset...(offset + max(window.count - 1, 1)))
+            .chartYAxisLabel("ms").chartXAxisLabel("seconds")
+            .chartXScale(domain: tStart...max(tEnd, tStart + 1))
             .chartYScale(domain: (lo - pad)...(hi + pad))
             .chartLegend(.hidden)
         }
