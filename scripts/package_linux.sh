@@ -31,7 +31,7 @@
 set -euo pipefail
 
 VARIANT="${1:-cpu}"
-VERSION="${2:-1.1.0}"
+VERSION="${2:-$(tr -d "[:space:]" < "$(cd "$(dirname "$0")/.." && pwd)/VERSION")}"
 case "$VARIANT" in cpu|gpu) ;; *) echo "usage: package_linux.sh [cpu|gpu] [version]"; exit 2;; esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -123,8 +123,20 @@ rm -rf "$BUILD"
 BACKEND_ARGS=()
 if [ "$NCNN_AVAILABLE" -eq 1 ]; then BACKEND_ARGS+=( -DUSE_NCNN=ON -DNCNN_ROOT="$NCNN_ROOT" ); else BACKEND_ARGS+=( -DUSE_NCNN=OFF ); fi
 if [ "$MNN_AVAILABLE" -eq 1 ]; then BACKEND_ARGS+=( -DUSE_MNN=ON -DMNN_ROOT="$MNN_ROOT" ); else BACKEND_ARGS+=( -DUSE_MNN=OFF ); fi
+# gpu variant: the CUDA preprocessing kernel (letterbox + normalize on the GPU, ORT IoBinding on the
+# CUDA EP) when nvcc is available on the build host; libcudart is in the bundle's REQUIRED list anyway.
+CUDA_ARGS=()
+if [ "$VARIANT" = gpu ]; then
+  NVCC="$(ls -d /usr/local/cuda-12*/bin/nvcc /usr/local/cuda/bin/nvcc 2>/dev/null | sort -V | tail -1 || true)"
+  if [ -n "$NVCC" ]; then
+    CUDA_ARGS+=( -DUSE_CUDA_PREPROC=ON -DCMAKE_CUDA_COMPILER="$NVCC" -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHS:-75;80;86;89;90}" )
+    echo "  [ok] CUDA preprocessing kernel: $NVCC (archs ${CUDA_ARCHS:-75;80;86;89;90})"
+  else
+    echo "  [warn] nvcc not found: gpu bundle without the CUDA preprocessing kernel (CPU letterbox)"
+  fi
+fi
 cmake -S "$ROOT/cpp" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release \
-  -DONNXRUNTIME_ROOT="$ORT_ROOT" "${BACKEND_ARGS[@]}" \
+  -DONNXRUNTIME_ROOT="$ORT_ROOT" "${BACKEND_ARGS[@]}" "${CUDA_ARGS[@]}" \
   -DOpenCV_DIR="$OCV/lib/cmake/opencv4"
 cmake --build "$BUILD" -j"$(nproc)"
 
