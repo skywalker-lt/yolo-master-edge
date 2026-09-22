@@ -656,9 +656,11 @@ struct BenchDashboard: View {
     /// window never re-partitions the samples it already showed; the 8-slot moving average is warmed
     /// up on the slots preceding `tStart` and only slots inside the window are returned.
     private static func decimate(_ pts: [(t: Double, ms: Double)], name: String, from tStart: Double, to tEnd: Double,
-                                 into range: ClosedRange<Double>) -> [Bucket] {
+                                 into range: ClosedRange<Double>, live: Bool) -> [Bucket] {
         guard !pts.isEmpty else { return [] }
-        let width = max((tEnd - tStart) / 400, 0.01)
+        // live: a constant slot width (the rolling window's) even while the axis is still growing, so
+        // slot edges never move; finished runs: 400 slots across the whole run
+        let width = live ? BenchDashboard.windowSeconds / 400 : max((tEnd - tStart) / 400, 0.01)
         let smooth = 8
         let leadIn = tStart - Double(smooth) * width
         let clamp: (Double) -> Double = { min(max($0, range.lowerBound), range.upperBound) }
@@ -690,7 +692,7 @@ struct BenchDashboard: View {
         let visible = shown.series.flatMap { s in (shown.tStart > 0 ? s.points.filter { $0.t >= shown.tStart } : s.points).map(\.ms) }
         let range = BenchDashboard.yRange(visible)
         let med = visible.isEmpty ? 0 : StageStats(visible).median
-        let buckets = shown.series.map { BenchDashboard.decimate($0.points, name: $0.name, from: shown.tStart, to: shown.tEnd, into: range) }
+        let buckets = shown.series.map { BenchDashboard.decimate($0.points, name: $0.name, from: shown.tStart, to: shown.tEnd, into: range, live: bench.running) }
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(shownKind == .dataset ? "Model time per image" : "Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
