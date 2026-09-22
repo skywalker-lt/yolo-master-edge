@@ -153,6 +153,7 @@ final class BenchModel: ObservableObject {
     private var thermalTimer: Timer?
     private var pendingSamples: [(t: Double, ms: Double)] = []
     private var cellStart = Date()
+    private var cellGen = 0                 // bumped per cell: samples still in flight from the previous cell are dropped
     private var flushScheduled = false
     private var detectors: [String: Detector] = [:]
 
@@ -185,14 +186,15 @@ final class BenchModel: ObservableObject {
 
     // streaming: samples are batched onto the main thread at ~20 Hz so the chart never starves the run
     private func push(_ ms: Double) {
-        let t = Date().timeIntervalSince(cellStart)
+        let t = Date().timeIntervalSince(cellStart), gen = cellGen
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, gen == self.cellGen else { return }
             self.pendingSamples.append((t, ms))
             if !self.flushScheduled {
                 self.flushScheduled = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    self.liveSamples.append(contentsOf: self.pendingSamples); self.pendingSamples.removeAll(); self.flushScheduled = false
+                    if gen == self.cellGen { self.liveSamples.append(contentsOf: self.pendingSamples) }
+                    self.pendingSamples.removeAll(); self.flushScheduled = false
                 }
             }
         }
@@ -218,16 +220,19 @@ final class BenchModel: ObservableObject {
                 for c in computes {
                     if self.isCancelled { break outer }
                     let name = url.deletingPathExtension().lastPathComponent
-                    self.main { self.phase = "Loading \(name) on \(c.rawValue)…"; self.liveSamples = []; self.liveSeconds = [] }
+                    self.main { self.phase = "Loading \(name) on \(c.rawValue)…" }
                     let det: Detector
                     do { det = try self.detector(url, c) } catch {
                         self.main { self.note = "\(name) on \(c.rawValue): \(error.localizedDescription)" }
                         continue
                     }
                     var cell = BenchCell(modelName: name, modelPath: url.path, compute: c, preproc: det.effectivePreprocDevice.rawValue)
+                    // new cell: new clock and generation; the chart and any in-flight samples of the previous cell are dropped
                     self.cellStart = Date()
                     let cellStart = self.cellStart
-                    self.main { self.liveCell = cell; self.liveStart = cellStart }
+                    let gen = self.cellGen + 1
+                    self.cellGen = gen
+                    self.main { self.liveCell = cell; self.liveStart = cellStart; self.liveSamples = []; self.liveSeconds = []; self.pendingSamples = [] }
                     var card = BenchEnvironment.model(det); card.ep_note = "preproc=\(det.effectivePreprocDevice.rawValue)"
                     var doc = BenchDocument(timestamp: YMCore.timestampUTC(), tool: "macos", model: card, environment: BenchEnvironment.collect(),
                                             protocol: .init(mode: kind == .sustained ? "sustained" : "cold", conf: conf, iou: Float(iou), max_det: 300,
@@ -601,7 +606,7 @@ struct BenchDashboard: View {
             guard let c = shownCells.first else { return [] }
             return c.samples.enumerated().map { ($0.offset < c.sampleTimes.count ? c.sampleTimes[$0.offset] : Double($0.offset), $0.element) }
         }()
-        let tEnd = max(all.last?.t ?? 0, 1)
+        let tEnd = max(all.map(\.t).max() ?? 0, 1)
         // rolling minute while a run streams; the whole series once it is done (or for a history record)
         let tStart = bench.running ? max(0, tEnd - BenchDashboard.windowSeconds) : 0
         let window = tStart > 0 ? all.filter { $0.t >= tStart } : all
