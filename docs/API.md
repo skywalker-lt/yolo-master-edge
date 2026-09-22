@@ -143,6 +143,9 @@ writes: `model`, `environment` (host, CPU, GPU, threads, commit, build flags, ve
 `cold.infer_ms{n, mean, median, p90, p95, p99, min, max}` (floor-rank percentiles, the phone Bench
 tabs' convention) plus `request_id` and `worker`. The sweep holds that worker for its duration;
 other workers keep serving. Accuracy is not measured over HTTP: use the CLI's `--accuracy`.
+`tool` names the producer: `cli`, `server`, `macos` (the Core ML runner's CLI and app, whose
+`sustained` block adds a `thermal` array of ProcessInfo states), `android`, `ios`. Any document
+can be checked with `scripts/bench_schema_check.py`.
 
 ### GET /metrics
 

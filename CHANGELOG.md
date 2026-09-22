@@ -4,7 +4,18 @@ Two version numbers: the runtime, CLI and repository tag (`VERSION`) and the API
 (`cpp/server/SERVER_VERSION`), because the server first shipped as image tag 1.2.0 on top of
 runtime 1.1.1 and that image stays as published.
 
-## Runtime 1.2.0 / server 1.2.1 (in progress, Linux phase)
+## Runtime 1.2.0 / server 1.2.1 (in progress: Linux phase complete, macOS phase on dev/v1.2.0-mac)
+
+macOS Core ML Runner 1.2.0 (`mac/`, details in `mac/RELEASE_NOTES-1.2.0.md` and
+`mac/CHANGELOG-1.2.0.md`)
+- The OpenCV-free parts of the C++ core (in-process mAP, BoT-SORT / ByteTrack, bench statistics)
+  now live in `mac/Sources/YOLOMasterCore` and are compiled by both CMake (`yolomaster_ccore`)
+  and the Swift package; Linux output proven identical.
+- Bench mode (cold / sustained, `yolomaster-bench/v1` with `tool: macos`), in-process accuracy
+  at the val protocol (the first Core ML mAP number), `--save-txt` in the C++ format, tracking
+  on video (Vision-based camera motion for BoT-SORT), Metal GPU preprocessing with a CPU
+  fallback, `scripts/bench_schema_check.py` (shared with Linux T19), `scripts/preproc_compare.py`,
+  `mac/tests/run_mac_tests.sh`.
 
 Runtime and CLI
 - One `preprocess_nchw` for every backend (letterbox, BGR to RGB, /255, NCHW); TensorRT and MNN

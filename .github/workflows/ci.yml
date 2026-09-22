@@ -72,7 +72,8 @@ jobs:
         run: |
           python3 - <<'PY'
           import pathlib, sys
-          docs = ["README.md", "CHANGELOG.md", "docs/API.md", "deploy/README.md", "API_SERVER_RESULTS.md", "TECHNICAL_REPORT.md"]
+          docs = ["README.md", "CHANGELOG.md", "docs/API.md", "deploy/README.md", "API_SERVER_RESULTS.md", "TECHNICAL_REPORT.md",
+                  "mac/RELEASE_NOTES-1.2.0.md", "mac/CHANGELOG-1.2.0.md"]
           bad = [d for d in docs if pathlib.Path(d).exists() and "\u2014" in pathlib.Path(d).read_text(errors="replace")]
           if bad:
               print("em-dash found in:", *bad); sys.exit(1)
@@ -80,7 +81,7 @@ jobs:
           PY
       - name: Shell syntax
         run: |
-          for f in deploy/*.sh deploy/**/*.sh scripts/*.sh scripts/**/*.sh tests/*.sh; do
+          for f in deploy/*.sh deploy/**/*.sh scripts/*.sh scripts/**/*.sh tests/*.sh mac/*.sh mac/scripts/*.sh mac/tests/*.sh; do
             [ -f "$f" ] && bash -n "$f"; done
       - name: VERSION matches CHANGELOG
         run: |

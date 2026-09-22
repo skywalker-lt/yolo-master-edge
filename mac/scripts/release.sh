@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-command signed + notarized release of YOLOMaster.app.
-# Usage:  mac/scripts/release.sh [version]      (default version 1.0.0)
+# Usage:  mac/scripts/release.sh [version]      (default: the repo VERSION file)
 #
 # Prereqs (one-time):
 #   1. A "Developer ID Application" certificate in your login keychain
@@ -12,7 +12,7 @@
 #             BUNDLE_ID=com.you.app                     ARCHS="arm64 x86_64"
 set -eo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"        # .../mac
-VERSION="${1:-1.1.0}"
+VERSION="${1:-$(tr -d '[:space:]' < "$HERE/../VERSION" 2>/dev/null || echo 1.2.0)}"
 PROFILE="${NOTARY_PROFILE:-ac-notary}"
 
 echo "== release: YOLO-Master CoreML Runner $VERSION =="
