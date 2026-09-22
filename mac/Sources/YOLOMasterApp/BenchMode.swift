@@ -627,8 +627,11 @@ struct BenchDashboard: View {
         if bench.running, let c = bench.liveCell {
             let pts = bench.liveSamples
             let tEnd = max(pts.map(\.t).max() ?? 0, 1)
+            // once the window rolls its width is exactly windowSeconds, so the slot width (and hence the
+            // slot edges) stays constant from one redraw to the next
+            let tStart = max(0, tEnd - BenchDashboard.windowSeconds)
             return ([Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: brand, points: pts)],
-                    max(0, tEnd - BenchDashboard.windowSeconds), tEnd)
+                    tStart, tStart > 0 ? tStart + BenchDashboard.windowSeconds : max(tEnd, 1))
         }
         let cells = shownCells
         let series = cells.enumerated().map { k, c in
@@ -648,23 +651,36 @@ struct BenchDashboard: View {
         return (lo - pad)...(hi + pad)
     }
     private struct Bucket: Identifiable { let id: Int; let series: String; let t, lo, hi, mean, trend: Double }
-    /// Decimate one series to <= 400 buckets (min / max band + mean) and smooth the means.
-    private static func decimate(_ pts: [(t: Double, ms: Double)], name: String, from tStart: Double, into range: ClosedRange<Double>) -> [Bucket] {
-        let window = tStart > 0 ? pts.filter { $0.t >= tStart } : pts
-        guard !window.isEmpty else { return [] }
-        let size = max(1, Int((Double(window.count) / 400).rounded(.up)))
-        var out: [Bucket] = []; out.reserveCapacity(window.count / size + 1)
-        var i = 0, sum = 0.0, means: [Double] = []
+    /// Decimate one series into time-aligned slots (min / max band + mean) and smooth the means.
+    /// Slots are anchored to absolute time (slot k covers [k * width, (k + 1) * width)), so a rolling
+    /// window never re-partitions the samples it already showed; the 8-slot moving average is warmed
+    /// up on the slots preceding `tStart` and only slots inside the window are returned.
+    private static func decimate(_ pts: [(t: Double, ms: Double)], name: String, from tStart: Double, to tEnd: Double,
+                                 into range: ClosedRange<Double>) -> [Bucket] {
+        guard !pts.isEmpty else { return [] }
+        let width = max((tEnd - tStart) / 400, 0.01)
+        let smooth = 8
+        let leadIn = tStart - Double(smooth) * width
         let clamp: (Double) -> Double = { min(max($0, range.lowerBound), range.upperBound) }
-        while i < window.count {
-            let slice = window[i..<min(i + size, window.count)]
-            let v = slice.map(\.ms)
-            let mean = v.reduce(0, +) / Double(v.count)
-            means.append(mean); sum += mean
-            if means.count > 8 { sum -= means[means.count - 9] }
-            out.append(Bucket(id: out.count, series: name, t: slice[slice.startIndex].t, lo: clamp(v.min() ?? 0), hi: clamp(v.max() ?? 0),
-                              mean: clamp(mean), trend: clamp(sum / Double(min(means.count, 8)))))
-            i += size
+        // group by slot (the samples arrive in time order)
+        var slots: [(k: Int, lo: Double, hi: Double, sum: Double, n: Int)] = []
+        for p in pts where p.t >= leadIn {
+            let k = Int((p.t / width).rounded(.down))
+            if let last = slots.last, last.k == k {
+                slots[slots.count - 1] = (k, min(last.lo, p.ms), max(last.hi, p.ms), last.sum + p.ms, last.n + 1)
+            } else {
+                slots.append((k, p.ms, p.ms, p.ms, 1))
+            }
+        }
+        var out: [Bucket] = []; out.reserveCapacity(slots.count)
+        var window: [Double] = []
+        for sl in slots {
+            let mean = sl.sum / Double(sl.n)
+            window.append(mean); if window.count > smooth { window.removeFirst() }
+            let t = Double(sl.k) * width
+            if t + width < tStart { continue }   // lead-in slot: it only warmed the average up
+            out.append(Bucket(id: sl.k, series: name, t: t, lo: clamp(sl.lo), hi: clamp(sl.hi), mean: clamp(mean),
+                              trend: clamp(window.reduce(0, +) / Double(window.count))))
         }
         return out
     }
@@ -674,7 +690,7 @@ struct BenchDashboard: View {
         let visible = shown.series.flatMap { s in (shown.tStart > 0 ? s.points.filter { $0.t >= shown.tStart } : s.points).map(\.ms) }
         let range = BenchDashboard.yRange(visible)
         let med = visible.isEmpty ? 0 : StageStats(visible).median
-        let buckets = shown.series.map { BenchDashboard.decimate($0.points, name: $0.name, from: shown.tStart, into: range) }
+        let buckets = shown.series.map { BenchDashboard.decimate($0.points, name: $0.name, from: shown.tStart, to: shown.tEnd, into: range) }
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(shownKind == .dataset ? "Model time per image" : "Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
