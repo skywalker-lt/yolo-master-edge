@@ -91,3 +91,10 @@ public final class Tracker {
         }
     }
 }
+
+/// Estimates the camera motion between consecutive frames for BoT-SORT. Called once per frame in
+/// order; returns nil when nothing could be estimated (the tracker then skips compensation).
+public protocol CameraMotionEstimator: AnyObject {
+    func estimate(_ frame: CGImage) -> CameraMotion?
+    func reset()
+}
