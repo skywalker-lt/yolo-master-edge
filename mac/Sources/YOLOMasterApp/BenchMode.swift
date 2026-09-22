@@ -203,7 +203,7 @@ final class BenchModel: ObservableObject {
         cancelLock.lock(); cancelFlag = false; cancelLock.unlock()
         running = true; cells = []; liveSamples = []; liveSeconds = []; liveCell = nil; progress = nil; note = ""
         thermalPeak = thermal
-        let kind = self.kind, warm = Int(warmup), iters = Int(iters), minutes = self.minutes, pre = preproc
+        let kind = self.kind, warm = Int(warmup), iters = Int(iters), minutes = self.minutes
         let computes = ComputeChoice.allCases.filter { self.computes.contains($0) }
         let dataset = datasetURL, limit = Int(datasetLimit), conf = Float(self.conf), iou = CGFloat(self.iou)
         queue.async { [weak self] in
