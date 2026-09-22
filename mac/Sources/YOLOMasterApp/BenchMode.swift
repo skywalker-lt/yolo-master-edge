@@ -527,26 +527,28 @@ struct BenchDashboard: View {
     }
 
     var body: some View {
-        ScrollView {
         VStack(spacing: 14) {
             header
             HStack(alignment: .top, spacing: 14) {
                 VStack(spacing: 14) {
                     statCards
+                    // the main chart takes whatever height the stage has; the secondary charts keep a fixed band
                     switch shownKind {
                     case .sustained:
-                        timeChart.frame(height: 260)
-                        sustainedChart.frame(height: 170)
+                        timeChart.frame(minHeight: 220, maxHeight: .infinity)
+                        sustainedChart.frame(height: 180)
+                        if shownCells.count > 1 { comparisonChart.frame(height: 150) }
                     case .dataset:
-                        timeChart.frame(height: 300)
+                        timeChart.frame(minHeight: 220, maxHeight: .infinity)
+                        if shownCells.count > 1 { comparisonChart.frame(height: 150) }
                     case .cold:
-                        histogramChart.frame(height: 260)
+                        histogramChart.frame(minHeight: 220, maxHeight: .infinity)
                         if shownCells.count > 1 || (bench.running && !bench.cells.isEmpty) { comparisonChart.frame(height: 170) }
                     case .accuracy:
                         if let acc = (selectedRecord == nil ? bench.liveCell?.accuracy ?? shownCells.first?.accuracy : shownCells.first?.accuracy) {
-                            accuracyChart(acc).frame(height: 260)
+                            accuracyChart(acc).frame(minHeight: 220, maxHeight: .infinity)
                         } else {
-                            accuracyPending.frame(height: 260)
+                            accuracyPending.frame(minHeight: 220, maxHeight: .infinity)
                         }
                         if shownCells.count > 1 { comparisonChart.frame(height: 170) }
                     }
@@ -565,7 +567,6 @@ struct BenchDashboard: View {
             }
         }
         .padding(16)
-        }
     }
 
     private var header: some View {
@@ -822,7 +823,11 @@ struct BenchDashboard: View {
                 }
             }
             .chartYAxisLabel("ms").chartXAxisLabel("seconds")
-            .chartYScale(domain: BenchDashboard.yRange(points.map(\.med)))
+            .chartXScale(domain: 0...max(points.map(\.t).max() ?? 1, 1))
+            .chartYScale(domain: {   // every second is one median: show them all, padded, never outside the plot
+                let ys = points.map(\.med); let lo = ys.min() ?? 0, hi = ys.max() ?? 1; let pad = max((hi - lo) * 0.12, 0.05)
+                return (lo - pad)...(hi + pad)
+            }())
             .chartLegend(.hidden)
         }
         .padding(12)
