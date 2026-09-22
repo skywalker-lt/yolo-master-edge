@@ -209,6 +209,16 @@ if [ "$VARIANT" = gpu ]; then
     echo "       set CUDA_LIB_DIRS=\"/path/one /path/two\" and re-run."
     exit 1
   fi
+  # cuDNN 9.x dlopens its engine sublibraries by their FULLY VERSIONED name (e.g.
+  # libcudnn_engines_precompiled.so.9.26.0), so the .so.9 copies alone give
+  # CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED at the first Conv; alias every cuDNN file
+  # under the real soname of the source it was copied from.
+  for so in $REQUIRED; do
+    case "$so" in libcudnn*) ;; *) continue ;; esac
+    src="$(find_cuda_lib "$so")"; [ -n "$src" ] || continue
+    real="$(basename "$(readlink -f "$src")")"
+    [ "$real" != "$so" ] && ln -sf "$so" "$DIST/lib/$real" && echo "  [cuda] $real -> $so (versioned alias)"
+  done
   # Resolve dependencies introduced by the provider itself (and by CUDA/cuDNN
   # libraries found above), not only those visible from the main executable.
   # Otherwise a missing transitive .so can make ORT silently fall back to CPU.
