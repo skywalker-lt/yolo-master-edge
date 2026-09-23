@@ -1020,9 +1020,6 @@ struct ThermometerView: View {
                 }.frame(maxWidth: .infinity)
             }
             Text(thermalName(level)).font(.caption.weight(.semibold)).foregroundStyle(thermalColor(level))
-            if running || meters.thermalPeak > 0 {
-                Text("peak \(thermalName(meters.thermalPeak))").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
@@ -1040,7 +1037,7 @@ struct PowerMeterView: View {
         let w = b.watts
         let scale = 100.0                       // full bar = 100 W either way
         return VStack(spacing: 8) {
-            Text("Power").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(b.present ? b.state.rawValue : "Power").font(.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
             GeometryReader { g in
                 let h = g.size.height, barW: CGFloat = 22
                 let half = h / 2
@@ -1065,10 +1062,8 @@ struct PowerMeterView: View {
                 Text(String(format: "%@%.1f W", w < 0 ? "-" : "+", abs(w))).font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(w < -0.05 ? Color.orange : (w > 0.05 ? Color.green : Color.secondary))
                     .contentTransition(.numericText())
-                Text(b.state.rawValue).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
             } else {
                 Text("no battery").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text("desktop Mac").font(.caption2).foregroundStyle(.tertiary)
             }
         }
         .padding(12)
