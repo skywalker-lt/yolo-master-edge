@@ -157,10 +157,19 @@ enum BatteryReader {
             var propsRef: Unmanaged<CFMutableDictionary>?
             if IORegistryEntryCreateCFProperties(service, &propsRef, kCFAllocatorDefault, 0) == KERN_SUCCESS,
                let props = propsRef?.takeRetainedValue() as? [String: Any] {
-                let mA = (props["InstantAmperage"] as? Int64) ?? (props["Amperage"] as? Int64) ?? Int64((props["InstantAmperage"] as? Int) ?? (props["Amperage"] as? Int) ?? 0)
-                let signed = mA > Int64(Int32.max) ? mA - (Int64(1) << 32) : mA     // some firmware reports a 32-bit two's complement in a 64-bit field
+                // InstantAmperage is the live value (Amperage is a rolling average that lags by a minute). A
+                // discharge is negative and the registry may hand it over as an unsigned 64-bit or a 32-bit
+                // two's-complement pattern, so decode the bit pattern instead of trusting a plain Int cast.
+                func milliamps(_ key: String) -> Int64? {
+                    guard let n = props[key] as? NSNumber else { return nil }
+                    var v: Int64
+                    if let i = n as? Int64 { v = i } else { v = Int64(bitPattern: n.uint64Value) }
+                    if v > Int64(Int32.max) && v <= Int64(UInt32.max) { v -= Int64(1) << 32 }
+                    return v
+                }
+                let mA = milliamps("InstantAmperage") ?? milliamps("Amperage") ?? 0
                 let mV = Double((props["Voltage"] as? Int) ?? 0)
-                watts = Double(signed) / 1000 * mV / 1000
+                watts = Double(mA) / 1000 * mV / 1000
             }
         }
         return BatterySample(present: true, watts: watts, state: state, percent: percent)
@@ -678,22 +687,21 @@ struct BenchDashboard: View {
         let s = liveStats
         let cell = selectedRecord == nil ? bench.liveCell : shownCells.first
         return HStack(spacing: 10) {
-            card("Median", s.map { String(format: "%.2f ms", $0.median) } ?? "-", s.map { String(format: "%.1f fps", $0.median > 0 ? 1000 / $0.median : 0) } ?? "")
-            card("p90 / p99", s.map { String(format: "%.2f / %.2f", $0.p90, $0.p99) } ?? "-", "ms")
-            card("Min / max", s.map { String(format: "%.2f / %.2f", $0.min, $0.max) } ?? "-", "ms")
-            card("Samples", s.map { "\($0.n)" } ?? "-", cell.map { "\($0.modelName) · \($0.compute.rawValue)" } ?? "")
+            card("Median", s.map { String(format: "%.2f ms  ·  %.1f fps", $0.median, $0.median > 0 ? 1000 / $0.median : 0) } ?? "-")
+            card("p90 / p99 ms", s.map { String(format: "%.2f / %.2f", $0.p90, $0.p99) } ?? "-")
+            card("Min / max ms", s.map { String(format: "%.2f / %.2f", $0.min, $0.max) } ?? "-")
+            card("Samples", s.map { "\($0.n)" } ?? "-")
             if let su = cell?.sustained {
-                card("Throttle", String(format: "%+.1f%%", su.throttle_pct), String(format: "%.2f -> %.2f ms", su.cold_median_ms, su.sustained_median_ms))
+                card("Throttle", String(format: "%+.1f%%", su.throttle_pct))
             } else if let a = cell?.accuracy {
-                card("mAP50-95", String(format: "%.4f", a.map5095), String(format: "mAP50 %.4f · %d images", a.map50, a.images))
+                card("mAP50-95", String(format: "%.4f", a.map5095))
             }
         }
     }
-    private func card(_ title: String, _ value: String, _ sub: String) -> some View {
+    private func card(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.system(.title3, design: .rounded).weight(.semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
-            Text(sub).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
@@ -775,15 +783,7 @@ struct BenchDashboard: View {
         let med = visible.isEmpty ? 0 : StageStats(visible).median
         let buckets = shown.series.map { BenchDashboard.decimate($0.points, name: $0.name, from: shown.tStart, to: shown.tEnd, into: range, live: bench.running) }
         return VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(shownKind == .dataset ? "Model time per image" : "Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Spacer()
-                if !visible.isEmpty {
-                    Text(String(format: "%@%.0f s · %d samples · median %.2f ms · y = p1..p99", bench.running ? "last " : "full run ",
-                                shown.tEnd - shown.tStart, visible.count, med))
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                }
-            }
+            Text(shownKind == .dataset ? "Model time per image" : "Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Chart {
                 ForEach(Array(buckets.enumerated()), id: \.offset) { k, bs in
                     ForEach(bs) { b in
@@ -828,11 +828,7 @@ struct BenchDashboard: View {
         }
         let stats = all.count > 1 ? StageStats(all) : nil
         return VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Latency distribution of the timed iterations").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Spacer()
-                if let st = stats { Text(String(format: "%d samples · median %.2f · p90 %.2f · p99 %.2f ms", st.n, st.median, st.p90, st.p99)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
-            }
+            Text("Latency distribution of the timed iterations").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Chart {
                 ForEach(bins) { b in
                     BarMark(x: .value("ms", b.x), y: .value("count", b.n), width: .fixed(6))
@@ -936,33 +932,32 @@ struct BenchDashboard: View {
 
     private var resultsTable: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Spacer()
-                Text("floor-rank percentiles · yolomaster-bench/v1").font(.caption2).foregroundStyle(.tertiary)
-            }
-            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
+            Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
-                    Text("Model").font(.caption.weight(.semibold)); Text("Unit").font(.caption.weight(.semibold)); Text("Pre").font(.caption.weight(.semibold))
-                    Text("Median ms").font(.caption.weight(.semibold)); Text("p90").font(.caption.weight(.semibold)); Text("p99").font(.caption.weight(.semibold))
-                    Text("Min").font(.caption.weight(.semibold)); Text("FPS").font(.caption.weight(.semibold)); Text("Extra").font(.caption.weight(.semibold)); Text("").font(.caption)
+                    ForEach(["Model", "Unit", "Pre", "Median ms", "p90", "p99", "Min", "FPS"], id: \.self) { h in
+                        Text(h).font(.caption.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Text("Extra").font(.caption.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading).gridCellColumns(2)
+                    Text("").font(.caption)
                 }
                 ForEach(shownCells) { c in
                     GridRow {
-                        Text(c.modelName).font(.caption).lineLimit(1)
-                        Text(c.compute.rawValue).font(.caption)
-                        Text(c.preproc).font(.caption)
-                        Text(c.cold.map { String(format: "%.2f", $0.median) } ?? "-").font(.caption.monospacedDigit())
-                        Text(c.cold.map { String(format: "%.2f", $0.p90) } ?? "-").font(.caption.monospacedDigit())
-                        Text(c.cold.map { String(format: "%.2f", $0.p99) } ?? "-").font(.caption.monospacedDigit())
-                        Text(c.cold.map { String(format: "%.2f", $0.min) } ?? "-").font(.caption.monospacedDigit())
-                        Text(String(format: "%.1f", c.fps)).font(.caption.monospacedDigit())
-                        Text(extra(c)).font(.caption).lineLimit(1)
+                        ForEach(Array([c.modelName, c.compute.rawValue, c.preproc,
+                                       c.cold.map { String(format: "%.2f", $0.median) } ?? "-",
+                                       c.cold.map { String(format: "%.2f", $0.p90) } ?? "-",
+                                       c.cold.map { String(format: "%.2f", $0.p99) } ?? "-",
+                                       c.cold.map { String(format: "%.2f", $0.min) } ?? "-",
+                                       String(format: "%.1f", c.fps)].enumerated()), id: \.offset) { _, v in
+                            Text(v).font(.callout.monospacedDigit()).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Text(extra(c)).font(.callout).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).gridCellColumns(2)
                         Button { bench.saveJSON(c) } label: { Image(systemName: "square.and.arrow.down") }.buttonStyle(.borderless).help("Save the yolomaster-bench/v1 JSON")
                             .disabled(c.document == nil)
                     }
                 }
             }
+            .frame(maxWidth: .infinity)
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
