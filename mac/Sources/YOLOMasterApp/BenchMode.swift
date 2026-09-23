@@ -191,19 +191,25 @@ final class BenchModel: ObservableObject {
     private var flushScheduled = false
     private var detectors: [String: Detector] = [:]
 
+    private var powerTimer: Timer?
+
     init() {
+        // thermal state is coarse (ProcessInfo changes rarely): once a second, with the run bookkeeping
         thermalTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             let l = thermalLevel(ProcessInfo.processInfo.thermalState)
-            let b = BatteryReader.read()
-            withAnimation(.easeInOut(duration: 0.8)) {       // the meters glide between readings
-                if l != self.thermal { self.thermal = l }
-                self.battery = b
-            }
+            withAnimation(.easeInOut(duration: 0.8)) { if l != self.thermal { self.thermal = l } }
             if self.running {
                 self.thermalPeak = max(self.thermalPeak, l)
                 if self.battery.present { self.runPowerW.append(self.battery.watts) }
             }
+        }
+        // the battery's instantaneous current is read at 10 Hz (an IOKit registry read, well under a
+        // millisecond); each reading glides into the meter over the interval
+        powerTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let b = BatteryReader.read()
+            withAnimation(.easeInOut(duration: 0.25)) { self.battery = b }
         }
     }
 
@@ -949,7 +955,7 @@ struct BenchDashboard: View {
                                         : LinearGradient(colors: [.green, .mint], startPoint: .bottom, endPoint: .top))
                             .frame(width: barW - 4, height: max(2, len))
                             .offset(y: w < 0 ? len / 2 : -len / 2)
-                            .animation(.easeInOut(duration: 0.8), value: w)
+                            .animation(.easeInOut(duration: 0.25), value: w)
                     }
                     ForEach([-50.0, 50.0], id: \.self) { mark in
                         Rectangle().fill(Color.primary.opacity(0.18)).frame(width: barW + 6, height: 1).offset(y: -half * CGFloat(mark) / scale)
