@@ -1051,9 +1051,6 @@ struct PowerMeterView: View {
                             .offset(y: w < 0 ? len / 2 : -len / 2)
                             .animation(.easeInOut(duration: 0.25), value: w)
                     }
-                    ForEach([-50.0, 50.0], id: \.self) { mark in
-                        Rectangle().fill(Color.primary.opacity(0.18)).frame(width: barW + 6, height: 1).offset(y: -half * CGFloat(mark) / scale)
-                    }
                 }.frame(maxWidth: .infinity)
             }
             if b.present {
