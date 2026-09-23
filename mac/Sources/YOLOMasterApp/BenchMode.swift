@@ -10,6 +10,7 @@
 import SwiftUI
 import Charts
 import AppKit
+import IOKit
 import UniformTypeIdentifiers
 import YOLOMasterKit
 
@@ -113,7 +114,38 @@ final class BenchStore: ObservableObject {
 func thermalLevel(_ s: ProcessInfo.ThermalState) -> Int {
     switch s { case .nominal: return 0; case .fair: return 1; case .serious: return 2; case .critical: return 3; @unknown default: return 0 }
 }
-func thermalName(_ level: Int) -> String { ["Nominal", "Fair", "Serious", "Critical"][max(0, min(3, level))] }
+func thermalName(_ level: Int) -> String { ["Cool", "Normal", "Hot", "Critical"][max(0, min(3, level))] }
+
+// MARK: - battery power flow (IOKit AppleSmartBattery: instantaneous current x voltage)
+
+struct BatterySample {
+    let present: Bool
+    let watts: Double          // > 0 charging, < 0 discharging, 0 when idle / no battery
+    let charging: Bool
+    let external: Bool         // on mains
+    let percent: Int?
+    static let none = BatterySample(present: false, watts: 0, charging: false, external: true, percent: nil)
+}
+enum BatteryReader {
+    static func read() -> BatterySample {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+        guard service != 0 else { return .none }
+        defer { IOObjectRelease(service) }
+        var propsRef: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(service, &propsRef, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+              let props = propsRef?.takeRetainedValue() as? [String: Any] else { return .none }
+        let mA = (props["InstantAmperage"] as? Int64) ?? (props["Amperage"] as? Int64) ?? Int64((props["InstantAmperage"] as? Int) ?? (props["Amperage"] as? Int) ?? 0)
+        let signed = mA > Int64(Int32.max) ? mA - (Int64(1) << 32) : mA     // some firmware reports a 32-bit two's complement in a 64-bit field
+        let mV = Double((props["Voltage"] as? Int) ?? 0)
+        let watts = Double(signed) / 1000 * mV / 1000
+        let charging = (props["IsCharging"] as? Bool) ?? false
+        let external = (props["ExternalConnected"] as? Bool) ?? false
+        var percent: Int? = nil
+        if let cur = props["CurrentCapacity"] as? Int, let mx = props["MaxCapacity"] as? Int, mx > 0 { percent = Int((Double(cur) / Double(mx) * 100).rounded()) }
+        if let pct = props["CurrentCapacity"] as? Int, pct <= 100, props["MaxCapacity"] as? Int == 100 { percent = pct }
+        return BatterySample(present: true, watts: watts, charging: charging, external: external, percent: percent)
+    }
+}
 func thermalColor(_ level: Int) -> Color { [Color.green, .yellow, .orange, .red][max(0, min(3, level))] }
 
 // MARK: - the model
@@ -142,6 +174,8 @@ final class BenchModel: ObservableObject {
     @Published private(set) var liveCell: BenchCell?
     @Published private(set) var thermal = thermalLevel(ProcessInfo.processInfo.thermalState)
     @Published private(set) var thermalPeak = 0
+    @Published private(set) var battery = BatteryReader.read()
+    @Published private(set) var runPowerW: [Double] = []      // battery watts sampled once per second during a run
     @Published private(set) var cells: [BenchCell] = []     // the current / last run
     @Published private(set) var lastRecord: BenchRecord?
     @Published var note = ""
@@ -162,7 +196,11 @@ final class BenchModel: ObservableObject {
             guard let self else { return }
             let l = thermalLevel(ProcessInfo.processInfo.thermalState)
             if l != self.thermal { self.thermal = l }
-            if self.running { self.thermalPeak = max(self.thermalPeak, l) }
+            self.battery = BatteryReader.read()
+            if self.running {
+                self.thermalPeak = max(self.thermalPeak, l)
+                if self.battery.present { self.runPowerW.append(self.battery.watts) }
+            }
         }
     }
 
@@ -209,7 +247,7 @@ final class BenchModel: ObservableObject {
         if (kind == .dataset || kind == .accuracy) && datasetURL == nil { note = "Choose the images folder first."; return }
         cancelLock.lock(); cancelFlag = false; cancelLock.unlock()
         running = true; cells = []; liveSamples = []; liveSeconds = []; liveCell = nil; progress = nil; note = ""
-        thermalPeak = thermal
+        thermalPeak = thermal; runPowerW = []
         let kind = self.kind, warm = Int(warmup), iters = Int(iters), minutes = self.minutes
         let computes = ComputeChoice.allCases.filter { self.computes.contains($0) }
         let dataset = datasetURL, limit = Int(datasetLimit), conf = Float(self.conf), iou = CGFloat(self.iou)
@@ -554,6 +592,7 @@ struct BenchDashboard: View {
                     }
                 }
                 thermometer.frame(width: 96)
+                powerMeter.frame(width: 96)
             }
             if !shownCells.isEmpty {
                 resultsTable
@@ -641,7 +680,7 @@ struct BenchDashboard: View {
         let tEnd = max(series.flatMap { $0.points.map(\.t) }.max() ?? 0, 1)
         return (series, 0, tEnd)
     }
-    private static let windowSeconds = 60.0
+    private static let windowSeconds = 30.0
     /// Percentile-bounded y range so a single outlier never compresses the trace (values beyond it are clamped).
     private static func yRange(_ values: [Double]) -> ClosedRange<Double> {
         guard values.count > 1 else { let v = values.first ?? 0; return (v - 0.5)...(v + 0.5) }
@@ -875,7 +914,53 @@ struct BenchDashboard: View {
                 }.frame(maxWidth: .infinity)
             }
             Text(thermalName(level)).font(.caption.weight(.semibold)).foregroundStyle(thermalColor(level))
-            Text(bench.running ? "peak \(thermalName(bench.thermalPeak))" : "ProcessInfo").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+            if bench.running || bench.thermalPeak > 0 {
+                Text("peak \(thermalName(bench.thermalPeak))").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+
+    /// Battery power flow: the bar grows downward from the zero line while discharging (watts drawn
+    /// from the battery) and upward while charging; a Mac on mains with a full battery sits at zero.
+    private var powerMeter: some View {
+        let b = bench.battery
+        let w = b.watts
+        let scale = 100.0                       // full bar = 100 W either way
+        let meanRun = bench.runPowerW.isEmpty ? nil : bench.runPowerW.reduce(0, +) / Double(bench.runPowerW.count)
+        return VStack(spacing: 8) {
+            Text("Power").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            GeometryReader { g in
+                let h = g.size.height, barW: CGFloat = 22
+                let half = h / 2
+                let len = min(half, half * CGFloat(abs(w)) / scale)
+                ZStack(alignment: .center) {
+                    Capsule().fill(Color.primary.opacity(0.08)).frame(width: barW)
+                    Rectangle().fill(Color.primary.opacity(0.35)).frame(width: barW + 10, height: 1)       // zero line
+                    if b.present && abs(w) > 0.05 {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(w < 0 ? LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom)
+                                        : LinearGradient(colors: [.green, .mint], startPoint: .bottom, endPoint: .top))
+                            .frame(width: barW - 4, height: max(3, len))
+                            .offset(y: w < 0 ? len / 2 : -len / 2)
+                    }
+                    ForEach([-50.0, 50.0], id: \.self) { mark in
+                        Rectangle().fill(Color.primary.opacity(0.18)).frame(width: barW + 6, height: 1).offset(y: -half * CGFloat(mark) / scale)
+                    }
+                }.frame(maxWidth: .infinity)
+            }
+            if b.present {
+                let state = (b.charging ? "charging" : (b.external ? "on mains" : "on battery")) + (b.percent.map { " · \($0)%" } ?? "")
+                Text(String(format: "%@%.1f W", w < 0 ? "-" : "+", abs(w))).font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(w < -0.05 ? Color.orange : (w > 0.05 ? Color.green : Color.secondary))
+                Text(state).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                if let m = meanRun { Text(String(format: "run mean %+.1f W", m)).font(.caption2).foregroundStyle(.tertiary).lineLimit(1) }
+            } else {
+                Text("no battery").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("desktop Mac").font(.caption2).foregroundStyle(.tertiary)
+            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
