@@ -943,13 +943,8 @@ struct BenchDashboard: View {
                 }
                 ForEach(shownCells) { c in
                     GridRow {
-                        ForEach(Array([c.modelName, c.compute.rawValue, c.preproc,
-                                       c.cold.map { String(format: "%.2f", $0.median) } ?? "-",
-                                       c.cold.map { String(format: "%.2f", $0.p90) } ?? "-",
-                                       c.cold.map { String(format: "%.2f", $0.p99) } ?? "-",
-                                       c.cold.map { String(format: "%.2f", $0.min) } ?? "-",
-                                       String(format: "%.1f", c.fps)].enumerated()), id: \.offset) { _, v in
-                            Text(v).font(.callout.monospacedDigit()).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                        ForEach(Array(rowValues(c).enumerated()), id: \.offset) { _, v in
+                            cellText(v)
                         }
                         Text(extra(c)).font(.callout).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).gridCellColumns(2)
                         Button { bench.saveJSON(c) } label: { Image(systemName: "square.and.arrow.down") }.buttonStyle(.borderless).help("Save the yolomaster-bench/v1 JSON")
@@ -962,6 +957,14 @@ struct BenchDashboard: View {
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+    private func rowValues(_ c: BenchCell) -> [String] {
+        func f2(_ v: Double?) -> String { v.map { String(format: "%.2f", $0) } ?? "-" }
+        return [c.modelName, c.compute.rawValue, c.preproc, f2(c.cold?.median), f2(c.cold?.p90), f2(c.cold?.p99), f2(c.cold?.min),
+                String(format: "%.1f", c.fps)]
+    }
+    private func cellText(_ v: String) -> some View {
+        Text(v).font(.callout.monospacedDigit()).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
     }
     private func extra(_ c: BenchCell) -> String {
         if let su = c.sustained { return String(format: "throttle %+.1f%% over %.0fs, peak %@", su.throttle_pct, su.duration_s, thermalName(c.thermal.max() ?? 0)) }
