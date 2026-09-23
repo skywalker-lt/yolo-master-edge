@@ -195,8 +195,11 @@ final class BenchModel: ObservableObject {
         thermalTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             let l = thermalLevel(ProcessInfo.processInfo.thermalState)
-            if l != self.thermal { self.thermal = l }
-            self.battery = BatteryReader.read()
+            let b = BatteryReader.read()
+            withAnimation(.easeInOut(duration: 0.8)) {       // the meters glide between readings
+                if l != self.thermal { self.thermal = l }
+                self.battery = b
+            }
             if self.running {
                 self.thermalPeak = max(self.thermalPeak, l)
                 if self.battery.present { self.runPowerW.append(self.battery.watts) }
@@ -904,12 +907,14 @@ struct BenchDashboard: View {
                     Capsule().fill(Color.primary.opacity(0.08)).frame(width: w)
                     Capsule().fill(LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top))
                         .frame(width: w).mask(alignment: .bottom) { Rectangle().frame(height: max(w, fill)) }
+                        .animation(.easeInOut(duration: 0.8), value: level)
                     ForEach(1..<4, id: \.self) { k in
                         Rectangle().fill(Color.primary.opacity(0.25)).frame(width: w + 10, height: 1).offset(y: -h * CGFloat(k) / 4)
                     }
                     if bench.running || bench.thermalPeak > 0 {
                         Rectangle().fill(Color.primary).frame(width: w + 14, height: 2)
                             .offset(y: -h * CGFloat(bench.thermalPeak + 1) / 4 + 1)
+                            .animation(.easeInOut(duration: 0.8), value: bench.thermalPeak)
                     }
                 }.frame(maxWidth: .infinity)
             }
@@ -929,7 +934,6 @@ struct BenchDashboard: View {
         let b = bench.battery
         let w = b.watts
         let scale = 100.0                       // full bar = 100 W either way
-        let meanRun = bench.runPowerW.isEmpty ? nil : bench.runPowerW.reduce(0, +) / Double(bench.runPowerW.count)
         return VStack(spacing: 8) {
             Text("Power").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             GeometryReader { g in
@@ -939,12 +943,13 @@ struct BenchDashboard: View {
                 ZStack(alignment: .center) {
                     Capsule().fill(Color.primary.opacity(0.08)).frame(width: barW)
                     Rectangle().fill(Color.primary.opacity(0.35)).frame(width: barW + 10, height: 1)       // zero line
-                    if b.present && abs(w) > 0.05 {
+                    if b.present {
                         RoundedRectangle(cornerRadius: 4)
                             .fill(w < 0 ? LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom)
                                         : LinearGradient(colors: [.green, .mint], startPoint: .bottom, endPoint: .top))
-                            .frame(width: barW - 4, height: max(3, len))
+                            .frame(width: barW - 4, height: max(2, len))
                             .offset(y: w < 0 ? len / 2 : -len / 2)
+                            .animation(.easeInOut(duration: 0.8), value: w)
                     }
                     ForEach([-50.0, 50.0], id: \.self) { mark in
                         Rectangle().fill(Color.primary.opacity(0.18)).frame(width: barW + 6, height: 1).offset(y: -half * CGFloat(mark) / scale)
@@ -952,11 +957,10 @@ struct BenchDashboard: View {
                 }.frame(maxWidth: .infinity)
             }
             if b.present {
-                let state = (b.charging ? "charging" : (b.external ? "on mains" : "on battery")) + (b.percent.map { " · \($0)%" } ?? "")
                 Text(String(format: "%@%.1f W", w < 0 ? "-" : "+", abs(w))).font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(w < -0.05 ? Color.orange : (w > 0.05 ? Color.green : Color.secondary))
-                Text(state).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-                if let m = meanRun { Text(String(format: "run mean %+.1f W", m)).font(.caption2).foregroundStyle(.tertiary).lineLimit(1) }
+                    .contentTransition(.numericText())
+                Text(b.charging ? "Charging" : "On battery").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
             } else {
                 Text("no battery").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Text("desktop Mac").font(.caption2).foregroundStyle(.tertiary)
