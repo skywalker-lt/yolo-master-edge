@@ -11,6 +11,7 @@ import SwiftUI
 import Charts
 import AppKit
 import IOKit
+import IOKit.ps
 import UniformTypeIdentifiers
 import YOLOMasterKit
 
@@ -118,32 +119,51 @@ func thermalName(_ level: Int) -> String { ["Cool", "Normal", "Hot", "Critical"]
 
 // MARK: - battery power flow (IOKit AppleSmartBattery: instantaneous current x voltage)
 
+enum PowerState: String { case pluggedIn = "Plugged in", charging = "Charging", onBattery = "On battery" }
+
 struct BatterySample {
     let present: Bool
-    let watts: Double          // > 0 charging, < 0 discharging, 0 when idle / no battery
-    let charging: Bool
-    let external: Bool         // on mains
+    let watts: Double          // > 0 into the battery, < 0 out of it, 0 when idle / no battery
+    let state: PowerState      // from the IOKit Power Sources API, not inferred from the sign of the current
     let percent: Int?
-    static let none = BatterySample(present: false, watts: 0, charging: false, external: true, percent: nil)
+    static let none = BatterySample(present: false, watts: 0, state: .pluggedIn, percent: nil)
 }
 enum BatteryReader {
+    /// State and charge come from IOPowerSources (kIOPSPowerSourceStateKey / kIOPSIsChargingKey); the
+    /// instantaneous power comes from the AppleSmartBattery registry entry (current x voltage), which
+    /// the Power Sources API does not expose.
     static func read() -> BatterySample {
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
-        guard service != 0 else { return .none }
-        defer { IOObjectRelease(service) }
-        var propsRef: Unmanaged<CFMutableDictionary>?
-        guard IORegistryEntryCreateCFProperties(service, &propsRef, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-              let props = propsRef?.takeRetainedValue() as? [String: Any] else { return .none }
-        let mA = (props["InstantAmperage"] as? Int64) ?? (props["Amperage"] as? Int64) ?? Int64((props["InstantAmperage"] as? Int) ?? (props["Amperage"] as? Int) ?? 0)
-        let signed = mA > Int64(Int32.max) ? mA - (Int64(1) << 32) : mA     // some firmware reports a 32-bit two's complement in a 64-bit field
-        let mV = Double((props["Voltage"] as? Int) ?? 0)
-        let watts = Double(signed) / 1000 * mV / 1000
-        let charging = (props["IsCharging"] as? Bool) ?? false
-        let external = (props["ExternalConnected"] as? Bool) ?? false
+        var state: PowerState? = nil
         var percent: Int? = nil
-        if let cur = props["CurrentCapacity"] as? Int, let mx = props["MaxCapacity"] as? Int, mx > 0 { percent = Int((Double(cur) / Double(mx) * 100).rounded()) }
-        if let pct = props["CurrentCapacity"] as? Int, pct <= 100, props["MaxCapacity"] as? Int == 100 { percent = pct }
-        return BatterySample(present: true, watts: watts, charging: charging, external: external, percent: percent)
+        if let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+           let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef] {
+            for ps in list {
+                guard let d = IOPSGetPowerSourceDescription(blob, ps)?.takeUnretainedValue() as? [String: Any],
+                      (d[kIOPSTypeKey as String] as? String) == kIOPSInternalBatteryType else { continue }
+                let onAC = (d[kIOPSPowerSourceStateKey as String] as? String) == kIOPSACPowerValue
+                let charging = (d[kIOPSIsChargingKey as String] as? Bool) ?? false
+                state = onAC ? (charging ? .charging : .pluggedIn) : .onBattery
+                if let cur = d[kIOPSCurrentCapacityKey as String] as? Int, let mx = d[kIOPSMaxCapacityKey as String] as? Int, mx > 0 {
+                    percent = Int((Double(cur) / Double(mx) * 100).rounded())
+                }
+                break
+            }
+        }
+        guard let state else { return .none }          // no internal battery: a desktop Mac
+        var watts = 0.0
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+        if service != 0 {
+            defer { IOObjectRelease(service) }
+            var propsRef: Unmanaged<CFMutableDictionary>?
+            if IORegistryEntryCreateCFProperties(service, &propsRef, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+               let props = propsRef?.takeRetainedValue() as? [String: Any] {
+                let mA = (props["InstantAmperage"] as? Int64) ?? (props["Amperage"] as? Int64) ?? Int64((props["InstantAmperage"] as? Int) ?? (props["Amperage"] as? Int) ?? 0)
+                let signed = mA > Int64(Int32.max) ? mA - (Int64(1) << 32) : mA     // some firmware reports a 32-bit two's complement in a 64-bit field
+                let mV = Double((props["Voltage"] as? Int) ?? 0)
+                watts = Double(signed) / 1000 * mV / 1000
+            }
+        }
+        return BatterySample(present: true, watts: watts, state: state, percent: percent)
     }
 }
 func thermalColor(_ level: Int) -> Color { [Color.green, .yellow, .orange, .red][max(0, min(3, level))] }
@@ -170,7 +190,7 @@ final class MeterModel: ObservableObject {
         powerTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self else { return }
             let b = BatteryReader.read()
-            if abs(b.watts - self.battery.watts) > 0.01 || b.charging != self.battery.charging || b.present != self.battery.present {
+            if abs(b.watts - self.battery.watts) > 0.01 || b.state != self.battery.state || b.present != self.battery.present {
                 withAnimation(.easeInOut(duration: 0.25)) { self.battery = b }
             }
         }
@@ -1045,7 +1065,7 @@ struct PowerMeterView: View {
                 Text(String(format: "%@%.1f W", w < 0 ? "-" : "+", abs(w))).font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(w < -0.05 ? Color.orange : (w > 0.05 ? Color.green : Color.secondary))
                     .contentTransition(.numericText())
-                Text(b.charging ? "Charging" : "On battery").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                Text(b.state.rawValue).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
             } else {
                 Text("no battery").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Text("desktop Mac").font(.caption2).foregroundStyle(.tertiary)
