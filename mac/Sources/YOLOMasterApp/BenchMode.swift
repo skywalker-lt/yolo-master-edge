@@ -148,7 +148,36 @@ enum BatteryReader {
 }
 func thermalColor(_ level: Int) -> Color { [Color.green, .yellow, .orange, .red][max(0, min(3, level))] }
 
-// MARK: - the model
+// MARK: - the meters (their own observable so their 10 Hz ticks re-render only the two gauges)
+
+final class MeterModel: ObservableObject {
+    @Published private(set) var thermal = thermalLevel(ProcessInfo.processInfo.thermalState)
+    @Published private(set) var thermalPeak = 0
+    @Published private(set) var battery = BatteryReader.read()
+    private var thermalTimer: Timer?
+    private var powerTimer: Timer?
+    var tracking = false          // a run is on: keep the peak
+
+    init() {
+        // thermal state is coarse (ProcessInfo changes rarely): once a second
+        thermalTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let l = thermalLevel(ProcessInfo.processInfo.thermalState)
+            if l != self.thermal { withAnimation(.easeInOut(duration: 0.8)) { self.thermal = l } }
+            if self.tracking && l > self.thermalPeak { self.thermalPeak = l }
+        }
+        // the battery's instantaneous current at 10 Hz (an IOKit registry read, well under a millisecond)
+        powerTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let b = BatteryReader.read()
+            if abs(b.watts - self.battery.watts) > 0.01 || b.charging != self.battery.charging || b.present != self.battery.present {
+                withAnimation(.easeInOut(duration: 0.25)) { self.battery = b }
+            }
+        }
+    }
+    func startRun() { tracking = true; thermalPeak = thermal }
+    func endRun() { tracking = false }
+}
 
 final class BenchModel: ObservableObject {
     // protocol
@@ -172,10 +201,8 @@ final class BenchModel: ObservableObject {
     @Published private(set) var liveStart = Date()
     @Published private(set) var liveSeconds: [(t: Double, med: Double, thermal: Int)] = []
     @Published private(set) var liveCell: BenchCell?
-    @Published private(set) var thermal = thermalLevel(ProcessInfo.processInfo.thermalState)
-    @Published private(set) var thermalPeak = 0
-    @Published private(set) var battery = BatteryReader.read()
-    @Published private(set) var runPowerW: [Double] = []      // battery watts sampled once per second during a run
+    let meters = MeterModel()
+    private(set) var runPowerW: [Double] = []      // battery watts sampled once per second during a run
     @Published private(set) var cells: [BenchCell] = []     // the current / last run
     @Published private(set) var lastRecord: BenchRecord?
     @Published var note = ""
@@ -184,32 +211,18 @@ final class BenchModel: ObservableObject {
     private let queue = DispatchQueue(label: "com.yolomaster.bench", qos: .userInitiated)
     private var cancelFlag = false
     private let cancelLock = NSLock()
-    private var thermalTimer: Timer?
+    private var powerLogTimer: Timer?
     private var pendingSamples: [(t: Double, ms: Double)] = []
     private var cellStart = Date()
     private var cellGen = 0                 // bumped per cell: samples still in flight from the previous cell are dropped
     private var flushScheduled = false
     private var detectors: [String: Detector] = [:]
 
-    private var powerTimer: Timer?
-
     init() {
-        // thermal state is coarse (ProcessInfo changes rarely): once a second, with the run bookkeeping
-        thermalTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let l = thermalLevel(ProcessInfo.processInfo.thermalState)
-            withAnimation(.easeInOut(duration: 0.8)) { if l != self.thermal { self.thermal = l } }
-            if self.running {
-                self.thermalPeak = max(self.thermalPeak, l)
-                if self.battery.present { self.runPowerW.append(self.battery.watts) }
-            }
-        }
-        // the battery's instantaneous current is read at 10 Hz (an IOKit registry read, well under a
-        // millisecond); each reading glides into the meter over the interval
-        powerTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let b = BatteryReader.read()
-            withAnimation(.easeInOut(duration: 0.25)) { self.battery = b }
+        // once a second during a run: log the battery draw (not published; the record keeps it)
+        powerLogTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self, self.running, self.meters.battery.present else { return }
+            self.runPowerW.append(self.meters.battery.watts)
         }
     }
 
@@ -256,7 +269,7 @@ final class BenchModel: ObservableObject {
         if (kind == .dataset || kind == .accuracy) && datasetURL == nil { note = "Choose the images folder first."; return }
         cancelLock.lock(); cancelFlag = false; cancelLock.unlock()
         running = true; cells = []; liveSamples = []; liveSeconds = []; liveCell = nil; progress = nil; note = ""
-        thermalPeak = thermal; runPowerW = []
+        runPowerW = []; meters.startRun()
         let kind = self.kind, warm = Int(warmup), iters = Int(iters), minutes = self.minutes
         let computes = ComputeChoice.allCases.filter { self.computes.contains($0) }
         let dataset = datasetURL, limit = Int(datasetLimit), conf = Float(self.conf), iou = CGFloat(self.iou)
@@ -367,7 +380,7 @@ final class BenchModel: ObservableObject {
             let record = BenchRecord(name: BenchModel.defaultName(kind, done), date: Date(), kind: kind, warmup: warm, iters: iters, minutes: minutes,
                                      cells: done, hostName: env.host, cpuModel: env.cpu_model, osVersion: env.os)
             self.main {
-                self.running = false; self.progress = nil
+                self.running = false; self.progress = nil; self.meters.endRun()
                 self.phase = cancelled ? "Stopped." : "Done."
                 if !done.isEmpty { self.store.add(record); self.lastRecord = record }
             }
@@ -600,8 +613,8 @@ struct BenchDashboard: View {
                         if shownCells.count > 1 { comparisonChart.frame(height: 170) }
                     }
                 }
-                thermometer.frame(width: 96)
-                powerMeter.frame(width: 96)
+                ThermometerView(meters: bench.meters, running: bench.running).frame(width: 96)
+                PowerMeterView(meters: bench.meters).frame(width: 96)
             }
             if !shownCells.isEmpty {
                 resultsTable
@@ -901,82 +914,6 @@ struct BenchDashboard: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
-    /// A thermometer: four zones, the bulb filled to the current thermal state, the peak of the run marked.
-    private var thermometer: some View {
-        let level = bench.thermal
-        return VStack(spacing: 8) {
-            Text("Thermal").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            GeometryReader { g in
-                let h = g.size.height, w: CGFloat = 22
-                let fill = h * CGFloat(level + 1) / 4
-                ZStack(alignment: .bottom) {
-                    Capsule().fill(Color.primary.opacity(0.08)).frame(width: w)
-                    Capsule().fill(LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top))
-                        .frame(width: w).mask(alignment: .bottom) { Rectangle().frame(height: max(w, fill)) }
-                        .animation(.easeInOut(duration: 0.8), value: level)
-                    ForEach(1..<4, id: \.self) { k in
-                        Rectangle().fill(Color.primary.opacity(0.25)).frame(width: w + 10, height: 1).offset(y: -h * CGFloat(k) / 4)
-                    }
-                    if bench.running || bench.thermalPeak > 0 {
-                        Rectangle().fill(Color.primary).frame(width: w + 14, height: 2)
-                            .offset(y: -h * CGFloat(bench.thermalPeak + 1) / 4 + 1)
-                            .animation(.easeInOut(duration: 0.8), value: bench.thermalPeak)
-                    }
-                }.frame(maxWidth: .infinity)
-            }
-            Text(thermalName(level)).font(.caption.weight(.semibold)).foregroundStyle(thermalColor(level))
-            if bench.running || bench.thermalPeak > 0 {
-                Text("peak \(thermalName(bench.thermalPeak))").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-            }
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
-    }
-
-    /// Battery power flow: the bar grows downward from the zero line while discharging (watts drawn
-    /// from the battery) and upward while charging; a Mac on mains with a full battery sits at zero.
-    private var powerMeter: some View {
-        let b = bench.battery
-        let w = b.watts
-        let scale = 100.0                       // full bar = 100 W either way
-        return VStack(spacing: 8) {
-            Text("Power").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            GeometryReader { g in
-                let h = g.size.height, barW: CGFloat = 22
-                let half = h / 2
-                let len = min(half, half * CGFloat(abs(w)) / scale)
-                ZStack(alignment: .center) {
-                    Capsule().fill(Color.primary.opacity(0.08)).frame(width: barW)
-                    Rectangle().fill(Color.primary.opacity(0.35)).frame(width: barW + 10, height: 1)       // zero line
-                    if b.present {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(w < 0 ? LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom)
-                                        : LinearGradient(colors: [.green, .mint], startPoint: .bottom, endPoint: .top))
-                            .frame(width: barW - 4, height: max(2, len))
-                            .offset(y: w < 0 ? len / 2 : -len / 2)
-                            .animation(.easeInOut(duration: 0.25), value: w)
-                    }
-                    ForEach([-50.0, 50.0], id: \.self) { mark in
-                        Rectangle().fill(Color.primary.opacity(0.18)).frame(width: barW + 6, height: 1).offset(y: -half * CGFloat(mark) / scale)
-                    }
-                }.frame(maxWidth: .infinity)
-            }
-            if b.present {
-                Text(String(format: "%@%.1f W", w < 0 ? "-" : "+", abs(w))).font(.caption.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(w < -0.05 ? Color.orange : (w > 0.05 ? Color.green : Color.secondary))
-                    .contentTransition(.numericText())
-                Text(b.charging ? "Charging" : "On battery").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-            } else {
-                Text("no battery").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text("desktop Mac").font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
-    }
-
     private var resultsTable: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -1035,3 +972,88 @@ struct BenchDashboard: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 }
+
+/// A thermometer: four zones, the bulb filled to the current thermal state, the peak of the run marked.
+struct ThermometerView: View {
+    @ObservedObject var meters: MeterModel
+    let running: Bool
+    var body: some View {
+        let level = meters.thermal
+        return VStack(spacing: 8) {
+            Text("Thermal").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            GeometryReader { g in
+                let h = g.size.height, w: CGFloat = 22
+                let fill = h * CGFloat(level + 1) / 4
+                ZStack(alignment: .bottom) {
+                    Capsule().fill(Color.primary.opacity(0.08)).frame(width: w)
+                    Capsule().fill(LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top))
+                        .frame(width: w).mask(alignment: .bottom) { Rectangle().frame(height: max(w, fill)) }
+                        .animation(.easeInOut(duration: 0.8), value: level)
+                    ForEach(1..<4, id: \.self) { k in
+                        Rectangle().fill(Color.primary.opacity(0.25)).frame(width: w + 10, height: 1).offset(y: -h * CGFloat(k) / 4)
+                    }
+                    if running || meters.thermalPeak > 0 {
+                        Rectangle().fill(Color.primary).frame(width: w + 14, height: 2)
+                            .offset(y: -h * CGFloat(meters.thermalPeak + 1) / 4 + 1)
+                            .animation(.easeInOut(duration: 0.8), value: meters.thermalPeak)
+                    }
+                }.frame(maxWidth: .infinity)
+            }
+            Text(thermalName(level)).font(.caption.weight(.semibold)).foregroundStyle(thermalColor(level))
+            if running || meters.thermalPeak > 0 {
+                Text("peak \(thermalName(meters.thermalPeak))").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+
+}
+
+/// Battery power flow: the bar grows downward from the zero line while discharging (watts drawn
+/// from the battery) and upward while charging; a Mac on mains with a full battery sits at zero.
+struct PowerMeterView: View {
+    @ObservedObject var meters: MeterModel
+    var body: some View {
+        let b = meters.battery
+        let w = b.watts
+        let scale = 100.0                       // full bar = 100 W either way
+        return VStack(spacing: 8) {
+            Text("Power").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            GeometryReader { g in
+                let h = g.size.height, barW: CGFloat = 22
+                let half = h / 2
+                let len = min(half, half * CGFloat(abs(w)) / scale)
+                ZStack(alignment: .center) {
+                    Capsule().fill(Color.primary.opacity(0.08)).frame(width: barW)
+                    Rectangle().fill(Color.primary.opacity(0.35)).frame(width: barW + 10, height: 1)       // zero line
+                    if b.present {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(w < 0 ? LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom)
+                                        : LinearGradient(colors: [.green, .mint], startPoint: .bottom, endPoint: .top))
+                            .frame(width: barW - 4, height: max(2, len))
+                            .offset(y: w < 0 ? len / 2 : -len / 2)
+                            .animation(.easeInOut(duration: 0.25), value: w)
+                    }
+                    ForEach([-50.0, 50.0], id: \.self) { mark in
+                        Rectangle().fill(Color.primary.opacity(0.18)).frame(width: barW + 6, height: 1).offset(y: -half * CGFloat(mark) / scale)
+                    }
+                }.frame(maxWidth: .infinity)
+            }
+            if b.present {
+                Text(String(format: "%@%.1f W", w < 0 ? "-" : "+", abs(w))).font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(w < -0.05 ? Color.orange : (w > 0.05 ? Color.green : Color.secondary))
+                    .contentTransition(.numericText())
+                Text(b.charging ? "Charging" : "On battery").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+            } else {
+                Text("no battery").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("desktop Mac").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+}
+
