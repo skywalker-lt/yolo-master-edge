@@ -1135,6 +1135,7 @@ struct ThermometerView: View {
                     Capsule().fill(Color.primary.opacity(0.08)).frame(width: w)
                     Capsule().fill(LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top))
                         .frame(width: w).mask(alignment: .bottom) { Rectangle().frame(height: max(w, fill)) }
+                        .animation(.easeInOut(duration: 0.6), value: frac)
                 }.frame(maxWidth: .infinity)
             }
             Text(meters.celsius.map { String(format: "%.0f °C", $0) } ?? thermalName(level))
@@ -1165,11 +1166,14 @@ struct PowerMeterView: View {
                     Capsule().fill(Color.primary.opacity(0.08)).frame(width: barW)
                     Rectangle().fill(Color.primary.opacity(0.35)).frame(width: barW + 10, height: 1)       // zero line
                     if b.present {
-                        RoundedRectangle(cornerRadius: 4)
+                        Rectangle()
                             .fill(w < 0 ? LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom)
                                         : LinearGradient(colors: [.green, .mint], startPoint: .bottom, endPoint: .top))
-                            .frame(width: barW - 4, height: max(2, len))
+                            .frame(width: barW, height: max(2, len))
                             .offset(y: w < 0 ? len / 2 : -len / 2)
+                            .frame(width: barW, height: h)
+                            .clipShape(Capsule())                 // the tube's outline crops the bar
+                            .animation(.easeInOut(duration: 0.25), value: w)
                     }
                 }.frame(maxWidth: .infinity)
             }
