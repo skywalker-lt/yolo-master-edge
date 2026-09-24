@@ -206,7 +206,7 @@ final class SMCTemperature {
     private static let kSMCReadKey: UInt8 = 5, kSMCGetKeyFromIndex: UInt8 = 8, kSMCGetKeyInfo: UInt8 = 9
 
     private var conn: io_connect_t = 0
-    private(set) var sensors: [(name: String, key: UInt32, type: String)] = []
+    private(set) var sensors: [(name: String, key: UInt32, info: KeyInfo)] = []   // key info cached: one IOKit call per sensor per read
     var available: Bool { conn != 0 && !sensors.isEmpty }
 
     init() {
@@ -251,14 +251,14 @@ final class SMCTemperature {
     /// read a plausible temperature.
     private func discover() {
         guard let cnt = keyInfo(SMCTemperature.code("#KEY")), let n = readUInt32(SMCTemperature.code("#KEY"), cnt), n > 0, n < 20000 else { return }
-        var found: [(String, UInt32, String)] = []
+        var found: [(String, UInt32, KeyInfo)] = []
         for i in 0..<n {
             var q = KeyData(); q.data8 = SMCTemperature.kSMCGetKeyFromIndex; q.data32 = UInt32(i)
             guard let r = call(&q) else { continue }
             let nm = SMCTemperature.name(r.key)
             guard nm.hasPrefix("Tp") || nm.hasPrefix("Te") || nm.hasPrefix("Tf") || nm.hasPrefix("Tg") || nm.hasPrefix("Tc") else { continue }
             guard let info = keyInfo(r.key), let v = readFloat(r.key, info), v > 5, v < 130 else { continue }
-            found.append((nm, r.key, SMCTemperature.name(info.dataType)))
+            found.append((nm, r.key, info))
         }
         sensors = found
     }
@@ -272,7 +272,7 @@ final class SMCTemperature {
     func hottest() -> Double? {
         var best: Double? = nil
         for s in sensors {
-            guard let info = keyInfo(s.key), let v = readFloat(s.key, info), v > 5, v < 130 else { continue }
+            guard let v = readFloat(s.key, s.info), v > 5, v < 130 else { continue }
             best = max(best ?? v, v)
         }
         return best
@@ -294,21 +294,31 @@ final class MeterModel: ObservableObject {
     let smc = SMCTemperature()
     private var thermalTimer: Timer?
     private var powerTimer: Timer?
+    private let smcQueue = DispatchQueue(label: "com.yolomaster.smc", qos: .utility)
+    private var smcBusy = false
     var tracking = false          // a run is on: keep the peak
 
     init() {
-        // die temperature from the SMC twice a second (pressure state as the fallback)
-        thermalTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let c = self.smc.available ? self.smc.hottest() : nil
-            let l = c.map { thermalLevel(celsius: $0) } ?? thermalLevel(ProcessInfo.processInfo.thermalState)
-            withAnimation(.easeInOut(duration: 0.5)) {
-                if let c, abs((self.celsius ?? -1) - c) >= 0.5 { self.celsius = c }
-                if l != self.thermal { self.thermal = l }
-            }
-            if self.tracking {
-                if l > self.thermalPeak { self.thermalPeak = l }
-                if let c { self.celsiusPeak = max(self.celsiusPeak ?? c, c) }
+        // die temperature once a second: the SMC reads (one IOKit call per sensor) run off the main
+        // thread and the result is published in one animated step
+        thermalTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self, !self.smcBusy else { return }
+            self.smcBusy = true
+            let pressure = thermalLevel(ProcessInfo.processInfo.thermalState)
+            self.smcQueue.async {
+                let c = self.smc.available ? self.smc.hottest() : nil
+                DispatchQueue.main.async {
+                    self.smcBusy = false
+                    let l = c.map { thermalLevel(celsius: $0) } ?? pressure
+                    withAnimation(.easeInOut(duration: 0.6)) {
+                        if let c, abs((self.celsius ?? -1) - c) >= 0.5 { self.celsius = c }
+                        if l != self.thermal { self.thermal = l }
+                    }
+                    if self.tracking {
+                        if l > self.thermalPeak { self.thermalPeak = l }
+                        if let c { self.celsiusPeak = max(self.celsiusPeak ?? c, c) }
+                    }
+                }
             }
         }
         // the battery's instantaneous current at 10 Hz (an IOKit registry read, well under a millisecond)
