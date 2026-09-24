@@ -206,7 +206,8 @@ final class SMCTemperature {
     private static let kSMCReadKey: UInt8 = 5, kSMCGetKeyFromIndex: UInt8 = 8, kSMCGetKeyInfo: UInt8 = 9
 
     private var conn: io_connect_t = 0
-    private(set) var sensors: [(name: String, key: UInt32, info: KeyInfo)] = []   // key info cached: one IOKit call per sensor per read
+    private var sensors: [(name: String, key: UInt32, info: KeyInfo)] = []   // key info cached: one IOKit call per sensor per read
+    var sensorNames: [String] { sensors.map(\.name) }
     var available: Bool { conn != 0 && !sensors.isEmpty }
 
     init() {
