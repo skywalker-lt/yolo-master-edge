@@ -282,9 +282,8 @@ final class SMCTemperature {
     }
 }
 
-/// Die temperature to the four meter levels (Apple silicon idles around 40 C, sustained load sits
-/// in the 80s to 90s, and the firmware throttles above ~105 C).
-func thermalLevel(celsius: Double) -> Int { celsius < 60 ? 0 : (celsius < 85 ? 1 : (celsius < 100 ? 2 : 3)) }
+/// Die temperature to the four meter levels: Cool below 50 C, Normal to 80, Hot to 110, Critical above.
+func thermalLevel(celsius: Double) -> Int { celsius < 50 ? 0 : (celsius < 80 ? 1 : (celsius < 110 ? 2 : 3)) }
 
 // MARK: - the meters (their own observable so their 10 Hz ticks re-render only the two gauges)
 
@@ -1125,7 +1124,7 @@ struct ThermometerView: View {
     var body: some View {
         let level = meters.thermal
         // fill: the die temperature on a 30..110 C scale when a sensor exists, else the pressure level
-        let frac: CGFloat = meters.celsius.map { CGFloat(min(max(($0 - 30) / 80, 0.04), 1)) } ?? CGFloat(level + 1) / 4
+        let frac: CGFloat = meters.celsius.map { CGFloat(min(max(($0 - 30) / 90, 0.04), 1)) } ?? CGFloat(level + 1) / 4   // 30..120 C
         return VStack(spacing: 8) {
             Text(thermalName(level)).font(.caption.weight(.semibold)).foregroundStyle(thermalColor(level)).lineLimit(1)
             GeometryReader { g in
@@ -1133,11 +1132,11 @@ struct ThermometerView: View {
                 let fill = h * frac
                 ZStack(alignment: .bottom) {
                     Capsule().fill(Color.primary.opacity(0.08)).frame(width: w)
-                    Capsule().fill(LinearGradient(stops: [
-                            .init(color: .blue, location: 0.0), .init(color: .blue, location: 0.30),        // < 60 C
-                            .init(color: .green, location: 0.42), .init(color: .green, location: 0.62),     // 60 - 85 C
-                            .init(color: .yellow, location: 0.72), .init(color: .orange, location: 0.85),   // 85 - 100 C
-                            .init(color: .red, location: 0.92), .init(color: .red, location: 1.0)           // >= 100 C
+                    Capsule().fill(LinearGradient(stops: [                                                // 30..120 C on the tube
+                            .init(color: .blue, location: 0.0), .init(color: .blue, location: 0.17),        // < 50 C
+                            .init(color: .green, location: 0.27), .init(color: .green, location: 0.50),     // 50 - 80 C
+                            .init(color: .yellow, location: 0.60), .init(color: .orange, location: 0.83),   // 80 - 110 C
+                            .init(color: .red, location: 0.90), .init(color: .red, location: 1.0)           // >= 110 C
                         ], startPoint: .bottom, endPoint: .top))
                         .frame(width: w).mask(alignment: .bottom) { Rectangle().frame(height: max(w, fill)) }
                         .animation(.easeInOut(duration: 0.6), value: frac)
