@@ -313,10 +313,8 @@ final class MeterModel: ObservableObject {
                 DispatchQueue.main.async {
                     self.smcBusy = false
                     let l = c.map { thermalLevel(celsius: $0) } ?? pressure
-                    withAnimation(.easeInOut(duration: 0.6)) {
-                        if let c, abs((self.celsius ?? -1) - c) >= 0.5 { self.celsius = c }
-                        if l != self.thermal { self.thermal = l }
-                    }
+                    if let c, abs((self.celsius ?? -1) - c) >= 0.5 { self.celsius = c }
+                    if l != self.thermal { self.thermal = l }
                     if self.tracking {
                         if l > self.thermalPeak { self.thermalPeak = l }
                         if let c { self.celsiusPeak = max(self.celsiusPeak ?? c, c) }
@@ -329,7 +327,7 @@ final class MeterModel: ObservableObject {
             guard let self else { return }
             let b = BatteryReader.read()
             if abs(b.watts - self.battery.watts) > 0.01 || b.state != self.battery.state || b.present != self.battery.present {
-                withAnimation(.easeInOut(duration: 0.25)) { self.battery = b }
+                self.battery = b
             }
         }
     }
@@ -1137,11 +1135,10 @@ struct ThermometerView: View {
                     Capsule().fill(Color.primary.opacity(0.08)).frame(width: w)
                     Capsule().fill(LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top))
                         .frame(width: w).mask(alignment: .bottom) { Rectangle().frame(height: max(w, fill)) }
-                        .animation(.easeInOut(duration: 0.5), value: frac)
                 }.frame(maxWidth: .infinity)
             }
             Text(meters.celsius.map { String(format: "%.0f °C", $0) } ?? thermalName(level))
-                .font(.caption.weight(.semibold).monospacedDigit()).foregroundStyle(thermalColor(level)).contentTransition(.numericText())
+                .font(.caption.weight(.semibold).monospacedDigit()).foregroundStyle(thermalColor(level))
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
@@ -1173,14 +1170,12 @@ struct PowerMeterView: View {
                                         : LinearGradient(colors: [.green, .mint], startPoint: .bottom, endPoint: .top))
                             .frame(width: barW - 4, height: max(2, len))
                             .offset(y: w < 0 ? len / 2 : -len / 2)
-                            .animation(.easeInOut(duration: 0.25), value: w)
                     }
                 }.frame(maxWidth: .infinity)
             }
             if b.present {
                 Text(String(format: "%@%.1f W", w < 0 ? "-" : "+", abs(w))).font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(w < -0.05 ? Color.orange : (w > 0.05 ? Color.green : Color.secondary))
-                    .contentTransition(.numericText())
             } else {
                 Text("no battery").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
