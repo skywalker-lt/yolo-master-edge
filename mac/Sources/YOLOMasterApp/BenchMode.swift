@@ -269,20 +269,22 @@ final class SMCTemperature {
         let b = withUnsafeBytes(of: r.bytes) { Array($0.prefix(4)) }
         return Int(UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3]))
     }
-    /// The hottest die sensor right now, in degrees Celsius; nil when nothing could be read.
-    func hottest() -> Double? {
-        var best: Double? = nil
+    /// The die temperature right now, in degrees Celsius: the mean of the die sensors (what the
+    /// temperature apps report as "CPU / GPU temperature"), not the single hottest spot, which on a
+    /// many-sensor SoC is a permanent outlier. nil when nothing could be read.
+    func temperature() -> Double? {
+        var sum = 0.0, n = 0
         for s in sensors {
             guard let v = readFloat(s.key, s.info), v > 5, v < 130 else { continue }
-            best = max(best ?? v, v)
+            sum += v; n += 1
         }
-        return best
+        return n > 0 ? sum / Double(n) : nil
     }
 }
 
-/// Die temperature to the four meter levels (Apple silicon idles around 40 C, sustained load runs
-/// 80 to 100 C, and the firmware throttles above ~105 C).
-func thermalLevel(celsius: Double) -> Int { celsius < 55 ? 0 : (celsius < 80 ? 1 : (celsius < 95 ? 2 : 3)) }
+/// Die temperature to the four meter levels (Apple silicon idles around 40 C, sustained load sits
+/// in the 80s to 90s, and the firmware throttles above ~105 C).
+func thermalLevel(celsius: Double) -> Int { celsius < 60 ? 0 : (celsius < 85 ? 1 : (celsius < 100 ? 2 : 3)) }
 
 // MARK: - the meters (their own observable so their 10 Hz ticks re-render only the two gauges)
 
@@ -307,7 +309,7 @@ final class MeterModel: ObservableObject {
             self.smcBusy = true
             let pressure = thermalLevel(ProcessInfo.processInfo.thermalState)
             self.smcQueue.async {
-                let c = self.smc.available ? self.smc.hottest() : nil
+                let c = self.smc.available ? self.smc.temperature() : nil
                 DispatchQueue.main.async {
                     self.smcBusy = false
                     let l = c.map { thermalLevel(celsius: $0) } ?? pressure
@@ -1126,7 +1128,6 @@ struct ThermometerView: View {
         let level = meters.thermal
         // fill: the die temperature on a 30..110 C scale when a sensor exists, else the pressure level
         let frac: CGFloat = meters.celsius.map { CGFloat(min(max(($0 - 30) / 80, 0.04), 1)) } ?? CGFloat(level + 1) / 4
-        let peakFrac: CGFloat? = meters.celsiusPeak.map { CGFloat(min(max(($0 - 30) / 80, 0.04), 1)) } ?? (running || meters.thermalPeak > 0 ? CGFloat(meters.thermalPeak + 1) / 4 : nil)
         return VStack(spacing: 8) {
             Text(thermalName(level)).font(.caption.weight(.semibold)).foregroundStyle(thermalColor(level)).lineLimit(1)
             GeometryReader { g in
@@ -1137,11 +1138,6 @@ struct ThermometerView: View {
                     Capsule().fill(LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top))
                         .frame(width: w).mask(alignment: .bottom) { Rectangle().frame(height: max(w, fill)) }
                         .animation(.easeInOut(duration: 0.5), value: frac)
-                    if let pf = peakFrac, running || meters.celsiusPeak != nil {
-                        Rectangle().fill(Color.primary).frame(width: w + 14, height: 2)
-                            .offset(y: -h * pf + 1)
-                            .animation(.easeInOut(duration: 0.5), value: pf)
-                    }
                 }.frame(maxWidth: .infinity)
             }
             Text(meters.celsius.map { String(format: "%.0f °C", $0) } ?? thermalName(level))
