@@ -177,23 +177,136 @@ enum BatteryReader {
 }
 func thermalColor(_ level: Int) -> Color { [Color.green, .yellow, .orange, .red][max(0, min(3, level))] }
 
+// MARK: - die temperature (AppleSMC user client: the same keys smctemp / iStat read)
+
+/// Reads the CPU / GPU die temperature sensors through the AppleSMC IOKit user client. ProcessInfo's
+/// thermalState only says whether macOS is already under thermal PRESSURE (throttling); a machine
+/// whose fans keep up stays "nominal" however hot the die is. The SMC exposes the sensors themselves:
+/// on Apple silicon the CPU dies are the Tp / Te / Tf keys and the GPU dies the Tg keys, all "flt "
+/// values in degrees Celsius. The key set is discovered once (the SMC lists its keys by index) and
+/// then read on every tick; the hottest sensor is the reported temperature.
+final class SMCTemperature {
+    private struct KeyInfo { var dataSize: UInt32 = 0; var dataType: UInt32 = 0; var dataAttributes: UInt8 = 0 }
+    private struct KeyData {          // the 80-byte SMCKeyData_t of the AppleSMC user client
+        var key: UInt32 = 0
+        var vers: (UInt8, UInt8, UInt8, UInt8, UInt16) = (0, 0, 0, 0, 0)
+        var pLimit: (UInt16, UInt16, UInt32, UInt32, UInt32) = (0, 0, 0, 0, 0)
+        var keyInfo = KeyInfo()
+        var result: UInt8 = 0
+        var status: UInt8 = 0
+        var data8: UInt8 = 0
+        var data32: UInt32 = 0
+        var bytes: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                    UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) =
+            (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    }
+    private static let kSMCHandleYPCEvent: UInt32 = 2
+    private static let kSMCReadKey: UInt8 = 5, kSMCGetKeyFromIndex: UInt8 = 8, kSMCGetKeyInfo: UInt8 = 9
+
+    private var conn: io_connect_t = 0
+    private(set) var sensors: [(name: String, key: UInt32, type: String)] = []
+    var available: Bool { conn != 0 && !sensors.isEmpty }
+
+    init() {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
+        guard service != 0 else { return }
+        defer { IOObjectRelease(service) }
+        guard IOServiceOpen(service, mach_task_self_, 0, &conn) == KERN_SUCCESS else { conn = 0; return }
+        discover()
+    }
+    deinit { if conn != 0 { IOServiceClose(conn) } }
+
+    private static func code(_ s: String) -> UInt32 { s.utf8.reduce(0) { ($0 << 8) | UInt32($1) } }
+    private static func name(_ c: UInt32) -> String {
+        String(bytes: [UInt8(c >> 24 & 0xff), UInt8(c >> 16 & 0xff), UInt8(c >> 8 & 0xff), UInt8(c & 0xff)], encoding: .ascii) ?? "????"
+    }
+    private func call(_ input: inout KeyData) -> KeyData? {
+        var output = KeyData()
+        var outSize = MemoryLayout<KeyData>.stride
+        let rc = withUnsafePointer(to: &input) { ip in
+            IOConnectCallStructMethod(conn, SMCTemperature.kSMCHandleYPCEvent, ip, MemoryLayout<KeyData>.stride, &output, &outSize)
+        }
+        return rc == KERN_SUCCESS && output.result == 0 ? output : nil
+    }
+    private func keyInfo(_ key: UInt32) -> KeyInfo? {
+        var q = KeyData(); q.key = key; q.data8 = SMCTemperature.kSMCGetKeyInfo
+        return call(&q)?.keyInfo
+    }
+    private func readFloat(_ key: UInt32, _ info: KeyInfo) -> Double? {
+        var q = KeyData(); q.key = key; q.keyInfo = info; q.data8 = SMCTemperature.kSMCReadKey
+        guard let r = call(&q) else { return nil }
+        let b = withUnsafeBytes(of: r.bytes) { Array($0.prefix(Int(info.dataSize))) }
+        switch SMCTemperature.name(info.dataType) {
+        case "flt ": guard b.count >= 4 else { return nil }; return Double(Float(bitPattern: UInt32(b[0]) | UInt32(b[1]) << 8 | UInt32(b[2]) << 16 | UInt32(b[3]) << 24))
+        case "sp78": guard b.count >= 2 else { return nil }; return Double(Int16(bitPattern: UInt16(b[0]) << 8 | UInt16(b[1]))) / 256   // Intel Macs
+        case "ui8 ": return b.first.map(Double.init)
+        case "ui16": guard b.count >= 2 else { return nil }; return Double(UInt16(b[0]) << 8 | UInt16(b[1]))
+        default: return nil
+        }
+    }
+    /// Enumerate every key once; keep the die sensors (Tp / Te / Tf CPU, Tg GPU, Tc CPU on Intel) that
+    /// read a plausible temperature.
+    private func discover() {
+        guard let cnt = keyInfo(SMCTemperature.code("#KEY")), let n = readUInt32(SMCTemperature.code("#KEY"), cnt), n > 0, n < 20000 else { return }
+        var found: [(String, UInt32, String)] = []
+        for i in 0..<n {
+            var q = KeyData(); q.data8 = SMCTemperature.kSMCGetKeyFromIndex; q.data32 = UInt32(i)
+            guard let r = call(&q) else { continue }
+            let nm = SMCTemperature.name(r.key)
+            guard nm.hasPrefix("Tp") || nm.hasPrefix("Te") || nm.hasPrefix("Tf") || nm.hasPrefix("Tg") || nm.hasPrefix("Tc") else { continue }
+            guard let info = keyInfo(r.key), let v = readFloat(r.key, info), v > 5, v < 130 else { continue }
+            found.append((nm, r.key, SMCTemperature.name(info.dataType)))
+        }
+        sensors = found
+    }
+    private func readUInt32(_ key: UInt32, _ info: KeyInfo) -> Int? {
+        var q = KeyData(); q.key = key; q.keyInfo = info; q.data8 = SMCTemperature.kSMCReadKey
+        guard let r = call(&q) else { return nil }
+        let b = withUnsafeBytes(of: r.bytes) { Array($0.prefix(4)) }
+        return Int(UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3]))
+    }
+    /// The hottest die sensor right now, in degrees Celsius; nil when nothing could be read.
+    func hottest() -> Double? {
+        var best: Double? = nil
+        for s in sensors {
+            guard let info = keyInfo(s.key), let v = readFloat(s.key, info), v > 5, v < 130 else { continue }
+            best = max(best ?? v, v)
+        }
+        return best
+    }
+}
+
+/// Die temperature to the four meter levels (Apple silicon idles around 40 C, sustained load runs
+/// 80 to 100 C, and the firmware throttles above ~105 C).
+func thermalLevel(celsius: Double) -> Int { celsius < 55 ? 0 : (celsius < 80 ? 1 : (celsius < 95 ? 2 : 3)) }
+
 // MARK: - the meters (their own observable so their 10 Hz ticks re-render only the two gauges)
 
 final class MeterModel: ObservableObject {
     @Published private(set) var thermal = thermalLevel(ProcessInfo.processInfo.thermalState)
     @Published private(set) var thermalPeak = 0
+    @Published private(set) var celsius: Double? = nil        // hottest die sensor (nil: no SMC sensor, pressure state only)
+    @Published private(set) var celsiusPeak: Double? = nil
     @Published private(set) var battery = BatteryReader.read()
+    let smc = SMCTemperature()
     private var thermalTimer: Timer?
     private var powerTimer: Timer?
     var tracking = false          // a run is on: keep the peak
 
     init() {
-        // thermal state is coarse (ProcessInfo changes rarely): once a second
-        thermalTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        // die temperature from the SMC twice a second (pressure state as the fallback)
+        thermalTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let l = thermalLevel(ProcessInfo.processInfo.thermalState)
-            if l != self.thermal { withAnimation(.easeInOut(duration: 0.8)) { self.thermal = l } }
-            if self.tracking && l > self.thermalPeak { self.thermalPeak = l }
+            let c = self.smc.available ? self.smc.hottest() : nil
+            let l = c.map { thermalLevel(celsius: $0) } ?? thermalLevel(ProcessInfo.processInfo.thermalState)
+            withAnimation(.easeInOut(duration: 0.5)) {
+                if let c, abs((self.celsius ?? -1) - c) >= 0.5 { self.celsius = c }
+                if l != self.thermal { self.thermal = l }
+            }
+            if self.tracking {
+                if l > self.thermalPeak { self.thermalPeak = l }
+                if let c { self.celsiusPeak = max(self.celsiusPeak ?? c, c) }
+            }
         }
         // the battery's instantaneous current at 10 Hz (an IOKit registry read, well under a millisecond)
         powerTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -204,7 +317,7 @@ final class MeterModel: ObservableObject {
             }
         }
     }
-    func startRun() { tracking = true; thermalPeak = thermal }
+    func startRun() { tracking = true; thermalPeak = thermal; celsiusPeak = celsius }
     func endRun() { tracking = false }
 }
 
@@ -332,7 +445,7 @@ final class BenchModel: ObservableObject {
                     let t0 = Date(); var lastSec = -1
                     let sampleThermal: () -> Void = {
                         let sec = Int(Date().timeIntervalSince(t0))
-                        if sec != lastSec { lastSec = sec; thermalTrack.append(thermalLevel(ProcessInfo.processInfo.thermalState)) }
+                        if sec != lastSec { lastSec = sec; thermalTrack.append(self.meters.thermal) }
                     }
                     switch kind {
                     case .cold:
@@ -347,7 +460,7 @@ final class BenchModel: ObservableObject {
                         let su = BenchRunner.sustainedLoop(det, warmup: warm, minutes: minutes, coldIters: iters,
                                                            cancel: { self.isCancelled },
                                                            tick: { elapsed, med in
-                                                               let th = thermalLevel(ProcessInfo.processInfo.thermalState)
+                                                               let th = self.meters.thermal
                                                                thermalTrack.append(th)
                                                                self.main { self.liveSeconds.append((elapsed, med, th)); self.progress = min(1, elapsed / (minutes * 60)) }
                                                            },
@@ -997,27 +1110,28 @@ struct ThermometerView: View {
     let running: Bool
     var body: some View {
         let level = meters.thermal
+        // fill: the die temperature on a 30..110 C scale when a sensor exists, else the pressure level
+        let frac: CGFloat = meters.celsius.map { CGFloat(min(max(($0 - 30) / 80, 0.04), 1)) } ?? CGFloat(level + 1) / 4
+        let peakFrac: CGFloat? = meters.celsiusPeak.map { CGFloat(min(max(($0 - 30) / 80, 0.04), 1)) } ?? (running || meters.thermalPeak > 0 ? CGFloat(meters.thermalPeak + 1) / 4 : nil)
         return VStack(spacing: 8) {
-            Text("Thermal").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(thermalName(level)).font(.caption.weight(.semibold)).foregroundStyle(thermalColor(level)).lineLimit(1)
             GeometryReader { g in
                 let h = g.size.height, w: CGFloat = 22
-                let fill = h * CGFloat(level + 1) / 4
+                let fill = h * frac
                 ZStack(alignment: .bottom) {
                     Capsule().fill(Color.primary.opacity(0.08)).frame(width: w)
                     Capsule().fill(LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top))
                         .frame(width: w).mask(alignment: .bottom) { Rectangle().frame(height: max(w, fill)) }
-                        .animation(.easeInOut(duration: 0.8), value: level)
-                    ForEach(1..<4, id: \.self) { k in
-                        Rectangle().fill(Color.primary.opacity(0.25)).frame(width: w + 10, height: 1).offset(y: -h * CGFloat(k) / 4)
-                    }
-                    if running || meters.thermalPeak > 0 {
+                        .animation(.easeInOut(duration: 0.5), value: frac)
+                    if let pf = peakFrac, running || meters.celsiusPeak != nil {
                         Rectangle().fill(Color.primary).frame(width: w + 14, height: 2)
-                            .offset(y: -h * CGFloat(meters.thermalPeak + 1) / 4 + 1)
-                            .animation(.easeInOut(duration: 0.8), value: meters.thermalPeak)
+                            .offset(y: -h * pf + 1)
+                            .animation(.easeInOut(duration: 0.5), value: pf)
                     }
                 }.frame(maxWidth: .infinity)
             }
-            Text(thermalName(level)).font(.caption.weight(.semibold)).foregroundStyle(thermalColor(level))
+            Text(meters.celsius.map { String(format: "%.0f °C", $0) } ?? thermalName(level))
+                .font(.caption.weight(.semibold).monospacedDigit()).foregroundStyle(thermalColor(level)).contentTransition(.numericText())
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
