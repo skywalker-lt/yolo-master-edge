@@ -175,7 +175,7 @@ enum BatteryReader {
         return BatterySample(present: true, watts: watts, state: state, percent: percent)
     }
 }
-func thermalColor(_ level: Int) -> Color { [Color.green, .yellow, .orange, .red][max(0, min(3, level))] }
+func thermalColor(_ level: Int) -> Color { [Color.blue, .green, .orange, .red][max(0, min(3, level))] }
 
 // MARK: - die temperature (AppleSMC user client: the same keys smctemp / iStat read)
 
@@ -1133,7 +1133,12 @@ struct ThermometerView: View {
                 let fill = h * frac
                 ZStack(alignment: .bottom) {
                     Capsule().fill(Color.primary.opacity(0.08)).frame(width: w)
-                    Capsule().fill(LinearGradient(colors: [.green, .yellow, .orange, .red], startPoint: .bottom, endPoint: .top))
+                    Capsule().fill(LinearGradient(stops: [
+                            .init(color: .blue, location: 0.0), .init(color: .blue, location: 0.30),        // < 60 C
+                            .init(color: .green, location: 0.42), .init(color: .green, location: 0.62),     // 60 - 85 C
+                            .init(color: .yellow, location: 0.72), .init(color: .orange, location: 0.85),   // 85 - 100 C
+                            .init(color: .red, location: 0.92), .init(color: .red, location: 1.0)           // >= 100 C
+                        ], startPoint: .bottom, endPoint: .top))
                         .frame(width: w).mask(alignment: .bottom) { Rectangle().frame(height: max(w, fill)) }
                         .animation(.easeInOut(duration: 0.6), value: frac)
                 }.frame(maxWidth: .infinity)
