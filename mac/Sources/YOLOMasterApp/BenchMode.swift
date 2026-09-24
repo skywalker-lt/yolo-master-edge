@@ -186,7 +186,9 @@ func thermalColor(_ level: Int) -> Color { [Color.green, .yellow, .orange, .red]
 /// values in degrees Celsius. The key set is discovered once (the SMC lists its keys by index) and
 /// then read on every tick; the hottest sensor is the reported temperature.
 final class SMCTemperature {
-    private struct KeyInfo { var dataSize: UInt32 = 0; var dataType: UInt32 = 0; var dataAttributes: UInt8 = 0 }
+    // SMCKeyInfoData is 12 bytes in C (9 + 3 padding); Swift lays fields out at size, not stride, so
+    // the padding is explicit to keep the 80-byte SMCKeyData_t layout the kernel expects
+    private struct KeyInfo { var dataSize: UInt32 = 0; var dataType: UInt32 = 0; var dataAttributes: UInt8 = 0; var pad: (UInt8, UInt8, UInt8) = (0, 0, 0) }
     private struct KeyData {          // the 80-byte SMCKeyData_t of the AppleSMC user client
         var key: UInt32 = 0
         var vers: (UInt8, UInt8, UInt8, UInt8, UInt16) = (0, 0, 0, 0, 0)
@@ -208,6 +210,7 @@ final class SMCTemperature {
     var available: Bool { conn != 0 && !sensors.isEmpty }
 
     init() {
+        guard MemoryLayout<KeyData>.size == 80 else { return }   // layout guard: never talk to the SMC with a wrong struct
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
         guard service != 0 else { return }
         defer { IOObjectRelease(service) }
