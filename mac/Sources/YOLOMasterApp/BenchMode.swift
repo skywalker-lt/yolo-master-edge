@@ -980,10 +980,15 @@ struct BenchDashboard: View {
             }
             for (k, n) in counts.enumerated() where n > 0 {
                 let mid = lo + (Double(k) + 0.5) * width
-                bins.append(Bin(id: "\(s.name)#\(k)", series: s.name, x: logScale ? exp(mid) : mid, n: n))
+                bins.append(Bin(id: "\(s.name)#\(k)", series: s.name, x: logScale ? mid / log(10) : mid, n: n))   // log10 position on a linear axis
             }
         }
         let stats = all.count > 1 ? StageStats(all) : nil
+        // axis: the data's own extent (Swift Charts would round a log scale out to whole decades); ticks at
+        // round millisecond values inside it
+        let axisLo = logScale ? log10(range.lowerBound) : range.lowerBound, axisHi = logScale ? log10(range.upperBound) : range.upperBound
+        let msTicks: [Double] = [0.5, 1, 2, 3, 5, 7, 10, 15, 20, 30, 50, 70, 100, 150, 200, 300, 500, 1000]
+        let logTicks = msTicks.filter { $0 >= range.lowerBound && $0 <= range.upperBound }.map { log10($0) }
         return VStack(alignment: .leading, spacing: 6) {
             Text("Latency distribution of the timed iterations").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Chart {
@@ -999,7 +1004,17 @@ struct BenchDashboard: View {
             }
             .chartForegroundStyleScale(domain: shown.series.map(\.name), range: shown.series.map(\.color))
             .chartXAxisLabel(logScale ? "ms (log scale)" : "ms").chartYAxisLabel("iterations")
-            .chartXScale(domain: range, type: logScale ? .log : .linear)
+            .chartXScale(domain: axisLo...axisHi)
+            .chartXAxis {
+                if logScale {
+                    AxisMarks(values: logTicks) { v in
+                        AxisGridLine(); AxisTick()
+                        AxisValueLabel { if let d = v.as(Double.self) { Text(String(format: pow(10, d) < 10 ? "%.1f" : "%.0f", pow(10, d))) } }
+                    }
+                } else {
+                    AxisMarks()
+                }
+            }
             .chartLegend(shown.series.count > 1 ? .visible : .hidden)
         }
         .padding(12)
@@ -1007,8 +1022,9 @@ struct BenchDashboard: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
-    /// One row of the side-by-side chart per cell (its height follows the row count).
-    private var comparisonHeight: CGFloat { CGFloat(max(bench.running ? bench.cells.count : shownCells.count, 1)) * 30 + 70 }
+    /// One row of the side-by-side chart per cell; the card is capped and scrolls beyond six rows.
+    private var comparisonRows: Int { max(bench.running ? bench.cells.count : shownCells.count, 1) }
+    private var comparisonHeight: CGFloat { min(CGFloat(comparisonRows) * 30 + 70, 6 * 30 + 70) }
     /// Cells side by side: median with the p90 whisker (cold / sustained / dataset) or mAP50-95 (accuracy).
     private var comparisonChart: some View {
         let cells = bench.running ? bench.cells : shownCells
@@ -1021,6 +1037,7 @@ struct BenchDashboard: View {
         return VStack(alignment: .leading, spacing: 6) {
             Text(accuracyMode ? "Cells side by side: mAP50-95 (bar) and mAP50 (tick)" : "Cells side by side: median (bar) and p90 (tick)")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ScrollView(.vertical) {
             Chart {
                 ForEach(Array(rows.enumerated()), id: \.offset) { k, r in
                     BarMark(x: .value("value", r.value), y: .value("cell", r.name)).foregroundStyle(cellColor(k).opacity(0.85))
@@ -1040,6 +1057,8 @@ struct BenchDashboard: View {
             }
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
             .chartXScale(domain: accuracyMode ? 0...1.25 : 0...max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1))
+            .frame(height: CGFloat(max(rows.count, 1)) * 30 + 40)
+            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
@@ -1103,6 +1122,7 @@ struct BenchDashboard: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             let hasExtra = shownCells.contains { !extra($0).isEmpty }
+            ScrollView(.vertical) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
                     ForEach(["Model", "Unit", "Pre", "Median ms", "p90", "p99", "Min", "FPS"], id: \.self) { h in
@@ -1123,6 +1143,8 @@ struct BenchDashboard: View {
                 }
             }
             .frame(maxWidth: .infinity)
+            }
+            .frame(maxHeight: CGFloat(min(shownCells.count, 8) + 1) * 30 + 8)
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
