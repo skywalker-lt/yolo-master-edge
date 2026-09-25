@@ -1016,12 +1016,15 @@ struct BenchDashboard: View {
         }
         let binCount = 48
         let width = max((range.upperBound - range.lowerBound) / Double(binCount), 1e-6)
-        struct Bin: Identifiable { let id: Int; let x: Double; let n: Int }
+        struct Bin: Identifiable { let id: Int; let lo: Double; let hi: Double; let n: Int }
         var counts = [Int](repeating: 0, count: binCount)
         for v in values where v >= range.lowerBound && v <= range.upperBound {
             counts[min(max(Int((v - range.lowerBound) / width), 0), binCount - 1)] += 1
         }
-        let bins = counts.enumerated().filter { $0.element > 0 }.map { Bin(id: $0.offset, x: range.lowerBound + (Double($0.offset) + 0.5) * width, n: $0.element) }
+        // bars span their bin (xStart / xEnd): a real histogram, whatever the axis scale
+        let bins = counts.enumerated().filter { $0.element > 0 }.map {
+            Bin(id: $0.offset, lo: range.lowerBound + Double($0.offset) * width, hi: range.lowerBound + Double($0.offset + 1) * width, n: $0.element)
+        }
         let stats = values.count > 1 ? StageStats(values) : nil
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -1036,7 +1039,7 @@ struct BenchDashboard: View {
             }
             Chart {
                 ForEach(bins) { b in
-                    BarMark(x: .value("ms", b.x), y: .value("count", b.n), width: .ratio(0.9)).foregroundStyle(color)
+                    BarMark(xStart: .value("from", b.lo), xEnd: .value("to", b.hi), y: .value("count", b.n)).foregroundStyle(color)
                 }
                 if let st = stats {
                     RuleMark(x: .value("median", st.median)).foregroundStyle(.primary).lineStyle(StrokeStyle(lineWidth: 1.5)).annotation(position: .top, alignment: .leading) { Text("median").font(.caption2) }
