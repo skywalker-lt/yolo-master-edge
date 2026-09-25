@@ -1125,7 +1125,8 @@ struct BenchDashboard: View {
         return VStack(alignment: .leading, spacing: 6) {
             Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             // header outside the scroll view so it never scrolls away; the same column widths as the rows
-            resultsRow(headers, bold: true, extraWide: hasExtra, trailing: { Color.clear.frame(width: 22) })
+            resultsRow(headers, bold: true, extraWide: hasExtra, trailing: { Spacer().frame(width: 22, height: 1) })
+                .frame(height: 18)
             Divider()
             ScrollView(.vertical) {
                 VStack(spacing: 0) {
@@ -1139,8 +1140,9 @@ struct BenchDashboard: View {
                 }
                 .padding(.trailing, 14)   // room for the scrollbar
             }
-            .frame(maxHeight: rowH * CGFloat(min(shownCells.count, 5)))
+            .frame(height: rowH * CGFloat(min(shownCells.count, 5)))
         }
+        .fixedSize(horizontal: false, vertical: true)   // the card is exactly as tall as header + rows
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
