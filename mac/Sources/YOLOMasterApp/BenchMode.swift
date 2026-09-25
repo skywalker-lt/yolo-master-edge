@@ -579,28 +579,36 @@ struct BenchSidebar: View {
         ScrollView {
             VStack(spacing: 14) {
                 box("Models", "cube.box.fill") {
-                    if bench.models.isEmpty {
-                        Text("No models yet. Add a .mlpackage / .mlmodelc; the Inference mode's model is added automatically.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    ForEach(bench.models, id: \.self) { u in
-                        HStack(spacing: 8) {
-                            Toggle(isOn: Binding(get: { bench.selectedModels.contains(u) },
-                                                 set: { if $0 { bench.selectedModels.insert(u) } else { bench.selectedModels.remove(u) } })) {
-                                Text(u.deletingPathExtension().lastPathComponent).font(.callout).lineLimit(1).truncationMode(.middle)
-                            }.toggleStyle(.checkbox)
-                            Spacer(minLength: 4)
-                            Button { bench.removeModel(u) } label: { Image(systemName: "minus.circle") }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                    ForEach(Array(bench.models.enumerated()), id: \.element) { i, u in
+                        if i > 0 { Divider() }
+                        let on = bench.selectedModels.contains(u)
+                        HStack(spacing: 6) {
+                            fileRow(icon: on ? "checkmark.circle.fill" : "circle", title: on ? "Model · in the sweep" : "Model · skipped",
+                                    value: u.deletingPathExtension().lastPathComponent, set: on, chevron: false) {
+                                if on { bench.selectedModels.remove(u) } else { bench.selectedModels.insert(u) }
+                            }
+                            Button { bench.removeModel(u) } label: { Image(systemName: "minus.circle").foregroundStyle(.tertiary) }
+                                .buttonStyle(.borderless).help("Remove from the list")
                         }
                     }
-                    Button { addModel() } label: { Label("Add model…", systemImage: "plus") }.controlSize(.small).disabled(bench.running)
+                    if !bench.models.isEmpty { Divider() }
+                    fileRow(icon: "plus.circle", title: "Add model", value: "Choose .mlpackage / .mlmodelc…", set: false) { addModel() }
                 }
                 box("Compute", "cpu") {
-                    HStack(spacing: 10) {
-                        ForEach(ComputeChoice.allCases) { c in
-                            Toggle(c.rawValue, isOn: Binding(get: { bench.computes.contains(c) },
-                                                             set: { if $0 { bench.computes.insert(c) } else { bench.computes.remove(c) } }))
-                                .toggleStyle(.checkbox)
+                    row("Units") {
+                        HStack(spacing: 8) {
+                            ForEach(ComputeChoice.allCases) { c in
+                                let on = bench.computes.contains(c)
+                                Button {
+                                    if on { bench.computes.remove(c) } else { bench.computes.insert(c) }
+                                } label: {
+                                    Label(c.rawValue, systemImage: on ? "checkmark" : "")
+                                        .labelStyle(.titleOnly).font(.callout)
+                                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                                }
+                                .buttonStyle(.bordered).tint(on ? brand : .secondary)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(on ? brand.opacity(0.14) : .clear))
+                            }
                         }
                     }.disabled(bench.running)
                     row("Preprocess") {
@@ -621,13 +629,8 @@ struct BenchSidebar: View {
                     }
                     if bench.kind == .sustained { slider("Minutes", $bench.minutes, 0.5...30) }
                     if bench.kind == .dataset || bench.kind == .accuracy {
-                        Button { pickDataset() } label: {
-                            HStack {
-                                Image(systemName: "folder").foregroundStyle(bench.datasetURL == nil ? .secondary : brand)
-                                Text(bench.datasetURL?.lastPathComponent ?? "Choose images folder…").lineLimit(1).truncationMode(.middle)
-                                Spacer()
-                            }
-                        }.buttonStyle(.bordered).controlSize(.small)
+                        fileRow(icon: "photo.on.rectangle.angled", title: bench.kind == .accuracy ? "Labelled set (images folder)" : "Images folder",
+                                value: bench.datasetURL?.lastPathComponent ?? "Choose images folder…", set: bench.datasetURL != nil) { pickDataset() }
                         intRow("Image limit (0 = all)", $bench.datasetLimit, 0...5000, step: 50)
                         if bench.kind == .accuracy {
                             Text("Labels are read from the sibling labels/ folder (the ultralytics layout) or next to each image.")
@@ -685,6 +688,20 @@ struct BenchSidebar: View {
     }
 
     // small helpers (the Inference sidebar has private twins)
+    private func fileRow(icon: String, title: String, value: String, set: Bool, chevron: Bool = true, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).font(.system(size: 15)).foregroundStyle(set ? brand : .secondary).frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.caption).foregroundStyle(.secondary)
+                    Text(value).font(.callout).lineLimit(1).truncationMode(.middle).foregroundStyle(set ? Color.primary : .secondary)
+                }
+                Spacer(minLength: 4)
+                if chevron { Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary) }
+            }
+            .contentShape(Rectangle())
+        }.buttonStyle(.plain).disabled(bench.running)
+    }
     private func box<C: View>(_ title: String, _ icon: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(title, systemImage: icon).font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.leading, 2)
@@ -814,8 +831,8 @@ struct BenchDashboard: View {
         let cell = selectedRecord == nil ? bench.liveCell : shownCells.first
         return HStack(spacing: 10) {
             card("Median", s.map { String(format: "%.2f ms  ·  %.1f fps", $0.median, $0.median > 0 ? 1000 / $0.median : 0) } ?? "-")
-            card("p90 / p99 ms", s.map { String(format: "%.2f / %.2f", $0.p90, $0.p99) } ?? "-")
-            card("Min / max ms", s.map { String(format: "%.2f / %.2f", $0.min, $0.max) } ?? "-")
+            card("p90 / p99", s.map { String(format: "%.2f / %.2f ms", $0.p90, $0.p99) } ?? "-")
+            card("Min / max", s.map { String(format: "%.2f / %.2f ms", $0.min, $0.max) } ?? "-")
             card("Samples", s.map { "\($0.n)" } ?? "-")
             if let su = cell?.sustained {
                 card("Throttle", String(format: "%+.1f%%", su.throttle_pct))
