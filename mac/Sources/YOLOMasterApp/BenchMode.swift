@@ -1039,7 +1039,8 @@ struct BenchDashboard: View {
             }
             Chart {
                 ForEach(bins) { b in
-                    BarMark(xStart: .value("from", b.lo), xEnd: .value("to", b.hi), y: .value("count", b.n)).foregroundStyle(color)
+                    RectangleMark(xStart: .value("from", b.lo), xEnd: .value("to", b.hi), yStart: .value("zero", 0), yEnd: .value("count", b.n))
+                        .foregroundStyle(color)
                 }
                 if let st = stats {
                     RuleMark(x: .value("median", st.median)).foregroundStyle(.primary).lineStyle(StrokeStyle(lineWidth: 1.5)).annotation(position: .top, alignment: .leading) { Text("median").font(.caption2) }
@@ -1049,6 +1050,7 @@ struct BenchDashboard: View {
             }
             .chartXAxisLabel("ms").chartYAxisLabel("iterations")
             .chartXScale(domain: range)
+            .chartYScale(domain: 0...Double(max(counts.max() ?? 1, 1)) * 1.08)
             .gesture(MagnifyGesture().onChanged { v in zoomX = max(1, min(64, pinchBase * v.magnification)) }.onEnded { _ in pinchBase = zoomX })
         }
         .padding(12)
