@@ -788,13 +788,12 @@ struct BenchDashboard: View {
                         }
                         if shownCells.count > 1 { comparisonChart.frame(height: comparisonHeight) }
                     }
+                    if !shownCells.isEmpty { resultsTable }
                 }
                 ThermometerView(meters: bench.meters, running: bench.running).frame(width: 96)
                 PowerMeterView(meters: bench.meters).frame(width: 96)
             }
-            if !shownCells.isEmpty {
-                resultsTable
-            } else if !bench.running {
+            if shownCells.isEmpty && !bench.running {
                 VStack(spacing: 6) {
                     Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 40)).foregroundStyle(.tertiary)
                     Text("Pick models, compute units and a protocol in the sidebar, then Run.").font(.callout).foregroundStyle(.secondary)
@@ -1024,7 +1023,7 @@ struct BenchDashboard: View {
 
     /// One row of the side-by-side chart per cell; the card is capped and scrolls beyond six rows.
     private var comparisonRows: Int { max(bench.running ? bench.cells.count : shownCells.count, 1) }
-    private var comparisonHeight: CGFloat { min(CGFloat(comparisonRows) * 30 + 70, 6 * 30 + 70) }
+    private var comparisonHeight: CGFloat { min(CGFloat(comparisonRows) * 40 + 70, 5 * 40 + 70) }
     /// Cells side by side: median with the p90 whisker (cold / sustained / dataset) or mAP50-95 (accuracy).
     private var comparisonChart: some View {
         let cells = bench.running ? bench.cells : shownCells
@@ -1040,7 +1039,7 @@ struct BenchDashboard: View {
             ScrollView(.vertical) {
             Chart {
                 ForEach(Array(rows.enumerated()), id: \.offset) { k, r in
-                    BarMark(x: .value("value", r.value), y: .value("cell", r.name)).foregroundStyle(cellColor(k).opacity(0.85))
+                    BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62)).foregroundStyle(cellColor(k).opacity(0.85))
                     if r.hi > 0 {
                         PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).symbol(.diamond).foregroundStyle(.primary).symbolSize(30)
                             .annotation(position: .trailing, spacing: 6) {
@@ -1057,7 +1056,8 @@ struct BenchDashboard: View {
             }
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
             .chartXScale(domain: accuracyMode ? 0...1.25 : 0...max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1))
-            .frame(height: CGFloat(max(rows.count, 1)) * 30 + 40)
+            .frame(height: CGFloat(max(rows.count, 1)) * 40 + 40)
+            .padding(.trailing, 14)   // room for the scrollbar
             }
         }
         .padding(12)
@@ -1119,36 +1119,42 @@ struct BenchDashboard: View {
     }
 
     private var resultsTable: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let hasExtra = shownCells.contains { !extra($0).isEmpty }
+        let headers = ["Model", "Unit", "Pre", "Median ms", "p90", "p99", "Min", "FPS"] + (hasExtra ? ["Extra"] : [])
+        let rowH: CGFloat = 26
+        return VStack(alignment: .leading, spacing: 6) {
             Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            let hasExtra = shownCells.contains { !extra($0).isEmpty }
+            // header outside the scroll view so it never scrolls away; the same column widths as the rows
+            resultsRow(headers, bold: true, extraWide: hasExtra, trailing: { Color.clear.frame(width: 22) })
+            Divider()
             ScrollView(.vertical) {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-                GridRow {
-                    ForEach(["Model", "Unit", "Pre", "Median ms", "p90", "p99", "Min", "FPS"], id: \.self) { h in
-                        Text(h).font(.caption.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if hasExtra { Text("Extra").font(.caption.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading).gridCellColumns(2) }
-                    Text("").font(.caption)
-                }
-                ForEach(shownCells) { c in
-                    GridRow {
-                        ForEach(Array(rowValues(c).enumerated()), id: \.offset) { _, v in
-                            cellText(v)
+                VStack(spacing: 0) {
+                    ForEach(shownCells) { c in
+                        resultsRow(rowValues(c) + (hasExtra ? [extra(c)] : []), bold: false, extraWide: hasExtra) {
+                            Button { bench.saveJSON(c) } label: { Image(systemName: "square.and.arrow.down") }
+                                .buttonStyle(.borderless).help("Save the yolomaster-bench/v1 JSON").disabled(c.document == nil).frame(width: 22)
                         }
-                        if hasExtra { Text(extra(c)).font(.callout).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).gridCellColumns(2) }
-                        Button { bench.saveJSON(c) } label: { Image(systemName: "square.and.arrow.down") }.buttonStyle(.borderless).help("Save the yolomaster-bench/v1 JSON")
-                            .disabled(c.document == nil)
+                        .frame(height: rowH)
                     }
                 }
+                .padding(.trailing, 14)   // room for the scrollbar
             }
-            .frame(maxWidth: .infinity)
-            }
-            .frame(maxHeight: CGFloat(min(shownCells.count, 8) + 1) * 30 + 8)
+            .frame(maxHeight: rowH * CGFloat(min(shownCells.count, 5)))
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+    /// One table line: a fixed model column, equal shares for the numbers, the Extra column as wide as the rest allow.
+    private func resultsRow<T: View>(_ cells: [String], bold: Bool, extraWide: Bool, @ViewBuilder trailing: () -> T) -> some View {
+        HStack(spacing: 8) {
+            ForEach(Array(cells.enumerated()), id: \.offset) { i, v in
+                Text(v).font(bold ? .caption.weight(.semibold) : .callout.monospacedDigit()).lineLimit(1).truncationMode(.middle)
+                    .frame(width: i == 0 ? 150 : nil, alignment: .leading)
+                    .frame(maxWidth: i == 0 ? 150 : .infinity, alignment: .leading)
+            }
+            trailing()
+        }
     }
     private func rowValues(_ c: BenchCell) -> [String] {
         func f2(_ v: Double?) -> String { v.map { String(format: "%.2f", $0) } ?? "-" }
