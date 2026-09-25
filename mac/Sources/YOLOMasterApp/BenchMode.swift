@@ -827,14 +827,15 @@ struct BenchDashboard: View {
     }
 
     private var liveStats: StageStats? {
-        if bench.running || selectedRecord == nil { return bench.liveSamples.count > 1 ? StageStats(bench.liveSamples.map(\.ms)) : shownCells.first?.cold }
+        if bench.running { return bench.liveSamples.count > 1 ? StageStats(bench.liveSamples.map(\.ms)) : bench.liveCell?.cold }
         return shownCells.first?.cold
     }
     private var statCards: some View {
         let s = liveStats
-        let cell = selectedRecord == nil ? bench.liveCell : shownCells.first
+        let cell = bench.running ? bench.liveCell : shownCells.first
+        let who = cell.map { " · \($0.modelName) · \($0.compute.rawValue)" } ?? ""
         return HStack(spacing: 10) {
-            card("Median", s.map { String(format: "%.2f ms  ·  %.1f fps", $0.median, $0.median > 0 ? 1000 / $0.median : 0) } ?? "-")
+            card("Median" + who, s.map { String(format: "%.2f ms  ·  %.1f fps", $0.median, $0.median > 0 ? 1000 / $0.median : 0) } ?? "-")
             card("p90 / p99", s.map { String(format: "%.2f / %.2f ms", $0.p90, $0.p99) } ?? "-")
             card("Min / max", s.map { String(format: "%.2f / %.2f ms", $0.min, $0.max) } ?? "-")
             card("Samples", s.map { "\($0.n)" } ?? "-")
@@ -978,7 +979,7 @@ struct BenchDashboard: View {
             Text("Latency distribution of the timed iterations").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Chart {
                 ForEach(bins) { b in
-                    BarMark(x: .value("ms", b.x), y: .value("count", b.n), width: .fixed(6))
+                    BarMark(x: .value("ms", b.x), y: .value("count", b.n), width: .fixed(6), stacking: .unstacked)
                         .foregroundStyle(by: .value("series", b.series)).opacity(shown.series.count > 1 ? 0.7 : 0.9)
                 }
                 if let st = stats, shown.series.count == 1 {
@@ -1012,12 +1013,22 @@ struct BenchDashboard: View {
             Chart {
                 ForEach(Array(rows.enumerated()), id: \.offset) { k, r in
                     BarMark(x: .value("value", r.value), y: .value("cell", r.name)).foregroundStyle(cellColor(k).opacity(0.85))
-                        .annotation(position: .trailing) { Text(accuracyMode ? String(format: "%.4f", r.value) : String(format: "%.2f ms", r.value)).font(.caption2.monospacedDigit()) }
-                    if r.hi > 0 { PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).symbol(.diamond).foregroundStyle(.primary).symbolSize(30) }
+                    if r.hi > 0 {
+                        PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).symbol(.diamond).foregroundStyle(.primary).symbolSize(30)
+                            .annotation(position: .trailing, spacing: 6) {
+                                Text(accuracyMode ? String(format: "%.4f  (mAP50 %.4f)", r.value, r.hi) : String(format: "%.2f ms  (p90 %.2f)", r.value, r.hi))
+                                    .font(.caption2.monospacedDigit())
+                            }
+                    } else {
+                        PointMark(x: .value("value", r.value), y: .value("cell", r.name)).opacity(0)
+                            .annotation(position: .trailing, spacing: 6) {
+                                Text(accuracyMode ? String(format: "%.4f", r.value) : String(format: "%.2f ms", r.value)).font(.caption2.monospacedDigit())
+                            }
+                    }
                 }
             }
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
-            .chartXScale(domain: accuracyMode ? 0...1 : 0...max((rows.map(\.hi).max() ?? 1) * 1.15, 0.1))
+            .chartXScale(domain: accuracyMode ? 0...1.25 : 0...max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1))
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
@@ -1080,12 +1091,13 @@ struct BenchDashboard: View {
     private var resultsTable: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            let hasExtra = shownCells.contains { !extra($0).isEmpty }
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
                     ForEach(["Model", "Unit", "Pre", "Median ms", "p90", "p99", "Min", "FPS"], id: \.self) { h in
                         Text(h).font(.caption.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    Text("Extra").font(.caption.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading).gridCellColumns(2)
+                    if hasExtra { Text("Extra").font(.caption.weight(.semibold)).frame(maxWidth: .infinity, alignment: .leading).gridCellColumns(2) }
                     Text("").font(.caption)
                 }
                 ForEach(shownCells) { c in
@@ -1093,7 +1105,7 @@ struct BenchDashboard: View {
                         ForEach(Array(rowValues(c).enumerated()), id: \.offset) { _, v in
                             cellText(v)
                         }
-                        Text(extra(c)).font(.callout).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).gridCellColumns(2)
+                        if hasExtra { Text(extra(c)).font(.callout).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading).gridCellColumns(2) }
                         Button { bench.saveJSON(c) } label: { Image(systemName: "square.and.arrow.down") }.buttonStyle(.borderless).help("Save the yolomaster-bench/v1 JSON")
                             .disabled(c.document == nil)
                     }
