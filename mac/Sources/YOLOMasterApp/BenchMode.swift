@@ -771,6 +771,14 @@ struct BenchDashboard: View {
     @State private var zoomX: Double = 1
     @State private var zoomY: Double = 1
     @State private var pinchBase: Double = 1
+    // ---- the cell the distribution card shows: clicked in the side-by-side chart or the results table ----
+    @State private var selectedCellID: UUID? = nil
+    @State private var selectedRowName: String? = nil      // the side-by-side chart's selection binding
+    private var focusCell: BenchCell? {
+        if bench.running { return bench.liveCell }
+        let cells = shownCells
+        return cells.first { $0.id == selectedCellID } ?? cells.first
+    }
     private func zoomBar() -> some View {
         HStack(spacing: 4) {
             Text("X").font(.caption2).foregroundStyle(.tertiary)
@@ -848,7 +856,7 @@ struct BenchDashboard: View {
             if let p = bench.progress, bench.running { ProgressView(value: p).frame(width: 160) }
             if bench.running {
                 Button(role: .destructive) { bench.cancel() } label: { Label("Stop", systemImage: "stop.fill") }
-                    .onAppear { zoomX = 1; zoomY = 1; pinchBase = 1 }
+                    .onAppear { zoomX = 1; zoomY = 1; pinchBase = 1; selectedCellID = nil; selectedRowName = nil }
             } else {
                 Button { bench.run() } label: { Label("Run", systemImage: "play.fill") }
                     .buttonStyle(.borderedProminent).tint(brand).keyboardShortcut(.return, modifiers: .command)
@@ -993,75 +1001,51 @@ struct BenchDashboard: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
-    /// Cold run: the latency distribution of the timed iterations (fills up live), with the
-    /// median / p90 / p99 marked. After a multi-cell run every cell's distribution is overlaid.
+    /// Cold run: the latency distribution of ONE cell's timed iterations (the live cell while a run
+    /// streams, else the cell picked in the side-by-side chart or the results table), in its model's
+    /// colour, with median / p90 / p99 marked. Pinch or the X buttons zoom the ms axis.
     private var histogramChart: some View {
-        let shown = seriesToShow
-        let all = shown.series.flatMap { $0.points.map(\.ms) }
-        var range = BenchDashboard.yRange(all)
-        if range.lowerBound <= 0 { range = 0.01...max(range.upperBound, 0.02) }
-        if zoomX > 1 {   // narrow the axis around the median of everything shown
-            let med = all.count > 1 ? StageStats(all).median : range.lowerBound
+        let cell = focusCell
+        let values: [Double] = bench.running ? bench.liveSamples.map(\.ms) : (cell?.samples ?? [])
+        let color = cell.map { cellColor($0) } ?? brand
+        var range = BenchDashboard.yRange(values)
+        if zoomX > 1 {   // narrow the axis around the median
+            let med = values.count > 1 ? StageStats(values).median : range.lowerBound
             let half = (range.upperBound - range.lowerBound) / 2 / zoomX
             range = max(range.lowerBound, med - half)...min(range.upperBound, med + half)
         }
-        // cells that span more than 4x (a nano model next to an x model, CPU next to ANE) go on a log
-        // axis with log-spaced bins, so the fast group is not crushed against the left edge
-        let logScale = shown.series.count > 1 && range.upperBound / range.lowerBound > 4
-        let binCount = 40
-        let lo = logScale ? log(range.lowerBound) : range.lowerBound, hi = logScale ? log(range.upperBound) : range.upperBound
-        let width = (hi - lo) / Double(binCount)
-        struct Bin: Identifiable { let id: String; let series: String; let x: Double; let n: Int }
-        var bins: [Bin] = []
-        for s in shown.series {
-            var counts = [Int](repeating: 0, count: binCount)
-            for v in s.points.map(\.ms) {
-                let t = logScale ? log(max(v, 0.001)) : v
-                let k = min(max(Int((t - lo) / width), 0), binCount - 1)
-                counts[k] += 1
-            }
-            for (k, n) in counts.enumerated() where n > 0 {
-                let mid = lo + (Double(k) + 0.5) * width
-                bins.append(Bin(id: "\(s.name)#\(k)", series: s.name, x: logScale ? mid / log(10) : mid, n: n))   // log10 position on a linear axis
-            }
+        let binCount = 48
+        let width = max((range.upperBound - range.lowerBound) / Double(binCount), 1e-6)
+        struct Bin: Identifiable { let id: Int; let x: Double; let n: Int }
+        var counts = [Int](repeating: 0, count: binCount)
+        for v in values where v >= range.lowerBound && v <= range.upperBound {
+            counts[min(max(Int((v - range.lowerBound) / width), 0), binCount - 1)] += 1
         }
-        let stats = all.count > 1 ? StageStats(all) : nil
-        // axis: the data's own extent (Swift Charts would round a log scale out to whole decades); ticks at
-        // round millisecond values inside it
-        let axisLo = logScale ? log10(range.lowerBound) : range.lowerBound, axisHi = logScale ? log10(range.upperBound) : range.upperBound
-        let msTicks: [Double] = [0.5, 1, 2, 3, 5, 7, 10, 15, 20, 30, 50, 70, 100, 150, 200, 300, 500, 1000]
-        let logTicks = msTicks.filter { $0 >= range.lowerBound && $0 <= range.upperBound }.map { log10($0) }
+        let bins = counts.enumerated().filter { $0.element > 0 }.map { Bin(id: $0.offset, x: range.lowerBound + (Double($0.offset) + 0.5) * width, n: $0.element) }
+        let stats = values.count > 1 ? StageStats(values) : nil
         return VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Latency distribution of the timed iterations").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text("Latency distribution").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                if let c = cell {
+                    Circle().fill(color).frame(width: 8, height: 8)
+                    Text("\(c.modelName) · \(c.compute.rawValue)").font(.caption.weight(.semibold)).foregroundStyle(.primary)
+                    if !bench.running && shownCells.count > 1 { Text("click a bar or a row to switch").font(.caption2).foregroundStyle(.tertiary) }
+                }
                 Spacer()
                 zoomBar()
             }
             Chart {
                 ForEach(bins) { b in
-                    BarMark(x: .value("ms", b.x), y: .value("count", b.n), width: .fixed(6), stacking: .unstacked)
-                        .foregroundStyle(by: .value("series", b.series)).opacity(shown.series.count > 1 ? 0.7 : 0.9)
+                    BarMark(x: .value("ms", b.x), y: .value("count", b.n), width: .ratio(0.9)).foregroundStyle(color)
                 }
-                if let st = stats, shown.series.count == 1 {
+                if let st = stats {
                     RuleMark(x: .value("median", st.median)).foregroundStyle(.primary).lineStyle(StrokeStyle(lineWidth: 1.5)).annotation(position: .top, alignment: .leading) { Text("median").font(.caption2) }
                     RuleMark(x: .value("p90", st.p90)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3])).annotation(position: .top, alignment: .leading) { Text("p90").font(.caption2).foregroundStyle(.secondary) }
                     RuleMark(x: .value("p99", st.p99)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3])).annotation(position: .top, alignment: .leading) { Text("p99").font(.caption2).foregroundStyle(.secondary) }
                 }
             }
-            .chartForegroundStyleScale(domain: shown.series.map(\.name), range: shown.series.map(\.color))
-            .chartXAxisLabel(logScale ? "ms (log scale)" : "ms").chartYAxisLabel("iterations")
-            .chartXScale(domain: axisLo...axisHi)
-            .chartXAxis {
-                if logScale {
-                    AxisMarks(values: logTicks) { v in
-                        AxisGridLine(); AxisTick()
-                        AxisValueLabel { if let d = v.as(Double.self) { Text(String(format: pow(10, d) < 10 ? "%.1f" : "%.0f", pow(10, d))) } }
-                    }
-                } else {
-                    AxisMarks()
-                }
-            }
-            .chartLegend(shown.series.count > 1 ? .visible : .hidden)
+            .chartXAxisLabel("ms").chartYAxisLabel("iterations")
+            .chartXScale(domain: range)
             .gesture(MagnifyGesture().onChanged { v in zoomX = max(1, min(64, pinchBase * v.magnification)) }.onEnded { _ in pinchBase = zoomX })
         }
         .padding(12)
@@ -1087,7 +1071,8 @@ struct BenchDashboard: View {
             ScrollView(.vertical) {
             Chart {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
-                    BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62)).foregroundStyle(r.color)
+                    BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62))
+                        .foregroundStyle(r.color).opacity(focusCell == nil || focusCell?.id == r.id ? 1 : 0.4)
                     if r.hi > 0 {
                         PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).symbol(.diamond).foregroundStyle(.primary).symbolSize(30)
                             .annotation(position: .trailing, spacing: 6) {
@@ -1104,6 +1089,10 @@ struct BenchDashboard: View {
             }
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
             .chartXScale(domain: accuracyMode ? 0...1.25 : 0...max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1))
+            .chartYSelection(value: $selectedRowName)
+            .onChange(of: selectedRowName) {
+                if let n = selectedRowName, let r = rows.first(where: { $0.name == n }) { selectedCellID = r.id }
+            }
             .frame(height: CGFloat(max(rows.count, 1)) * 40 + 40)
             .padding(.trailing, 14)   // room for the scrollbar
             }
@@ -1174,7 +1163,7 @@ struct BenchDashboard: View {
             Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             // header outside the scroll view so it never scrolls away; the same column widths as the rows
             resultsRow(headers, bold: true, extraWide: hasExtra, trailing: { Spacer().frame(width: 22, height: 1) })
-                .frame(height: 18)
+                .frame(height: 18).padding(.horizontal, 6)
             Divider()
             ScrollView(.vertical) {
                 VStack(spacing: 0) {
@@ -1184,6 +1173,10 @@ struct BenchDashboard: View {
                                 .buttonStyle(.borderless).help("Save the yolomaster-bench/v1 JSON").disabled(c.document == nil).frame(width: 22)
                         }
                         .frame(height: rowH)
+                        .padding(.horizontal, 6)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(focusCell?.id == c.id ? cellColor(c).opacity(0.14) : .clear))
+                        .contentShape(Rectangle())
+                        .onTapGesture { selectedCellID = c.id }
                     }
                 }
                 .padding(.trailing, 14)   // room for the scrollbar
