@@ -758,7 +758,7 @@ struct BenchDashboard: View {
     private var shownKind: BenchKind { selectedRecord != nil ? (shownRecord?.kind ?? bench.kind) : (bench.running || bench.lastRecord == nil ? bench.kind : bench.lastRecord!.kind) }
     /// Cell colours: one per (model, unit), stable across the charts and the table.
     private func cellColor(_ index: Int) -> Color {
-        let palette: [Color] = [brand, .orange, .green, .purple, .pink, .teal, .indigo, .brown]
+        let palette: [Color] = [brand, .orange, .green, .purple, .pink, .teal, .brown, .red, .mint, .indigo, .yellow, .cyan]
         return palette[index % palette.count]
     }
 
@@ -773,20 +773,20 @@ struct BenchDashboard: View {
                     case .sustained:
                         timeChart.frame(minHeight: 220, maxHeight: .infinity)
                         sustainedChart.frame(height: 180)
-                        if shownCells.count > 1 { comparisonChart.frame(height: 150) }
+                        if shownCells.count > 1 { comparisonChart.frame(height: comparisonHeight) }
                     case .dataset:
                         timeChart.frame(minHeight: 220, maxHeight: .infinity)
-                        if shownCells.count > 1 { comparisonChart.frame(height: 150) }
+                        if shownCells.count > 1 { comparisonChart.frame(height: comparisonHeight) }
                     case .cold:
                         histogramChart.frame(minHeight: 220, maxHeight: .infinity)
-                        if shownCells.count > 1 || (bench.running && !bench.cells.isEmpty) { comparisonChart.frame(height: 170) }
+                        if shownCells.count > 1 || (bench.running && !bench.cells.isEmpty) { comparisonChart.frame(height: comparisonHeight) }
                     case .accuracy:
                         if let acc = (selectedRecord == nil ? bench.liveCell?.accuracy ?? shownCells.first?.accuracy : shownCells.first?.accuracy) {
                             accuracyChart(acc).frame(minHeight: 220, maxHeight: .infinity)
                         } else {
                             accuracyPending.frame(minHeight: 220, maxHeight: .infinity)
                         }
-                        if shownCells.count > 1 { comparisonChart.frame(height: 170) }
+                        if shownCells.count > 1 { comparisonChart.frame(height: comparisonHeight) }
                     }
                 }
                 ThermometerView(meters: bench.meters, running: bench.running).frame(width: 96)
@@ -961,18 +961,27 @@ struct BenchDashboard: View {
     private var histogramChart: some View {
         let shown = seriesToShow
         let all = shown.series.flatMap { $0.points.map(\.ms) }
-        let range = BenchDashboard.yRange(all)
+        var range = BenchDashboard.yRange(all)
+        if range.lowerBound <= 0 { range = 0.01...max(range.upperBound, 0.02) }
+        // cells that span more than 4x (a nano model next to an x model, CPU next to ANE) go on a log
+        // axis with log-spaced bins, so the fast group is not crushed against the left edge
+        let logScale = shown.series.count > 1 && range.upperBound / range.lowerBound > 4
         let binCount = 40
-        let width = (range.upperBound - range.lowerBound) / Double(binCount)
+        let lo = logScale ? log(range.lowerBound) : range.lowerBound, hi = logScale ? log(range.upperBound) : range.upperBound
+        let width = (hi - lo) / Double(binCount)
         struct Bin: Identifiable { let id: String; let series: String; let x: Double; let n: Int }
         var bins: [Bin] = []
         for s in shown.series {
             var counts = [Int](repeating: 0, count: binCount)
             for v in s.points.map(\.ms) {
-                let k = min(max(Int((v - range.lowerBound) / width), 0), binCount - 1)
+                let t = logScale ? log(max(v, 0.001)) : v
+                let k = min(max(Int((t - lo) / width), 0), binCount - 1)
                 counts[k] += 1
             }
-            for (k, n) in counts.enumerated() where n > 0 { bins.append(Bin(id: "\(s.name)#\(k)", series: s.name, x: range.lowerBound + (Double(k) + 0.5) * width, n: n)) }
+            for (k, n) in counts.enumerated() where n > 0 {
+                let mid = lo + (Double(k) + 0.5) * width
+                bins.append(Bin(id: "\(s.name)#\(k)", series: s.name, x: logScale ? exp(mid) : mid, n: n))
+            }
         }
         let stats = all.count > 1 ? StageStats(all) : nil
         return VStack(alignment: .leading, spacing: 6) {
@@ -989,8 +998,8 @@ struct BenchDashboard: View {
                 }
             }
             .chartForegroundStyleScale(domain: shown.series.map(\.name), range: shown.series.map(\.color))
-            .chartXAxisLabel("ms").chartYAxisLabel("iterations")
-            .chartXScale(domain: range)
+            .chartXAxisLabel(logScale ? "ms (log scale)" : "ms").chartYAxisLabel("iterations")
+            .chartXScale(domain: range, type: logScale ? .log : .linear)
             .chartLegend(shown.series.count > 1 ? .visible : .hidden)
         }
         .padding(12)
@@ -998,6 +1007,8 @@ struct BenchDashboard: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
+    /// One row of the side-by-side chart per cell (its height follows the row count).
+    private var comparisonHeight: CGFloat { CGFloat(max(bench.running ? bench.cells.count : shownCells.count, 1)) * 30 + 70 }
     /// Cells side by side: median with the p90 whisker (cold / sustained / dataset) or mAP50-95 (accuracy).
     private var comparisonChart: some View {
         let cells = bench.running ? bench.cells : shownCells
