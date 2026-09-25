@@ -245,7 +245,7 @@ def main():
                 np.savez(out / f"{name}.ref.npz", **ref)
 
             results[name] = f"OK ({dst.stat().st_size // 1024} KB)"
-        except Exception as e:  # noqa: BLE001 - a per-target failure must not kill the sweep
+        except Exception as e:  # noqa: BLE001 - a per-target failure must not kill the batch
             results[name] = f"FAILED: {type(e).__name__}: {e}"
             import traceback
             traceback.print_exc()

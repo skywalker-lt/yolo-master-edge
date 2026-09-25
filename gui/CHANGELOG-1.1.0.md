@@ -160,7 +160,7 @@ New public surface:
 - Stats card additions: Slicing mode, Tile size (range over folders), Tiles run/grid,
   fallback and capped counts.
 - Double-click zoom reset removed (both runners); reset is Ctrl+0 / snap-home (fdb5dd6).
-- Em/en-dash sweep: remaining dashes in cpp/gui comments replaced with ASCII hyphens; all
+- Em/en-dash pass: remaining dashes in cpp/gui comments replaced with ASCII hyphens; all
   new user-facing strings are dash-free (b409e34).
 - Detection settings stay LIVE during video playback (unlike the Mac runner): the Windows
   playback overlay re-NMSes the shown frame from cache per frame, which is cheap; the Mac

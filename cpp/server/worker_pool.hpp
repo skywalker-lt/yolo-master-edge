@@ -62,7 +62,7 @@ struct Job {
     int raw_w = 0, raw_h = 0;           // raw BGR8 frame (WS video path) instead of an encoded image
     InferParams params;
     std::shared_ptr<track::Tracker> tracker;   // owned by the video request / WS session; one job in flight
-    std::shared_ptr<BenchRequest> bench;       // bench job: no image, runs bench::cold_sweep on this worker
+    std::shared_ptr<BenchRequest> bench;       // bench job: no image, runs bench::cold_run on this worker
     Clock::time_point enqueued;
     Clock::time_point deadline;
     std::function<void(InferResult&&)> done;

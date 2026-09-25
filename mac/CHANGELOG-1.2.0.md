@@ -58,7 +58,7 @@ unique with `uniqueStem`. Empty files are written for images without detections.
 
 ## 4. Bench and accuracy
 
-`BenchRunner.coldSweep` and `sustainedLoop` mirror `bench::cold_sweep` / `sustained_loop`
+`BenchRunner.coldRun` and `sustainedLoop` mirror `bench::cold_run` / `sustained_loop`
 (gray-114 probe, `inferOnly`, one median per second, `summarize_sustained` from the core).
 `AccuracyRunner.run` uses the confidence floor `Float(0.001).nextDown` because the Kit keeps
 candidates with score `>` floor where the C++ keeps `>=` conf; the Kit's decode is already

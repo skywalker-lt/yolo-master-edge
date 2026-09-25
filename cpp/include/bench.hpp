@@ -80,7 +80,7 @@ struct BenchResult {
 
 // Gray-114 imgsz probe forwards: `warmup` untimed, `iters` timed. Uses forward_raw(decode=false)
 // (pure kernel time) when the backend implements it, else infer() and probe_mode = "full".
-ColdResult cold_sweep(Backend& be, const Config& cfg, int warmup, int iters);
+ColdResult cold_run(Backend& be, const Config& cfg, int warmup, int iters);
 // Timed loop for `minutes` after `warmup`; cold baseline = median of the first `cold_iters`.
 SustainedResult sustained_loop(Backend& be, const Config& cfg, int warmup, double minutes,
                                int cold_iters = 50, const std::atomic<bool>* cancel = nullptr);

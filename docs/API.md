@@ -51,7 +51,7 @@ default 2), `max_body_mb` (32), `max_pixels` (50 M), `max_queue` (64 pending job
 | POST | `/v1/infer/batch` | K files in one multipart body, K independent batch-1 jobs |
 | POST | `/v1/video` | video file upload, NDJSON stream of per-frame results (`track=` for ids) |
 | WS | `/v1/stream` | binary frames in, JSON per frame out, keep-latest backpressure |
-| POST | `/v1/bench` | probe sweep on one worker of a loaded model, `yolomaster-bench/v1` JSON |
+| POST | `/v1/bench` | probe run on one worker of a loaded model, `yolomaster-bench/v1` JSON |
 | GET | `/v1/stats` | rolling p50/p90/p95/p99 latency (1 min, 5 min windows) per model |
 | GET | `/metrics` | Prometheus text exposition |
 | GET | `/openapi.json` | OpenAPI 3.1 document generated from the route table |
@@ -141,7 +141,7 @@ the one pending frame (keep-latest), so a camera can push at any rate and the st
 reported as `cold.probe_mode`) and answers the `yolomaster-bench/v1` document the CLI's `--bench`
 writes: `model`, `environment` (host, CPU, GPU, threads, commit, build flags, version), `protocol`,
 `cold.infer_ms{n, mean, median, p90, p95, p99, min, max}` (floor-rank percentiles, the phone Bench
-tabs' convention) plus `request_id` and `worker`. The sweep holds that worker for its duration;
+tabs' convention) plus `request_id` and `worker`. The run holds that worker for its duration;
 other workers keep serving. Accuracy is not measured over HTTP: use the CLI's `--accuracy`.
 `tool` names the producer: `cli`, `server`, `macos` (the Core ML runner's CLI and app, whose
 `sustained` block adds a `thermal` array of ProcessInfo states), `android`, `ios`. Any document

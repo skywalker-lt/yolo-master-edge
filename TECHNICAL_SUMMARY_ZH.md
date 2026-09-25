@@ -153,8 +153,8 @@ EsMoE 还必须记录路由语义：静态 ONNX/NCNN 导出采用
 top-k dispatch 并完成独立核验时，才可标记为 `native_sparse`。不同语义的
 结果不得直接计算精度差值。
 
-小目标场景可在单独的 NMS sweep 中比较 `conf`、`small_conf`、面积阈值、
-IoU 与 `max_det`。sweep 的结果不能替代固定协议下的主验收结果；每一次
+小目标场景可在单独的 NMS 参数扫描中比较 `conf`、`small_conf`、面积阈值、
+IoU 与 `max_det`。扫描的结果不能替代固定协议下的主验收结果；每一次
 比较都必须使用同一图像清单和同一类别映射。
 
 ### 2.3 精度指标及单位
@@ -261,7 +261,7 @@ x86_64 上完成过 YOLOv5s ONNX 单图 smoke（6 个检测框；该次运行的
 | 训练与数据 | checkpoint、epoch、数据版本、划分和类别映射 | 工具支持记录，文件尚未提供 | 归档 provenance JSON 与 checkpoint SHA256 |
 | 导出产物 | ONNX checker/opset、NCNN/MNN 文件及哈希 | 导出与结构检查已实现 | 对真实 EsMoE-N 运行并保存 `export_summary.json` |
 | 精度一致性 | 至少 500 张固定验证图、PyTorch 基线、逐图预测 | 评估器和百分点门禁可运行 | 生成三后端 TXT、JSON 指标和清单哈希 |
-| 垂类后处理 | 输入尺寸、letterbox、NMS/小目标阈值 | `visdrone`/`sku110k` profile 已固定 | 用同一协议完成 NMS sweep，并归档配置 |
+| 垂类后处理 | 输入尺寸、letterbox、NMS/小目标阈值 | `visdrone`/`sku110k` profile 已固定 | 用同一协议完成 NMS 参数扫描，并归档配置 |
 | 性能 | 固定线程、预热/重复次数、P50/P95/P99/FPS | C++ CSV 与摘要字段已实现 | 在同一主机上完成至少两个后端的原始日志 |
 | 平台与发布 | 两个平台的构建/运行记录、Release 产物 | Ubuntu x86_64 L1 smoke；无第二平台实测 | 补 Windows/ARM64 原生日志及模型 Release |
 

@@ -38,7 +38,7 @@
 // --warmup untimed infers, --iters timed infers, round median recorded), --idle-ms between
 // variants. Reported per (variant, threads): median of round medians, min round median,
 // p90 of the last round. Threads are irrelevant on the GPU: the Vulkan variants run ONCE
-// per model after the CPU sweep (same warmup/iters/rounds, threads=gpu) and the summary line
+// per model after the CPU pass (same warmup/iters/rounds, threads=gpu) and the summary line
 // carries the first inference after load separately as first_ms= (pipeline / shader compile,
 // which the warmup otherwise absorbs). CPU output lines are unchanged by the GPU variants.
 // Exit code is non-zero only on load / input failures.
@@ -78,7 +78,7 @@ struct Args {
     std::string shape = "3,640,640";
     std::string threads = "1,2,4,big";
 #if NCNN_VULKAN
-    // Vulkan-enabled ncnn (Android SDK, Jetson): the GPU path is part of the default sweep.
+    // Vulkan-enabled ncnn (Android SDK, Jetson): the GPU path is part of the default run.
     std::string variants = "fp32,fp16,int8+fp32,int8+fp16,vulkan";
 #else
     std::string variants = "fp32,fp16,int8+fp32,int8+fp16";
