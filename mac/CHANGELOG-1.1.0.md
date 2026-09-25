@@ -12,7 +12,7 @@ Compiled from `git diff v1.0.0-macos..HEAD -- mac/` (22 commits, +2,152 / -456 l
 | Sources/YOLOMasterApp/Zoom.swift | +137 (new) |
 | Sources/YOLOMasterKit/Pipeline.swift | +111 |
 | Sources/YOLOMasterCoreML/main.swift | +36 |
-| Info.swift / Camera.swift / License.swift / Annotate.swift | threading + copy sweeps |
+| Info.swift / Camera.swift / License.swift / Annotate.swift | threading + copy passes |
 | Resources/AppIcon.{png,icns} | replaced |
 | RELEASE_NOTES-1.1.0.md | new (1.0.0 notes, README, DISTRIBUTING removed from main earlier, faaf946) |
 

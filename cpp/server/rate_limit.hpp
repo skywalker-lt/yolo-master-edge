@@ -24,7 +24,7 @@ public:
         v.limit = burst;
         const auto now = Clock::now();
         std::lock_guard<std::mutex> g(m_);
-        if (++calls_ % 4096 == 0) sweep(now);
+        if (++calls_ % 4096 == 0) purge(now);
         auto& b = buckets_[key];
         if (b.last.time_since_epoch().count() == 0) { b.tokens = burst; b.last = now; }
         const double dt = std::chrono::duration<double>(now - b.last).count();
@@ -44,7 +44,7 @@ public:
 
 private:
     struct Bucket { double tokens = 0; Clock::time_point last{}; };
-    void sweep(Clock::time_point now) {
+    void purge(Clock::time_point now) {
         for (auto it = buckets_.begin(); it != buckets_.end();) {
             if (std::chrono::duration<double>(now - it->second.last).count() > 600.0) it = buckets_.erase(it);
             else ++it;

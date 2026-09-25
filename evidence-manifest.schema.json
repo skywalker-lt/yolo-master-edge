@@ -30,7 +30,7 @@
         "letterbox": {"type": "boolean"},
         "small_conf": {
           "type": "number", "minimum": -1, "maximum": 1,
-          "description": "Optional confidence floor for boxes below small_area; -1 disables the sweep."
+          "description": "Optional confidence floor for boxes below small_area; -1 disables the small-object pass."
         },
         "small_area": {
           "type": "number", "minimum": 0,

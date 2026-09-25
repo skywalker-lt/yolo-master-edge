@@ -165,7 +165,7 @@ mixed-INT8 beat fp16 there - need the arm64 device:
 
 `android/app` is the Android port of the iOS app (Live / Photo / Bench / Settings), built on the
 pod as `android/app/build/outputs/apk/release/app-release.apk` and shipped in the S26 bundle with
-`run_s26_app_install.sh`. Its Bench tab sweeps every bundled model over GPU (Vulkan) and CPU with
+`run_s26_app_install.sh`. Its Bench tab runs every bundled model over GPU (Vulkan) and CPU with
 the same warmup/iters protocol, so the GPU-vs-CPU-fp16-vs-INT8 comparison on the phone comes
 straight out of the app (History + CSV share). Default unit = GPU; INT8 entries force CPU.
 
@@ -218,7 +218,7 @@ they now carry a `vulkan` variant / row (`ncnn_bench --variants ...,vulkan`, `La
 `useVulkan=true`, both reporting `first_ms=` for the pipeline-compile first inference), pending a
 device run; until then the app's Bench tab is the only GPU-vs-CPU measurement.
 
-### GPU (Vulkan) vs CPU, from the app's Bench tab (MEASURED on the S26, 2026-09-08, cold sweep,
+### GPU (Vulkan) vs CPU, from the app's Bench tab (MEASURED on the S26, 2026-09-08, cold run,
 warmup 10 / 50 timed, pure model time, medians)
 
 | model | GPU (ncnn-Vulkan) | CPU fp16 | CPU int8+fp16 |
@@ -245,7 +245,7 @@ severe-throttling threshold) and the prime-core clock at 1382-1497 MHz against
 `cpuinfo_max_freq` = 4,742,400 kHz, i.e. the cores were clamped to ~30% of their ceiling.
 85 ms x (4.74 / 1.45) = 278 ms, which is the Live number. Camera pipeline + continuous inference
 + screen + USB charging push a Samsung flagship into its clamp within a minute; the bench's
-cold-sweep numbers are the first-seconds performance only. Consequences: (1) under the clamp the
+cold-run numbers are the first-seconds performance only. Consequences: (1) under the clamp the
 GPU is the most efficient unit (8 vs 5-7 fps), so GPU stays the default; (2) the Sustained bench
 mode (3 min, last-quarter median + throttle %) is the number to quote for this device; (3) the
 Live HUD now flags `throttled` (headroom >= 0.9, red tachometer) so a slow reading is never

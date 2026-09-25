@@ -102,11 +102,11 @@ int main(int argc, char** argv) {
     app.add_option("--export-labels", export_labels, "dir to write annotation labels (WYSIWYG at the current conf/iou/nms settings)");
     app.add_option("--label-format", label_format, "yolo|coco|voc")->default_str("yolo");
     app.add_option("--sampling", sampling, "video label export: all|1s|N (every Nth frame)")->default_str("1s");
-    app.add_option("--bench", bench_mode, "off|cold|sustained: benchmark mode (yolomaster-bench/v1 JSON): gray-probe sweep "
+    app.add_option("--bench", bench_mode, "off|cold|sustained: benchmark mode (yolomaster-bench/v1 JSON): gray-probe run "
                    "(cold: --bench-warmup + --bench-iters; sustained: a --bench-minutes loop) plus per-stage stats of the "
                    "dataset pass; images/dirs/dataset.yaml only")->default_str("off");
-    app.add_option("--bench-iters", bench_iters, "timed probe forwards in the cold sweep")->capture_default_str();
-    app.add_option("--bench-warmup", bench_warmup, "untimed probe forwards before the sweep")->capture_default_str();
+    app.add_option("--bench-iters", bench_iters, "timed probe forwards in the cold run")->capture_default_str();
+    app.add_option("--bench-warmup", bench_warmup, "untimed probe forwards before the timed run")->capture_default_str();
     app.add_option("--bench-minutes", bench_minutes, "sustained mode: loop duration")->capture_default_str();
     app.add_option("--bench-json", bench_json, "write the bench result JSON here (default <out>/bench.json)");
     app.add_option("--accuracy", accuracy, "score the source with the in-process mAP: a YOLO labels dir, or 'auto' to map "
@@ -463,9 +463,9 @@ int main(int argc, char** argv) {
     } else {
         imgs = gather_images(source, limit);
         if (imgs.empty()) { std::cerr << "no inputs resolved from source: " << source << "\n"; return 4; }
-        if (bench_on) {     // the probe sweep doubles as the warm-up of the dataset pass
+        if (bench_on) {     // the probe run doubles as the warm-up of the dataset pass
             bres.has_cold = true;
-            bres.cold = bench::cold_sweep(*be, cfg, bench_warmup, bench_iters);
+            bres.cold = bench::cold_run(*be, cfg, bench_warmup, bench_iters);
             std::cout << "[bench] cold probe " << bres.cold.probe_mode << ": infer median=" << bres.cold.infer_ms.median
                       << "ms p90=" << bres.cold.infer_ms.p90 << " min=" << bres.cold.infer_ms.min
                       << " (n=" << bres.cold.infer_ms.n << ")\n";

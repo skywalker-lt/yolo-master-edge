@@ -3,7 +3,7 @@
 // same probe (gray 114 at the model input size), same sustained definition (median of the slowest
 // quarter vs the cold median), so a Mac row sits next to a Linux or phone row in one table.
 //
-// Cold sweep = `Detector.inferOnly` (Core ML prediction alone, probe_mode "infer_only"). The
+// Cold run = `Detector.inferOnly` (Core ML prediction alone, probe_mode "infer_only"). The
 // dataset pass collects Result.preMs / inferMs / postMs per image; the accuracy pass runs the val
 // protocol (conf 0.001, IoU 0.7, max_det 300; the Kit's decode is multi-label already) and scores it
 // in process with the txt-rounded values, so the number equals scoring a --save-txt dump.
@@ -174,7 +174,7 @@ public enum BenchRunner {
     /// `warmup` untimed then `iters` timed Core ML predictions on the probe (probe_mode "infer_only").
     /// `onSample(index, ms)` streams every timed iteration (a live chart); `cancel()` stops early and
     /// the statistics cover what was collected.
-    public static func coldSweep(_ det: Detector, warmup: Int, iters: Int,
+    public static func coldRun(_ det: Detector, warmup: Int, iters: Int,
                                  cancel: (() -> Bool)? = nil, onSample: ((Int, Double) -> Void)? = nil) -> BenchDocument.Cold {
         guard let probe = probeImage(det.imgsz) else { return BenchDocument.Cold(infer_ms: StageStats([]), probe_mode: "infer_only") }
         for _ in 0..<max(warmup, 0) {

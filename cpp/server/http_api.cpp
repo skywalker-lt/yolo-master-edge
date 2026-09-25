@@ -488,8 +488,8 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
         });
     });
 
-    // ---- bench: probe sweep on one worker of a loaded model (yolomaster-bench/v1 JSON) ----
-    add_route([]{ auto r = R("POST", "/v1/bench", "bench", "probe sweep on one worker of a loaded model (yolomaster-bench/v1)"); r.query = {Q("model", "string", "model id"), Q("warmup", "integer", "untimed forwards (default 10)"), Q("iters", "integer", "timed forwards (default 50)")}; r.request_ctypes = {"application/octet-stream"}; r.responses = {{200, "BenchResult"}, {404, "Error"}, {503, "Error"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
+    // ---- bench: probe run on one worker of a loaded model (yolomaster-bench/v1 JSON) ----
+    add_route([]{ auto r = R("POST", "/v1/bench", "bench", "probe run on one worker of a loaded model (yolomaster-bench/v1)"); r.query = {Q("model", "string", "model id"), Q("warmup", "integer", "untimed forwards (default 10)"), Q("iters", "integer", "timed forwards (default 50)")}; r.request_ctypes = {"application/octet-stream"}; r.responses = {{200, "BenchResult"}, {404, "Error"}, {503, "Error"}}; return r; }(), [&](std::shared_ptr<Pending> p, Req* req) {
         std::string model_id;
         WorkerPool* pool = resolve_pool(st, req, p, model_id);
         if (!pool) return;
@@ -499,7 +499,7 @@ bool run_http_loop(ServerState& st, int loop_index, std::atomic<int>& bound_coun
         read_body(p, max_body, [&st, p, pool, breq, model_id](std::string&&) {
             Job j = make_job(st, p, std::string(), InferParams{});
             j.bench = breq;
-            j.deadline = j.enqueued + std::chrono::seconds(600);   // a sweep is long by design
+            j.deadline = j.enqueued + std::chrono::seconds(600);   // a bench run is long by design
             j.done = [p, model_id](InferResult&& r) {
                 auto rp = std::make_shared<InferResult>(std::move(r));
                 deliver(p, [rp, model_id](Pending& pp) {

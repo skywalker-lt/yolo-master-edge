@@ -10,7 +10,7 @@ the Linux CLI would produce for the same detections.
 
 ## New: Bench (sidebar section) and `--bench` / `--accuracy` (CLI)
 
-- **Cold sweep**: warm-up then timed Core ML predictions on a gray-114 probe at the model's input
+- **Cold run**: warm-up then timed Core ML predictions on a gray-114 probe at the model's input
   size (`inferOnly`, the "model-only" latency), reported as floor-rank median / p90 / p95 / p99,
   the convention the phone Bench tabs and the Linux CLI already use.
 - **Sustained**: a timed loop (0.5 to 10 minutes) with one median per second, the throttle

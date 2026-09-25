@@ -46,7 +46,7 @@ for id in esmoen v01n; do
   done
   log "parity ort cpu vs cuda (tol 0.01 px):"; $PAR "$OUT/ort_${id}_cpu" "$OUT/ort_${id}_cuda" --tol 0.01 | tail -1 | tee -a "$OUT/log.txt"
 
-  log "== 4. bench JSON on TensorRT (cold sweep, probe_mode, device name) =="
+  log "== 4. bench JSON on TensorRT (cold run, probe_mode, device name) =="
   run -m "$ONNX" -b trt --precision fp16 -s "$DIR" --limit 10 --bench cold --bench-iters 50 --bench-warmup 10 \
       --bench-json "$OUT/bench_trt_$id.json" --no-save --quiet | grep -E "^\[bench\]" | tee -a "$OUT/log.txt"
   python3 -c "import json;j=json.load(open('$OUT/bench_trt_$id.json'));print('  gpu:',j['environment']['gpu_name'],'| probe:',j['cold']['probe_mode'],'| ep:',j['model']['execution_provider'])" | tee -a "$OUT/log.txt"

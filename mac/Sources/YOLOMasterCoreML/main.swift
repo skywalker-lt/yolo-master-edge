@@ -178,8 +178,8 @@ var images: [URL] = kind == .folder ? listImages(src) : (kind == .image ? [src] 
 if limit > 0 && images.count > limit { images = Array(images.prefix(limit)) }
 
 if benchMode != .off {
-    // the probe sweep doubles as the warm-up of the dataset pass (same order as the Linux CLI)
-    let cold = BenchRunner.coldSweep(detector, warmup: benchWarmup, iters: benchIters)
+    // the probe run doubles as the warm-up of the dataset pass (same order as the Linux CLI)
+    let cold = BenchRunner.coldRun(detector, warmup: benchWarmup, iters: benchIters)
     print("[bench] cold probe \(cold.probe_mode): infer median=\(g(cold.infer_ms.median))ms p90=\(g(cold.infer_ms.p90)) min=\(g(cold.infer_ms.min)) (n=\(cold.infer_ms.n))")
     var card = BenchEnvironment.model(detector)
     card.ep_note = "preproc=\(detector.effectivePreprocDevice.rawValue)"

@@ -22,7 +22,7 @@ Core ML blockers handled here, all edge-side (the fork worktree is never modifie
 
 Known open risk (documented in ultralytics/cfg/export-capability-matrix.yaml): the MoT
 deformable expert's F.grid_sample(align_corners=True). Conversion either maps it to MIL
-resample or fails loudly per target; the sweep continues either way.
+resample or fails loudly per target; the batch continues either way.
 """
 
 from __future__ import annotations

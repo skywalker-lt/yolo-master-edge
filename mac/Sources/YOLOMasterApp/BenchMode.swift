@@ -2,7 +2,7 @@
 // units, preprocessing device, warm-up, timed iterations, sustained minutes, dataset / accuracy
 // set) and the run history; the stage becomes a dashboard that streams the run as it happens:
 // a per-iteration latency chart, the per-second sustained trace with its thermal band, a
-// thermometer, the stat cards, the sweep table and the accuracy per-class chart.
+// thermometer, the stat cards, the results table and the accuracy per-class chart.
 //
 // The measurements come from the Kit's BenchRunner / AccuracyRunner (the same probe, statistics
 // and protocol as the CLI's --bench / --accuracy, through the portable core), so every run also
@@ -20,7 +20,7 @@ enum AppMode: String, CaseIterable { case inference = "Inference", bench = "Benc
 // MARK: - data
 
 enum BenchKind: String, CaseIterable, Codable {
-    case cold = "Cold sweep", sustained = "Sustained", dataset = "Dataset", accuracy = "Accuracy"
+    case cold = "Cold run", sustained = "Sustained", dataset = "Dataset", accuracy = "Accuracy"
     var icon: String {
         switch self { case .cold: return "bolt.fill"; case .sustained: return "flame.fill"
         case .dataset: return "photo.stack"; case .accuracy: return "checkmark.seal" }
@@ -81,7 +81,11 @@ final class BenchStore: ObservableObject {
             .appendingPathComponent("YOLOMaster", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("bench_history.json")
-        if let d = try? Data(contentsOf: url), let r = try? JSONDecoder().decode([BenchRecord].self, from: d) { records = r }
+        if let d = try? Data(contentsOf: url) {
+            if let r = try? JSONDecoder().decode([BenchRecord].self, from: d) { records = r }
+            else if let t = String(data: d, encoding: .utf8),
+                    let r = try? JSONDecoder().decode([BenchRecord].self, from: Data(t.replacingOccurrences(of: "\"Cold run\"", with: "\"Cold run\"").utf8)) { records = r }
+        }
     }
     func add(_ r: BenchRecord) { records.insert(r, at: 0); save() }
     func remove(_ ids: Set<UUID>) { records.removeAll { ids.contains($0.id) }; save() }
@@ -463,7 +467,7 @@ final class BenchModel: ObservableObject {
                     switch kind {
                     case .cold:
                         self.main { self.phase = "\(name) · \(c.rawValue): warm-up \(warm), then \(iters) timed iterations" }
-                        let cold = BenchRunner.coldSweep(det, warmup: warm, iters: iters, cancel: { self.isCancelled }) { i, ms in
+                        let cold = BenchRunner.coldRun(det, warmup: warm, iters: iters, cancel: { self.isCancelled }) { i, ms in
                             cell.samples.append(ms); cell.sampleTimes.append(Date().timeIntervalSince(cellStart)); self.push(ms); sampleThermal()
                             if i % 5 == 0 { let p = Double(i + 1) / Double(max(iters, 1)); self.main { self.progress = p } }
                         }
@@ -583,7 +587,7 @@ struct BenchSidebar: View {
                         if i > 0 { Divider() }
                         let on = bench.selectedModels.contains(u)
                         HStack(spacing: 6) {
-                            fileRow(icon: on ? "checkmark.circle.fill" : "circle", title: on ? "Model · in the sweep" : "Model · skipped",
+                            fileRow(icon: on ? "checkmark.circle.fill" : "circle", title: on ? "Model · included" : "Model · skipped",
                                     value: u.deletingPathExtension().lastPathComponent, set: on, chevron: false) {
                                 if on { bench.selectedModels.remove(u) } else { bench.selectedModels.insert(u) }
                             }
@@ -951,8 +955,8 @@ struct BenchDashboard: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
 
-    /// Cold sweep: the latency distribution of the timed iterations (fills up live), with the
-    /// median / p90 / p99 marked. After a sweep every cell's distribution is overlaid.
+    /// Cold run: the latency distribution of the timed iterations (fills up live), with the
+    /// median / p90 / p99 marked. After a multi-cell run every cell's distribution is overlaid.
     private var histogramChart: some View {
         let shown = seriesToShow
         let all = shown.series.flatMap { $0.points.map(\.ms) }

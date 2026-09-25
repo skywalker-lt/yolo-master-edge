@@ -103,7 +103,7 @@ class Client:
         return self._req("GET", "/metrics")[2].decode()
 
     def bench(self, model: Optional[str] = None, warmup: int = 10, iters: int = 50) -> dict:
-        """POST /v1/bench: gray-probe sweep on one worker of a loaded model -> yolomaster-bench/v1 JSON."""
+        """POST /v1/bench: gray-probe run on one worker of a loaded model -> yolomaster-bench/v1 JSON."""
         _, _, body = self._req("POST", "/v1/bench", b"", "application/octet-stream",
                                {"model": model, "warmup": warmup, "iters": iters})
         return json.loads(body)

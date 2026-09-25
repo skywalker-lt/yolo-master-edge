@@ -48,7 +48,7 @@ Everything runs on the phone; nothing you capture leaves it. Requires Android 7.
 - **📹 Live** - Real-time CameraX detection with an async overlay, FPS tachometer, per-stage latency and thermal state, lens switching, tap-to-focus, torch, live conf/IoU tuning without pausing inference, pause/resume, and a full-resolution
 shutter that bakes the boxes and masks into the saved photo (`Pictures/YOLO-Master`). The HUD shows the resolved backend (`ncnn-CPU-fp16`, `ncnn-Vulkan`, `ort-QNN-htp-fp16`, ...) and, on the NPU, how many graph nodes run on the HTP.
 - **📸 Photo** - Batch detection over up to 100 library images, 3-up gallery and zoomable pager, per-image and batch stats, segmentation masks, conf/IoU retune from cached raw outputs (one forward, many decodes), export of annotated images.
-- **🎛️  Bench** - Cold sweep of every bundled model across runtime and unit (ncnn CPU, ncnn GPU, ONNX CPU, ONNX NPU) with pre/inference/decode breakdowns, sustained thermal runs with a latency sparkline and thermal timeline, run history with
+- **🎛️  Bench** - Cold run of every bundled model across runtime and unit (ncnn CPU, ncnn GPU, ONNX CPU, ONNX NPU) with pre/inference/decode breakdowns, sustained thermal runs with a latency sparkline and thermal timeline, run history with
 per-run graphs, CSV share.
 - **⚙️  Settings** - About, licenses, privacy, CPU-inference toggle, ONNX Runtime section (NPU performance mode, prefer-quantized switch, NPU cache reset, the measured-default table), custom model import (ncnn dirs or ONNX), erase history.
 
@@ -110,7 +110,7 @@ Native iOS SwiftUI app for on-device YOLO-Master detection and segmentation, pow
 
 - **📸 Photo** - Batch detection over images you pick from your library, up to 100 images at a time. Per-image and batch stats, segmentation masks, live conf/IoU tuning, and export of annotated images back to Photos.
 
-- **🎛️ Bench** - On-device benchmarking on all devices. A Cold Sweep measures every bundled model across compute units (Neural Engine (ANE), GPU, CPU) with expandable pre/inference/decode stage breakdowns, and a Sustained mode runs a thermal-throttle test with a live latency heatbeat sparkline and a colored state timeline. Pause/resume, a persistent run History vault (with per-run graphs) and CSV export.
+- **🎛️ Bench** - On-device benchmarking on all devices. A Cold run measures every bundled model across compute units (Neural Engine (ANE), GPU, CPU) with expandable pre/inference/decode stage breakdowns, and a Sustained mode runs a thermal-throttle test with a live latency heatbeat sparkline and a colored state timeline. Pause/resume, a persistent run History vault (with per-run graphs) and CSV export.
 
 - **⚙️ Settings** - App info and an expandable About card (wihich explains the MoE architecture summary with Paper, Model / App Repo links), Licenses and Acknowledgements (from macOS build), a Privacy and Security summary, a CPU-inference opt-in for Live and Photo modes, erase-all benchmark history, and a Beta importer for your own trained Core ML models (.mlpackage / .mlmodelc / .mlmodel).
 
@@ -410,7 +410,7 @@ See `tests/run_tests.sh` for the 16-test robustness battery.
 ### Benchmark mode, on-device accuracy and tracking (v1.2.0)
 
 ```bash
-# cold probe sweep (10 warm-up + 50 timed forwards on a gray 640 probe) plus per-stage stats of the
+# cold probe run (10 warm-up + 50 timed forwards on a gray 640 probe) plus per-stage stats of the
 # dataset pass, written as one yolomaster-bench/v1 JSON (the schema the Android / iOS Bench tabs will share)
 yolomaster_edge -m model.onnx -s images/ --bench cold --bench-json bench.json --no-save --quiet
 # sustained: a 2-minute loop, cold vs slowest-quarter median, throttle percentage, one-second sparkline

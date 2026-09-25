@@ -47,7 +47,7 @@ static bool probe_once(Backend& be, const cv::Mat& probe, const Config& cfg, boo
     try { (void)be.infer(probe, cfg); return true; } catch (const std::exception&) { return false; }
 }
 
-ColdResult cold_sweep(Backend& be, const Config& cfg, int warmup, int iters) {
+ColdResult cold_run(Backend& be, const Config& cfg, int warmup, int iters) {
     ColdResult r;
     const cv::Mat probe = probe_image(cfg.imgsz);
     bool infer_only = true;

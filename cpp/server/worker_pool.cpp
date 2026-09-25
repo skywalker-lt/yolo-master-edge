@@ -155,13 +155,13 @@ InferResult WorkerPool::run_job(Backend& be, const Config& base, int wid, Job& j
         r.http_status = 504; r.error = "deadline exceeded while queued (" + std::to_string(int(r.queue_ms)) + " ms)";
         return r;
     }
-    // ---- bench job: probe sweep on this worker's backend, no image ----
+    // ---- bench job: probe run on this worker's backend, no image ----
     if (job.bench) {
         bench::BenchResult br;
         br.tool = "server";
         br.timestamp = bench::timestamp_utc();
         br.has_cold = true;
-        br.cold = bench::cold_sweep(be, base, job.bench->warmup, job.bench->iters);
+        br.cold = bench::cold_run(be, base, job.bench->warmup, job.bench->iters);
         br.model = bench::model_info(be, spec_.path, spec_.backend, spec_.precision, base);
         br.model.id = spec_.id;
         br.env = bench::collect_env(be, spec_.threads);
