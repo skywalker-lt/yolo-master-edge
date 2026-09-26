@@ -51,7 +51,8 @@ struct BenchCell: Identifiable, Codable {
     var sustained: BenchDocument.Sustained?
     var dataset: BenchDocument.Dataset?
     var accuracy: BenchDocument.Accuracy?
-    var samples: [Double] = []           // the per-iteration series (model ms; dataset: total ms)
+    var classNames: [String] = []        // from the model metadata (the accuracy chart names classes on hover)
+    var samples: [Double] = []           // the per-iteration series (model ms)
     var sampleTimes: [Double] = []       // seconds since the cell's run started, parallel to samples
     var thermal: [Int] = []              // thermal level per second (sustained) or per sample bucket
     var document: BenchDocument?
@@ -388,8 +389,12 @@ final class BenchModel: ObservableObject {
         }
     }
 
+    static let maxModels = 5
     func addModel(_ url: URL) {
-        if !models.contains(url) { models.append(url) }
+        if !models.contains(url) {
+            guard models.count < BenchModel.maxModels else { note = "At most \(BenchModel.maxModels) models in the list; remove one first."; return }
+            models.append(url)
+        }
         selectedModels.insert(url)
     }
     func removeModel(_ url: URL) { models.removeAll { $0 == url }; selectedModels.remove(url) }
@@ -449,6 +454,7 @@ final class BenchModel: ObservableObject {
                         continue
                     }
                     var cell = BenchCell(modelName: name, modelPath: url.path, compute: c, preproc: det.effectivePreprocDevice.rawValue)
+                    cell.classNames = det.classNames
                     // new cell: new clock and generation; the chart and any in-flight samples of the previous cell are dropped
                     self.cellStart = Date()
                     let cellStart = self.cellStart
@@ -561,8 +567,24 @@ struct BenchSidebar: View {
     @ObservedObject var store: BenchStore
     @Binding var selectedRecord: UUID?
     let brand: Color
+    @State private var confirmClear = false
+    @State private var pendingDelete: UUID? = nil
 
     var body: some View {
+        sidebarScroll
+            .confirmationDialog("Delete every saved run?", isPresented: $confirmClear, titleVisibility: .visible) {
+                Button("Delete all runs", role: .destructive) { store.clear(); selectedRecord = nil }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text("\(store.records.count) runs will be removed from the history. This cannot be undone.") }
+            .confirmationDialog("Delete this run?", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }), titleVisibility: .visible) {
+                Button("Delete run", role: .destructive) {
+                    if let id = pendingDelete { store.remove([id]); if selectedRecord == id { selectedRecord = nil } }
+                    pendingDelete = nil
+                }
+                Button("Cancel", role: .cancel) { pendingDelete = nil }
+            } message: { Text(store.records.first { $0.id == pendingDelete }?.name ?? "") }
+    }
+    private var sidebarScroll: some View {
         ScrollView {
             VStack(spacing: 14) {
                 box("Models", "cube.box.fill") {
@@ -579,7 +601,11 @@ struct BenchSidebar: View {
                         }
                     }
                     if !bench.models.isEmpty { Divider() }
-                    fileRow(icon: "plus.circle", title: "Add model", value: "Choose .mlpackage / .mlmodelc…", set: false) { addModel() }
+                    if bench.models.count < BenchModel.maxModels {
+                        fileRow(icon: "plus.circle", title: "Add model", value: "Choose .mlpackage / .mlmodelc…", set: false) { addModel() }
+                    } else {
+                        Text("Five models at most; remove one to add another.").font(.caption2).foregroundStyle(.tertiary)
+                    }
                 }
                 box("Compute", "cpu") {
                     row("Units") {
@@ -599,16 +625,14 @@ struct BenchSidebar: View {
                         }
                     }.disabled(bench.running)
                     row("Preprocess") {
-                        Picker("", selection: $bench.preproc) { Text("GPU (Metal)").tag(PreprocDevice.gpu); Text("CPU").tag(PreprocDevice.cpu) }
-                            .pickerStyle(.segmented).labelsHidden().frame(maxWidth: .infinity)
+                        SegmentedButtons(options: [(PreprocDevice.gpu, "GPU (Metal)"), (PreprocDevice.cpu, "CPU")], selection: $bench.preproc, tint: brand)
                     }.disabled(bench.running)
                     Text("ANE = all compute units (Core ML decides), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 box("Protocol", "list.bullet.clipboard") {
-                    Picker("", selection: $bench.kind) {
-                        ForEach(BenchKind.allCases, id: \.self) { Label($0.rawValue, systemImage: $0.icon).tag($0) }
-                    }.pickerStyle(.menu).labelsHidden().disabled(bench.running)
+                    SegmentedButtons(options: BenchKind.allCases.map { ($0, $0.rawValue) }, selection: $bench.kind, tint: brand)
+                        .disabled(bench.running)
                     Text(bench.kind.blurb).font(.caption2).foregroundStyle(.secondary)
                     if bench.kind == .sustained { slider("Minutes", $bench.minutes, 0.5...30) }
                     if bench.kind == .accuracy {
@@ -635,13 +659,13 @@ struct BenchSidebar: View {
                             .background(RoundedRectangle(cornerRadius: 6).fill(selectedRecord == r.id ? brand.opacity(0.12) : .clear))
                             .onTapGesture { selectedRecord = selectedRecord == r.id ? nil : r.id }
                             .contextMenu {
-                                Button("Delete") { store.remove([r.id]); if selectedRecord == r.id { selectedRecord = nil } }
+                                Button("Delete…") { pendingDelete = r.id }
                             }
                         }
                         HStack {
                             Button { bench.exportCSV() } label: { Label("Export CSV", systemImage: "square.and.arrow.up") }
                             Spacer()
-                            Button(role: .destructive) { store.clear(); selectedRecord = nil } label: { Label("Clear", systemImage: "trash") }
+                            Button(role: .destructive) { confirmClear = true } label: { Label("Clear…", systemImage: "trash") }
                         }.controlSize(.small)
                     }
                 }
@@ -1080,7 +1104,9 @@ struct BenchDashboard: View {
         return VStack(alignment: .leading, spacing: 6) {
             Text(accuracyMode ? "Cells side by side: mAP50-95 (bar) and mAP50 (tick) · click a row to inspect it" : "Cells side by side: median (bar) and p90 (tick) · click a row to inspect it")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ScrollViewReader { sp in
             ScrollView(.vertical) {
+            ZStack(alignment: .top) {
             Chart {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
                     if focusCell?.id == r.id {   // the selected cell: a light band across its whole row
@@ -1118,6 +1144,13 @@ struct BenchDashboard: View {
             }
             .frame(height: CGFloat(max(rows.count, 1)) * 40 + 40)
             .padding(.trailing, 14)   // room for the scrollbar
+            VStack(spacing: 0) {   // one invisible anchor per row so the selection can be scrolled to
+                ForEach(rows) { r in Color.clear.frame(height: 40).id(r.id) }
+            }
+            .padding(.top, 8).allowsHitTesting(false)
+            }
+            }
+            .onChange(of: bench.selectedCellID) { if let id = bench.selectedCellID { withAnimation { sp.scrollTo(id, anchor: .center) } } }
             }
         }
         .padding(12)
@@ -1188,6 +1221,7 @@ struct BenchDashboard: View {
             resultsRow(headers, bold: true, extraWide: hasExtra, trailing: { Spacer().frame(width: 22, height: 1) })
                 .frame(height: 18).padding(.horizontal, 6)
             Divider()
+            ScrollViewReader { sp in
             ScrollView(.vertical) {
                 VStack(spacing: 0) {
                     ForEach(shownCells) { c in
@@ -1200,11 +1234,14 @@ struct BenchDashboard: View {
                         .background(RoundedRectangle(cornerRadius: 5).fill(focusCell?.id == c.id ? BenchDashboard.tint(cellColor(c), 0.82) : .clear))
                         .contentShape(Rectangle())
                         .onTapGesture { bench.selectedCellID = c.id }
+                        .id(c.id)
                     }
                 }
                 .padding(.trailing, 14)   // room for the scrollbar
             }
             .frame(height: rowH * CGFloat(min(shownCells.count, 5)))
+            .onChange(of: bench.selectedCellID) { if let id = bench.selectedCellID { withAnimation { sp.scrollTo(id, anchor: .center) } } }
+            }
         }
         .fixedSize(horizontal: false, vertical: true)   // the card is exactly as tall as header + rows
         .padding(12)
@@ -1236,21 +1273,71 @@ struct BenchDashboard: View {
         return ""
     }
 
+    @State private var hoverClass: Int? = nil
     private func accuracyChart(_ a: BenchDocument.Accuracy) -> some View {
         let rows = a.per_class.sorted { $0.ap5095 > $1.ap5095 }
+        let names = focusCell?.classNames ?? []
+        func name(_ id: Int) -> String { id < names.count ? names[id] : "class \(id)" }
+        let hovered = rows.first { $0.class_id == hoverClass }
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Accuracy per class (AP50-95, \(rows.count) classes)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text("Accuracy per class (AP50-95, \(rows.count) classes)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                if let h = hovered {
+                    Text(name(h.class_id)).font(.caption.weight(.semibold)).foregroundStyle(.primary)
+                    Text(String(format: "AP50-95 %.3f · AP50 %.3f · %d GT · %d predictions", h.ap5095, h.ap50, h.n_gt, h.n_pred))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                } else {
+                    Text("hover a bar for the class").font(.caption2).foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
             Chart {
                 ForEach(rows, id: \.class_id) { c in
-                    BarMark(x: .value("class", "\(c.class_id)"), y: .value("AP", c.ap5095)).foregroundStyle(brand.opacity(0.85))
+                    BarMark(x: .value("class", "\(c.class_id)"), y: .value("AP", c.ap5095))
+                        .foregroundStyle(hoverClass == nil || hoverClass == c.class_id ? brand : brand.opacity(0.35))
                 }
                 RuleMark(y: .value("mAP", a.map5095)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
             }
-            .chartYScale(domain: 0...1).chartXAxis { AxisMarks(values: .automatic(desiredCount: 20)) }
+            .chartYScale(domain: 0...1)
+            .chartXAxis(.hidden)   // eighty class ids do not fit; the hover names the class instead
+            .chartOverlay { proxy in
+                GeometryReader { geo in
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let loc):
+                                guard let anchor = proxy.plotFrame else { return }
+                                let plot = geo[anchor]
+                                if let id: String = proxy.value(atX: loc.x - plot.origin.x) { hoverClass = Int(id) } else { hoverClass = nil }
+                            case .ended: hoverClass = nil
+                            }
+                        }
+                }
+            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+    }
+}
+
+/// Equal-width bordered buttons that fill their row (the Units row look), used wherever a segmented
+/// picker would size itself to its labels and leave the row ragged.
+struct SegmentedButtons<T: Hashable>: View {
+    let options: [(T, String)]
+    @Binding var selection: T
+    let tint: Color
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, o in
+                let on = selection == o.0
+                Button { selection = o.0 } label: {
+                    Text(o.1).font(.callout).lineLimit(1).frame(maxWidth: .infinity).padding(.vertical, 4)
+                }
+                .buttonStyle(.bordered).tint(on ? tint : .secondary)
+                .background(RoundedRectangle(cornerRadius: 6).fill(on ? tint.opacity(0.14) : .clear))
+            }
+        }
     }
 }
 

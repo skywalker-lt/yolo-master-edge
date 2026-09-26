@@ -1216,10 +1216,7 @@ struct ContentView: View {
                 Button { showInfo = true } label: { Image(systemName: "info.circle").font(.system(size: 16)) }
                     .buttonStyle(.borderless).help("About & Licenses")
             }
-            Picker("", selection: $appMode) {
-                ForEach(AppMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden().frame(maxWidth: .infinity)
+            SegmentedButtons(options: AppMode.allCases.map { ($0, $0.rawValue) }, selection: $appMode, tint: brandColor)
             .disabled(engine.busy || bench.running)
 
             if appMode == .bench {
@@ -1248,10 +1245,7 @@ struct ContentView: View {
                             }.pickerStyle(.segmented).labelsHidden().disabled(cameraOn)
                         }
                         segRow("Device") {
-                            Picker("", selection: $preprocDevice) {
-                                Text("GPU (Metal)").tag(PreprocDevice.gpu)
-                                Text("CPU").tag(PreprocDevice.cpu)
-                            }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: .infinity)
+                            SegmentedButtons(options: [(PreprocDevice.gpu, "GPU (Metal)"), (PreprocDevice.cpu, "CPU")], selection: $preprocDevice, tint: brandColor)
                         }
                         Text(preprocDevice == .gpu
                              ? "Letterbox, RGB conversion and the input tensor are built by a Metal kernel; the camera feed is read without a copy."
