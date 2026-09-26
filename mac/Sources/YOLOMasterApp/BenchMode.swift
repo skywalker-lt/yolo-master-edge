@@ -738,45 +738,6 @@ struct BenchSidebar: View {
     }
 }
 
-// MARK: - hatch tiles (fixed-size pattern fills, cached per colour and orientation)
-
-enum HatchTiles {
-    enum Kind { case stripes, cross }
-    private static var cache: [String: NSImage] = [:]
-    /// A seamless 12 x 12 pt tile rendered as a 2x bitmap: `bg` with `fg` 45-degree stripes (2 pt
-    /// wide, 6 pt apart) or a grid of 2.6 pt dots. Bitmap-backed so the pattern never resamples.
-    static func tile(_ fg: Color, _ bg: Color, kind: Kind) -> NSImage {
-        let key = "\(fg)|\(bg)|\(kind)"
-        if let t = cache[key] { return t }
-        let pt = 12, scale = 2, px = pt * scale
-        let cs = CGColorSpaceCreateDeviceRGB()
-        let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: px * 4, space: cs,
-                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        ctx.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
-        ctx.setFillColor(NSColor(bg).usingColorSpace(.sRGB)?.cgColor ?? .black); ctx.fill(CGRect(x: 0, y: 0, width: pt, height: pt))
-        let line = NSColor(fg).usingColorSpace(.sRGB)?.cgColor ?? .black
-        switch kind {
-        case .stripes:
-            ctx.setStrokeColor(line); ctx.setLineWidth(2); ctx.setLineCap(.butt)
-            // two stripes per tile, extended past the edges so the tiling joins without a seam
-            for off in [-12.0, -6.0, 0.0, 6.0, 12.0] {
-                ctx.move(to: CGPoint(x: off - 6, y: -6)); ctx.addLine(to: CGPoint(x: off + 18, y: 18))
-            }
-            ctx.strokePath()
-        case .cross:
-            ctx.setStrokeColor(line); ctx.setLineWidth(1.5); ctx.setLineCap(.butt)
-            for off in [-12.0, -6.0, 0.0, 6.0, 12.0] {   // both diagonals
-                ctx.move(to: CGPoint(x: off - 6, y: -6)); ctx.addLine(to: CGPoint(x: off + 18, y: 18))
-                ctx.move(to: CGPoint(x: off - 6, y: 18)); ctx.addLine(to: CGPoint(x: off + 18, y: -6))
-            }
-            ctx.strokePath()
-        }
-        let img = NSImage(cgImage: ctx.makeImage()!, size: NSSize(width: pt, height: pt))
-        cache[key] = img
-        return img
-    }
-}
-
 // MARK: - dashboard
 
 struct BenchDashboard: View {
@@ -817,24 +778,15 @@ struct BenchDashboard: View {
         let n = NSColor(c).usingColorSpace(.sRGB) ?? .gray
         return Color(nsColor: n.blended(withFraction: f, of: .black) ?? n)
     }
-    /// Fill by compute unit: ANE = solid model colour, GPU = diagonal hatch, CPU = horizontal hatch.
-    /// The hatch is a fixed 8-point tile (ImagePaint), so the stripe period is the same on a wide bar,
-    /// a thin bar and a legend swatch (a gradient would stretch with the mark).
-    private func cellFill(_ c: BenchCell) -> AnyShapeStyle {
-        let base = cellColor(c)
-        switch c.compute {
-        case .ane: return AnyShapeStyle(base)
-        case .gpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.7), kind: .stripes)), scale: 1))
-        case .cpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.7), kind: .cross)), scale: 1))
-        }
+    /// The unit is the opacity of the model colour: ANE full, GPU 75%, CPU 50%.
+    private func cellSolid(_ c: BenchCell) -> Color {
+        cellColor(c).opacity(c.compute == .ane ? 1.0 : (c.compute == .gpu ? 0.75 : 0.5))
     }
-    /// The line / dot / text colour of a cell: the model colour (the unit is carried by the pattern).
-    private func cellSolid(_ c: BenchCell) -> Color { cellColor(c) }
+    private func cellFill(_ c: BenchCell) -> AnyShapeStyle { AnyShapeStyle(cellSolid(c)) }
     /// Line dash by compute unit for the time chart: ANE solid, GPU dashed, CPU dotted.
-    private func cellDash(_ c: BenchCell) -> [CGFloat] { c.compute == .ane ? [] : (c.compute == .gpu ? [7, 4] : [2, 4]) }
+    private func cellDash(_ c: BenchCell) -> [CGFloat] { [] }
     private func swatch(_ c: BenchCell) -> some View {
-        RoundedRectangle(cornerRadius: 2).fill(cellFill(c)).frame(width: 16, height: 10)
-            .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(cellColor(c), lineWidth: 1))
+        RoundedRectangle(cornerRadius: 2).fill(cellSolid(c)).frame(width: 14, height: 10)
     }
     // ---- zoom: the charts open on the full data range; the user zooms the value axis (pinch or the
     // Y buttons) and the time axis (X buttons; the chart then scrolls sideways) ----
@@ -1131,20 +1083,6 @@ struct BenchDashboard: View {
             .chartXAxisLabel("ms").chartYAxisLabel("iterations")
             .chartXScale(domain: range)
             .chartYScale(domain: 0...Double(max(counts.max() ?? 1, 1)) * 1.08)
-            .chartOverlay { proxy in   // 1 pt border on every bar
-                GeometryReader { geo in
-                    Canvas { ctx, _ in
-                        guard let anchor = proxy.plotFrame else { return }
-                        let plot = geo[anchor]
-                        for b in bins {
-                            guard let x0 = proxy.position(forX: b.lo), let x1 = proxy.position(forX: b.hi),
-                                  let y0 = proxy.position(forY: 0.0), let y1 = proxy.position(forY: Double(b.n)) else { continue }
-                            let r = CGRect(x: plot.minX + x0, y: plot.minY + y1, width: x1 - x0, height: y0 - y1).insetBy(dx: 0.5, dy: 0.5)
-                            ctx.stroke(Path(r), with: .color(color), lineWidth: 1)
-                        }
-                    }
-                }
-            }
             .gesture(MagnifyGesture().onChanged { v in zoomX = max(1, min(64, pinchBase * v.magnification)) }.onEnded { _ in pinchBase = zoomX })
         }
         .padding(12)
@@ -1193,27 +1131,15 @@ struct BenchDashboard: View {
             }
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
             .chartXScale(domain: 0...xMax)
-            .chartOverlay { proxy in   // borders on every bar, and a click (not hover) picks the row under the pointer
+            .chartOverlay { proxy in   // a click (not hover) picks the row under the pointer
                 GeometryReader { geo in
-                    ZStack {
-                        Canvas { ctx, _ in
-                            guard let anchor = proxy.plotFrame, !rows.isEmpty else { return }
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .onTapGesture { location in
+                            guard let anchor = proxy.plotFrame else { return }
                             let plot = geo[anchor]
-                            let rowH = plot.height / CGFloat(rows.count), barH = rowH * 0.62
-                            for r in rows {
-                                guard let yc = proxy.position(forY: r.name), let x0 = proxy.position(forX: 0.0), let x1 = proxy.position(forX: r.value) else { continue }
-                                let rect = CGRect(x: plot.minX + x0, y: plot.minY + yc - barH / 2, width: x1 - x0, height: barH).insetBy(dx: 0.5, dy: 0.5)
-                                ctx.stroke(Path(rect), with: .color(r.color), lineWidth: 1)
-                            }
+                            let y = location.y - plot.origin.y
+                            if let name: String = proxy.value(atY: y), let r = rows.first(where: { $0.name == name }) { bench.selectedCellID = r.id }
                         }
-                        Rectangle().fill(.clear).contentShape(Rectangle())
-                            .onTapGesture { location in
-                                guard let anchor = proxy.plotFrame else { return }
-                                let plot = geo[anchor]
-                                let y = location.y - plot.origin.y
-                                if let name: String = proxy.value(atY: y), let r = rows.first(where: { $0.name == name }) { bench.selectedCellID = r.id }
-                            }
-                    }
                 }
             }
             .frame(height: CGFloat(max(rows.count, 1)) * 40 + 40)
