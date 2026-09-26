@@ -664,6 +664,7 @@ struct BenchSidebar: View {
                                 Button("Delete") { store.remove([r.id]); if selectedRecord == r.id { selectedRecord = nil } }
                             }
                         }
+                        Text("Up / down arrows walk the runs.").font(.caption2).foregroundStyle(.tertiary)
                         HStack {
                             Button { bench.exportCSV() } label: { Label("Export CSV", systemImage: "square.and.arrow.up") }
                             Spacer()
@@ -740,26 +741,35 @@ struct BenchSidebar: View {
 // MARK: - hatch tiles (fixed-size pattern fills, cached per colour and orientation)
 
 enum HatchTiles {
+    enum Kind { case stripes, dots }
     private static var cache: [String: NSImage] = [:]
-    /// An 8 x 8 pt tile: `bg` with 2 pt `fg` lines, diagonal (top-left to bottom-right, seamless) or
-    /// horizontal. Rendered at 2x so it stays crisp on retina.
-    static func tile(_ fg: Color, _ bg: Color, diagonal: Bool) -> NSImage {
-        let key = "\(fg)|\(bg)|\(diagonal)"
+    /// A seamless 12 x 12 pt tile rendered as a 2x bitmap: `bg` with `fg` 45-degree stripes (2 pt
+    /// wide, 6 pt apart) or a grid of 2.6 pt dots. Bitmap-backed so the pattern never resamples.
+    static func tile(_ fg: Color, _ bg: Color, kind: Kind) -> NSImage {
+        let key = "\(fg)|\(bg)|\(kind)"
         if let t = cache[key] { return t }
-        let size = NSSize(width: 8, height: 8)
-        let img = NSImage(size: size, flipped: false) { rect in
-            NSColor(bg).setFill(); rect.fill()
-            let path = NSBezierPath(); path.lineWidth = 2
-            if diagonal {
-                for off in [-8.0, 0.0, 8.0] {   // three passes so the stripe wraps seamlessly at the tile edges
-                    path.move(to: NSPoint(x: off, y: 0)); path.line(to: NSPoint(x: off + 8, y: 8))
-                }
-            } else {
-                path.move(to: NSPoint(x: 0, y: 4)); path.line(to: NSPoint(x: 8, y: 4))
+        let pt = 12, scale = 2, px = pt * scale
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: px * 4, space: cs,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
+        ctx.setFillColor(NSColor(bg).usingColorSpace(.sRGB)?.cgColor ?? .black); ctx.fill(CGRect(x: 0, y: 0, width: pt, height: pt))
+        let line = NSColor(fg).usingColorSpace(.sRGB)?.cgColor ?? .black
+        switch kind {
+        case .stripes:
+            ctx.setStrokeColor(line); ctx.setLineWidth(2); ctx.setLineCap(.butt)
+            // two stripes per tile, extended past the edges so the tiling joins without a seam
+            for off in [-12.0, -6.0, 0.0, 6.0, 12.0] {
+                ctx.move(to: CGPoint(x: off - 6, y: -6)); ctx.addLine(to: CGPoint(x: off + 18, y: 18))
             }
-            NSColor(fg).setStroke(); path.stroke()
-            return true
+            ctx.strokePath()
+        case .dots:
+            ctx.setFillColor(line)
+            for (x, y) in [(3.0, 3.0), (9.0, 9.0)] {   // staggered grid, 6 pt pitch
+                ctx.fillEllipse(in: CGRect(x: x - 1.3, y: y - 1.3, width: 2.6, height: 2.6))
+            }
         }
+        let img = NSImage(cgImage: ctx.makeImage()!, size: NSSize(width: pt, height: pt))
         cache[key] = img
         return img
     }
@@ -788,7 +798,9 @@ struct BenchDashboard: View {
     /// legend and bars); the compute unit is the shade: ANE full, GPU 75%, CPU 50%.
     private func modelColor(_ model: String) -> Color {
         let palette: [Color] = [brand, .orange, .green, .purple, .pink, .teal, .brown, .red, .mint, .indigo, .yellow, .cyan]
-        let models = Array(Set((bench.running ? bench.cells : shownCells).map(\.modelName) + (bench.liveCell.map { [$0.modelName] } ?? []))).sorted()
+        // order of first appearance in the run (never alphabetical: adding a model must not recolour the others)
+        var models: [String] = []
+        for n in (bench.running ? bench.cells : shownCells).map(\.modelName) + (bench.liveCell.map { [$0.modelName] } ?? []) where !models.contains(n) { models.append(n) }
         return palette[(models.firstIndex(of: model) ?? 0) % palette.count]
     }
     private func cellColor(_ c: BenchCell) -> Color { modelColor(c.modelName) }
@@ -810,8 +822,8 @@ struct BenchDashboard: View {
         let base = cellColor(c)
         switch c.compute {
         case .ane: return AnyShapeStyle(base)
-        case .gpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.72), diagonal: true)), scale: 1))
-        case .cpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.72), diagonal: false)), scale: 1))
+        case .gpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.7), kind: .stripes)), scale: 1))
+        case .cpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.7), kind: .dots)), scale: 1))
         }
     }
     /// The line / dot / text colour of a cell: the model colour (the unit is carried by the pattern).
@@ -829,7 +841,6 @@ struct BenchDashboard: View {
     @State private var pinchBase: Double = 1
     // ---- the cell the distribution card shows: clicked in the side-by-side chart or the results table ----
     @State private var selectedCellID: UUID? = nil
-    @State private var selectedRowName: String? = nil      // the side-by-side chart's selection binding
     private var focusCell: BenchCell? {
         if bench.running { return bench.liveCell }
         let cells = shownCells
@@ -912,7 +923,7 @@ struct BenchDashboard: View {
             if let p = bench.progress, bench.running { ProgressView(value: p).frame(width: 160) }
             if bench.running {
                 Button(role: .destructive) { bench.cancel() } label: { Label("Stop", systemImage: "stop.fill") }
-                    .onAppear { zoomX = 1; zoomY = 1; pinchBase = 1; selectedCellID = nil; selectedRowName = nil }
+                    .onAppear { zoomX = 1; zoomY = 1; pinchBase = 1; selectedCellID = nil }
             } else {
                 Button { bench.run() } label: { Label("Run", systemImage: "play.fill") }
                     .buttonStyle(.borderedProminent).tint(brand).keyboardShortcut(.return, modifiers: .command)
@@ -1137,17 +1148,19 @@ struct BenchDashboard: View {
             if accuracyMode { return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.accuracy?.map5095 ?? 0, hi: c.accuracy?.map50 ?? 0, color: cellSolid(c), fill: cellFill(c)) }
             return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.cold?.median ?? 0, hi: c.cold?.p90 ?? 0, color: cellSolid(c), fill: cellFill(c))
         }
+        let xMax: Double = accuracyMode ? 1.25 : max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1)
         return VStack(alignment: .leading, spacing: 6) {
-            Text(accuracyMode ? "Cells side by side: mAP50-95 (bar) and mAP50 (tick)" : "Cells side by side: median (bar) and p90 (tick)")
+            Text(accuracyMode ? "Cells side by side: mAP50-95 (bar) and mAP50 (tick) · click a row to inspect it" : "Cells side by side: median (bar) and p90 (tick) · click a row to inspect it")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             ScrollView(.vertical) {
             Chart {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
+                    if focusCell?.id == r.id {   // the selected cell: a light band across its whole row
+                        RectangleMark(xStart: .value("a", 0), xEnd: .value("b", xMax), y: .value("cell", r.name))
+                            .foregroundStyle(BenchDashboard.tint(r.color, 0.86))
+                    }
                     BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62))
                         .foregroundStyle(r.fill)
-                    if focusCell?.id == r.id {   // the selected cell: a marker at the axis instead of dimming the others
-                        PointMark(x: .value("sel", 0), y: .value("cell", r.name)).symbol(.circle).foregroundStyle(r.color).symbolSize(60)
-                    }
                     if r.hi > 0 {
                         PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).symbol(.diamond).foregroundStyle(.primary).symbolSize(30)
                             .annotation(position: .trailing, spacing: 6) {
@@ -1163,10 +1176,16 @@ struct BenchDashboard: View {
                 }
             }
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
-            .chartXScale(domain: accuracyMode ? 0...1.25 : 0...max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1))
-            .chartYSelection(value: $selectedRowName)
-            .onChange(of: selectedRowName) {
-                if let n = selectedRowName, let r = rows.first(where: { $0.name == n }) { selectedCellID = r.id }
+            .chartXScale(domain: 0...xMax)
+            .chartOverlay { proxy in   // click (not hover) picks the row under the pointer
+                GeometryReader { geo in
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .onTapGesture { location in
+                            let plot = geo[proxy.plotFrame!]
+                            let y = location.y - plot.origin.y
+                            if let name: String = proxy.value(atY: y), let r = rows.first(where: { $0.name == name }) { selectedCellID = r.id }
+                        }
+                }
             }
             .frame(height: CGFloat(max(rows.count, 1)) * 40 + 40)
             .padding(.trailing, 14)   // room for the scrollbar
