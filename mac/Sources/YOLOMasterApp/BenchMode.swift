@@ -20,16 +20,14 @@ enum AppMode: String, CaseIterable { case inference = "Inference", bench = "Benc
 // MARK: - data
 
 enum BenchKind: String, CaseIterable, Codable {
-    case cold = "Cold run", sustained = "Sustained", dataset = "Dataset", accuracy = "Accuracy"
+    case cold = "Cold run", sustained = "Sustained", accuracy = "Accuracy"
     var icon: String {
-        switch self { case .cold: return "bolt.fill"; case .sustained: return "flame.fill"
-        case .dataset: return "photo.stack"; case .accuracy: return "checkmark.seal" }
+        switch self { case .cold: return "bolt.fill"; case .sustained: return "flame.fill"; case .accuracy: return "checkmark.seal" }
     }
     var blurb: String {
         switch self {
-        case .cold: return "Warm-up, then timed model-only predictions on a gray probe at the input size. The headline latency."
-        case .sustained: return "A timed loop; the slowest-quarter median against the cold median is the throttle figure. Thermal state is sampled every second."
-        case .dataset: return "Full pipeline over a folder of images: preprocess, model and postprocess per image at the current confidence."
+        case .cold: return "10 warm-up predictions, then 100 timed model-only predictions on a gray probe at the input size. The headline latency."
+        case .sustained: return "A timed loop after 10 warm-up predictions; the slowest-quarter median against the cold median (first 100) is the throttle figure. Thermal state is sampled every second."
         case .accuracy: return "Val protocol (conf 0.001, IoU 0.7, max_det 300) over a labelled folder, scored in process: mAP50 / mAP50-95 per class."
         }
     }
@@ -83,8 +81,13 @@ final class BenchStore: ObservableObject {
         url = dir.appendingPathComponent("bench_history.json")
         if let d = try? Data(contentsOf: url) {
             if let r = try? JSONDecoder().decode([BenchRecord].self, from: d) { records = r }
-            else if let t = String(data: d, encoding: .utf8),
-                    let r = try? JSONDecoder().decode([BenchRecord].self, from: Data(t.replacingOccurrences(of: "\"Cold run\"", with: "\"Cold run\"").utf8)) { records = r }
+            else if let arr = (try? JSONSerialization.jsonObject(with: d)) as? [[String: Any]] {
+                // older files: a renamed protocol, or a protocol that no longer exists (dropped)
+                let kept = arr.filter { ($0["kind"] as? String) != "Dataset" }.map { rec -> [String: Any] in
+                    var r = rec; if let k = r["kind"] as? String, k.hasPrefix("Cold "), k != "Cold run" { r["kind"] = "Cold run" }; return r
+                }
+                if let d2 = try? JSONSerialization.data(withJSONObject: kept), let r = try? JSONDecoder().decode([BenchRecord].self, from: d2) { records = r }
+            }
         }
     }
     func add(_ r: BenchRecord) { records.insert(r, at: 0); save() }
@@ -345,13 +348,12 @@ final class BenchModel: ObservableObject {
     @Published var computes: Set<ComputeChoice> = [.gpu]
     @Published var preproc: PreprocDevice = .gpu
     @Published var kind: BenchKind = .cold
-    @Published var warmup = 10.0
-    @Published var iters = 100.0
+    let warmup = 10.0                            // fixed by the protocol (the Linux CLI's defaults)
+    let iters = 100.0
     @Published var minutes = 2.0
     @Published var datasetURL: URL?             // dataset / accuracy: the images folder
     @Published var datasetLimit = 0.0           // 0 = all
-    @Published var conf = 0.25                  // dataset pass only
-    @Published var iou = 0.5
+    let conf = 0.25, iou = 0.5                   // recorded in the document's protocol block
     // live
     @Published private(set) var running = false
     @Published private(set) var phase = ""          // what is happening now
@@ -426,7 +428,7 @@ final class BenchModel: ObservableObject {
         let targets = models.filter { selectedModels.contains($0) }
         guard !targets.isEmpty else { note = "Add and select at least one model."; return }
         guard !computes.isEmpty else { note = "Select at least one compute unit."; return }
-        if (kind == .dataset || kind == .accuracy) && datasetURL == nil { note = "Choose the images folder first."; return }
+        if kind == .accuracy && datasetURL == nil { note = "Choose the images folder first."; return }
         cancelLock.lock(); cancelFlag = false; cancelLock.unlock()
         running = true; cells = []; liveSamples = []; liveSeconds = []; liveCell = nil; progress = nil; note = ""
         runPowerW = []; meters.startRun()
@@ -489,26 +491,6 @@ final class BenchModel: ObservableObject {
                         var coldStats = StageStats(Array(cell.samples.prefix(max(iters, 1))))
                         coldStats.n = min(cell.samples.count, max(iters, 1))
                         cell.cold = coldStats
-                    case .dataset:
-                        guard let ds = dataset else { break }
-                        var files = listImages(ds)
-                        if limit > 0 && files.count > limit { files = Array(files.prefix(limit)) }
-                        self.main { self.phase = "\(name) · \(c.rawValue): \(files.count) images at conf \(String(format: "%.2f", conf))" }
-                        if let probe = BenchRunner.probeImage(det.imgsz) { for _ in 0..<warm { _ = try? det.inferOnly(probe) } }
-                        var samples = BenchSamples()
-                        let ts = Date()
-                        for (i, f) in files.enumerated() {
-                            if self.isCancelled { break }
-                            autoreleasepool {
-                                guard let cg = loadCGImage(f), let r = try? det.detect(cg, conf: conf, iou: iou) else { return }
-                                samples.add(r); cell.samples.append(r.inferMs); cell.sampleTimes.append(Date().timeIntervalSince(cellStart)); self.push(r.inferMs); sampleThermal()
-                            }
-                            if i % 5 == 0 { let p = Double(i + 1) / Double(files.count); self.main { self.progress = p } }
-                        }
-                        let d = samples.dataset(wallS: Date().timeIntervalSince(ts))
-                        cell.dataset = d; doc.dataset = d
-                        doc.protocol.image_count = files.count; doc.protocol.image_list_sha256 = YMCore.imageListSha256(files.map { $0.path })
-                        cell.cold = d.infer_ms
                     case .accuracy:
                         guard let ds = dataset else { break }
                         var files = listImages(ds)
@@ -628,21 +610,13 @@ struct BenchSidebar: View {
                         ForEach(BenchKind.allCases, id: \.self) { Label($0.rawValue, systemImage: $0.icon).tag($0) }
                     }.pickerStyle(.menu).labelsHidden().disabled(bench.running)
                     Text(bench.kind.blurb).font(.caption2).foregroundStyle(.secondary)
-                    intRow("Warm-up iterations", $bench.warmup, 0...100, step: 1)
-                    if bench.kind == .cold || bench.kind == .sustained {
-                        intRow(bench.kind == .cold ? "Timed iterations" : "Cold baseline iterations", $bench.iters, 10...2000, step: 10)
-                    }
                     if bench.kind == .sustained { slider("Minutes", $bench.minutes, 0.5...30) }
-                    if bench.kind == .dataset || bench.kind == .accuracy {
-                        fileRow(icon: "photo.on.rectangle.angled", title: bench.kind == .accuracy ? "Labelled set (images folder)" : "Images folder",
+                    if bench.kind == .accuracy {
+                        fileRow(icon: "photo.on.rectangle.angled", title: "Labelled set (images folder)",
                                 value: bench.datasetURL?.lastPathComponent ?? "Choose images folder…", set: bench.datasetURL != nil) { pickDataset() }
                         intRow("Image limit (0 = all)", $bench.datasetLimit, 0...5000, step: 50)
-                        if bench.kind == .accuracy {
-                            Text("Labels are read from the sibling labels/ folder (the ultralytics layout) or next to each image.")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        } else {
-                            slider("Confidence", $bench.conf, 0.05...0.95); slider("IoU", $bench.iou, 0.1...0.9)
-                        }
+                        Text("Labels are read from the sibling labels/ folder (the ultralytics layout) or next to each image.")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 if !store.records.isEmpty {
@@ -687,7 +661,7 @@ struct BenchSidebar: View {
     private func pickDataset() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        panel.message = bench.kind == .accuracy ? "Choose the images folder of a labelled set (labels/ next to it)" : "Choose an images folder"
+        panel.message = "Choose the images folder of a labelled set (labels/ next to it)"
         guard panel.runModal() == .OK, let u = panel.url else { return }
         bench.datasetURL = u
     }
@@ -757,16 +731,20 @@ struct BenchDashboard: View {
 
     /// The protocol being shown: the record's for a history record, else the live selection.
     private var shownKind: BenchKind { selectedRecord != nil ? (shownRecord?.kind ?? bench.kind) : (bench.running || bench.lastRecord == nil ? bench.kind : bench.lastRecord!.kind) }
-    /// Colour is a property of the MODEL (every unit of one model shares it, stable across the charts,
-    /// legend and bars); the compute unit is the shade: ANE full, GPU 75%, CPU 50%.
-    private func modelColor(_ model: String) -> Color {
-        let palette: [Color] = [brand, .orange, .green, .purple, .pink, .teal, .brown, .red, .mint, .indigo, .yellow, .cyan]
-        // order of first appearance in the run (never alphabetical: adding a model must not recolour the others)
-        var models: [String] = []
-        for n in (bench.running ? bench.cells : shownCells).map(\.modelName) + (bench.liveCell.map { [$0.modelName] } ?? []) where !models.contains(n) { models.append(n) }
-        return palette[(models.firstIndex(of: model) ?? 0) % palette.count]
+    /// Colour means SPEED, the iOS app's rule (StatsHUD.msColor): the cell's median model time decides it,
+    /// whatever the model or unit. Under 30 ms purple, under 50 green, under 100 orange, slower red.
+    static func msColor(_ ms: Double) -> Color {
+        switch ms {
+        case ..<30: return Color(red: 0.69, green: 0.32, blue: 0.87)
+        case ..<50: return Color(red: 0.20, green: 0.84, blue: 0.29)
+        case ..<100: return Color(red: 1.00, green: 0.58, blue: 0.00)
+        default: return Color(red: 0.96, green: 0.26, blue: 0.21)
+        }
     }
-    private func cellColor(_ c: BenchCell) -> Color { modelColor(c.modelName) }
+    private func cellColor(_ c: BenchCell) -> Color {
+        if bench.running, bench.liveCell?.id == c.id, bench.liveSamples.count > 1 { return BenchDashboard.msColor(StageStats(bench.liveSamples.map(\.ms)).median) }
+        return BenchDashboard.msColor(c.headlineMs ?? 0)
+    }
     /// A lighter, still opaque tint of a colour (mixed with the window background, not translucent).
     private static func tint(_ c: Color, _ f: CGFloat) -> Color {
         let n = NSColor(c).usingColorSpace(.sRGB) ?? .gray
@@ -778,10 +756,7 @@ struct BenchDashboard: View {
         let n = NSColor(c).usingColorSpace(.sRGB) ?? .gray
         return Color(nsColor: n.blended(withFraction: f, of: .black) ?? n)
     }
-    /// The unit is the opacity of the model colour: ANE full, GPU 75%, CPU 50%.
-    private func cellSolid(_ c: BenchCell) -> Color {
-        cellColor(c).opacity(c.compute == .ane ? 1.0 : (c.compute == .gpu ? 0.75 : 0.5))
-    }
+    private func cellSolid(_ c: BenchCell) -> Color { cellColor(c) }
     private func cellFill(_ c: BenchCell) -> AnyShapeStyle { AnyShapeStyle(cellSolid(c)) }
     /// Line dash by compute unit for the time chart: ANE solid, GPU dashed, CPU dotted.
     private func cellDash(_ c: BenchCell) -> [CGFloat] { [] }
@@ -833,9 +808,6 @@ struct BenchDashboard: View {
                     case .sustained:
                         timeChart.frame(minHeight: 220, maxHeight: .infinity)
                         sustainedChart.frame(height: 180)
-                        if shownCells.count > 1 { comparisonChart.frame(height: comparisonHeight) }
-                    case .dataset:
-                        timeChart.frame(minHeight: 220, maxHeight: .infinity)
                         if shownCells.count > 1 { comparisonChart.frame(height: comparisonHeight) }
                     case .cold:
                         histogramChart.frame(minHeight: 220, maxHeight: .infinity)
@@ -991,7 +963,7 @@ struct BenchDashboard: View {
         let span = max(shown.tEnd - shown.tStart, 1)
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(shownKind == .dataset ? "Model time per image" : "Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
                 zoomBar()
             }
@@ -1258,7 +1230,6 @@ struct BenchDashboard: View {
     }
     private func extra(_ c: BenchCell) -> String {
         if let su = c.sustained { return String(format: "throttle %+.1f%% over %.0fs, peak %@", su.throttle_pct, su.duration_s, thermalName(c.thermal.max() ?? 0)) }
-        if let d = c.dataset { return String(format: "pre %.2f · post %.2f ms · %d frames", d.pre_ms.median, d.post_ms.median, d.frames) }
         if let a = c.accuracy { return String(format: "mAP50 %.4f · mAP50-95 %.4f · %d images", a.map50, a.map5095, a.images) }
         return ""
     }
