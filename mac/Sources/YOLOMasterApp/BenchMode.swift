@@ -770,32 +770,26 @@ struct BenchDashboard: View {
         let bg = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .white
         return Color(nsColor: n.blended(withFraction: f, of: bg) ?? n)
     }
-    /// Fill pattern by compute unit: ANE solid, GPU diagonal stripes, CPU horizontal stripes, all in the
-    /// model's colour (the stripes alternate with a lighter opaque tint of it).
-    private func cellFill(_ c: BenchCell) -> AnyShapeStyle {
+    /// A darker shade of a colour (mixed with black, opaque).
+    private static func shade(_ c: Color, _ f: CGFloat) -> Color {
+        let n = NSColor(c).usingColorSpace(.sRGB) ?? .gray
+        return Color(nsColor: n.blended(withFraction: f, of: .black) ?? n)
+    }
+    /// Fill by compute unit: three solid shades of the model's hue. ANE = the colour itself,
+    /// GPU = a darker shade, CPU = a lighter tint. Opaque, no patterns.
+    private func cellFill(_ c: BenchCell) -> AnyShapeStyle { AnyShapeStyle(cellSolid(c)) }
+    private func cellSolid(_ c: BenchCell) -> Color {
         let base = cellColor(c)
         switch c.compute {
-        case .ane: return AnyShapeStyle(base)
-        case .gpu: return AnyShapeStyle(BenchDashboard.stripes(base, BenchDashboard.tint(base, 0.55), diagonal: true))
-        case .cpu: return AnyShapeStyle(BenchDashboard.stripes(base, BenchDashboard.tint(base, 0.55), diagonal: false))
+        case .ane: return base
+        case .gpu: return BenchDashboard.shade(base, 0.32)
+        case .cpu: return BenchDashboard.tint(base, 0.45)
         }
-    }
-    private static func stripes(_ a: Color, _ b: Color, diagonal: Bool) -> LinearGradient {
-        // hard-edged alternating stops: a striped fill without a texture
-        let n = 28
-        var stops: [Gradient.Stop] = []
-        for i in 0..<n {
-            let lo = Double(i) / Double(n), hi = Double(i + 1) / Double(n)
-            let col = i % 2 == 0 ? a : b
-            stops.append(.init(color: col, location: lo)); stops.append(.init(color: col, location: hi))
-        }
-        return LinearGradient(stops: stops, startPoint: diagonal ? .topLeading : .top, endPoint: diagonal ? .bottomTrailing : .bottom)
     }
     /// Line dash by compute unit for the time chart: ANE solid, GPU dashed, CPU dotted.
     private func cellDash(_ c: BenchCell) -> [CGFloat] { c.compute == .ane ? [] : (c.compute == .gpu ? [7, 4] : [2, 4]) }
     private func swatch(_ c: BenchCell) -> some View {
-        RoundedRectangle(cornerRadius: 2).fill(cellFill(c)).frame(width: 14, height: 10)
-            .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(cellColor(c), lineWidth: 1))
+        RoundedRectangle(cornerRadius: 2).fill(cellSolid(c)).frame(width: 14, height: 10)
     }
     // ---- zoom: the charts open on the full data range; the user zooms the value axis (pinch or the
     // Y buttons) and the time axis (X buttons; the chart then scrolls sideways) ----
@@ -937,12 +931,12 @@ struct BenchDashboard: View {
             // once the window rolls its width is exactly windowSeconds, so the slot width (and hence the
             // slot edges) stays constant from one redraw to the next
             let tStart = max(0, tEnd - BenchDashboard.windowSeconds)
-            return ([Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellColor(c), dash: cellDash(c), cell: c, points: pts)],
+            return ([Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellSolid(c), dash: cellDash(c), cell: c, points: pts)],
                     tStart, tStart > 0 ? tStart + BenchDashboard.windowSeconds : max(tEnd, 1))
         }
         let cells = shownCells
         let series = cells.map { c in
-            Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellColor(c), dash: cellDash(c), cell: c,
+            Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellSolid(c), dash: cellDash(c), cell: c,
                    points: c.samples.enumerated().map { ($0.offset < c.sampleTimes.count ? c.sampleTimes[$0.offset] : Double($0.offset), $0.element) })
         }
         let tEnd = max(series.flatMap { $0.points.map(\.t) }.max() ?? 0, 1)
@@ -1109,8 +1103,8 @@ struct BenchDashboard: View {
         let accuracyMode = shownKind == .accuracy
         struct Row: Identifiable { let id: UUID; let name: String; let value: Double; let hi: Double; let color: Color; let fill: AnyShapeStyle }
         let rows = cells.map { c -> Row in
-            if accuracyMode { return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.accuracy?.map5095 ?? 0, hi: c.accuracy?.map50 ?? 0, color: cellColor(c), fill: cellFill(c)) }
-            return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.cold?.median ?? 0, hi: c.cold?.p90 ?? 0, color: cellColor(c), fill: cellFill(c))
+            if accuracyMode { return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.accuracy?.map5095 ?? 0, hi: c.accuracy?.map50 ?? 0, color: cellSolid(c), fill: cellFill(c)) }
+            return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.cold?.median ?? 0, hi: c.cold?.p90 ?? 0, color: cellSolid(c), fill: cellFill(c))
         }
         return VStack(alignment: .leading, spacing: 6) {
             Text(accuracyMode ? "Cells side by side: mAP50-95 (bar) and mAP50 (tick)" : "Cells side by side: median (bar) and p90 (tick)")
