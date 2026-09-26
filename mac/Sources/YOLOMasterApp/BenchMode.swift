@@ -763,8 +763,39 @@ struct BenchDashboard: View {
         let models = Array(Set((bench.running ? bench.cells : shownCells).map(\.modelName) + (bench.liveCell.map { [$0.modelName] } ?? []))).sorted()
         return palette[(models.firstIndex(of: model) ?? 0) % palette.count]
     }
-    private func cellColor(_ c: BenchCell) -> Color {
-        modelColor(c.modelName).opacity(c.compute == .ane ? 1.0 : (c.compute == .gpu ? 0.75 : 0.5))
+    private func cellColor(_ c: BenchCell) -> Color { modelColor(c.modelName) }
+    /// A lighter, still opaque tint of a colour (mixed with the window background, not translucent).
+    private static func tint(_ c: Color, _ f: CGFloat) -> Color {
+        let n = NSColor(c).usingColorSpace(.sRGB) ?? .gray
+        let bg = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .white
+        return Color(nsColor: n.blended(withFraction: f, of: bg) ?? n)
+    }
+    /// Fill pattern by compute unit: ANE solid, GPU diagonal stripes, CPU horizontal stripes, all in the
+    /// model's colour (the stripes alternate with a lighter opaque tint of it).
+    private func cellFill(_ c: BenchCell) -> AnyShapeStyle {
+        let base = cellColor(c)
+        switch c.compute {
+        case .ane: return AnyShapeStyle(base)
+        case .gpu: return AnyShapeStyle(BenchDashboard.stripes(base, BenchDashboard.tint(base, 0.55), diagonal: true))
+        case .cpu: return AnyShapeStyle(BenchDashboard.stripes(base, BenchDashboard.tint(base, 0.55), diagonal: false))
+        }
+    }
+    private static func stripes(_ a: Color, _ b: Color, diagonal: Bool) -> LinearGradient {
+        // hard-edged alternating stops: a striped fill without a texture
+        let n = 28
+        var stops: [Gradient.Stop] = []
+        for i in 0..<n {
+            let lo = Double(i) / Double(n), hi = Double(i + 1) / Double(n)
+            let col = i % 2 == 0 ? a : b
+            stops.append(.init(color: col, location: lo)); stops.append(.init(color: col, location: hi))
+        }
+        return LinearGradient(stops: stops, startPoint: diagonal ? .topLeading : .top, endPoint: diagonal ? .bottomTrailing : .bottom)
+    }
+    /// Line dash by compute unit for the time chart: ANE solid, GPU dashed, CPU dotted.
+    private func cellDash(_ c: BenchCell) -> [CGFloat] { c.compute == .ane ? [] : (c.compute == .gpu ? [7, 4] : [2, 4]) }
+    private func swatch(_ c: BenchCell) -> some View {
+        RoundedRectangle(cornerRadius: 2).fill(cellFill(c)).frame(width: 14, height: 10)
+            .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(cellColor(c), lineWidth: 1))
     }
     // ---- zoom: the charts open on the full data range; the user zooms the value axis (pinch or the
     // Y buttons) and the time axis (X buttons; the chart then scrolls sideways) ----
@@ -896,7 +927,7 @@ struct BenchDashboard: View {
     }
 
     /// One series of (seconds since the cell started, model ms).
-    private struct Series { let name: String; let color: Color; let points: [(t: Double, ms: Double)] }
+    private struct Series { let name: String; let color: Color; let dash: [CGFloat]; let cell: BenchCell?; let points: [(t: Double, ms: Double)] }
     /// While a run streams: the current cell, a rolling last-minute window. Once it is done (and for
     /// history records): every cell's full series overlaid from its own 0 s, one colour per cell.
     private var seriesToShow: (series: [Series], tStart: Double, tEnd: Double) {
@@ -906,12 +937,12 @@ struct BenchDashboard: View {
             // once the window rolls its width is exactly windowSeconds, so the slot width (and hence the
             // slot edges) stays constant from one redraw to the next
             let tStart = max(0, tEnd - BenchDashboard.windowSeconds)
-            return ([Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellColor(c), points: pts)],
+            return ([Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellColor(c), dash: cellDash(c), cell: c, points: pts)],
                     tStart, tStart > 0 ? tStart + BenchDashboard.windowSeconds : max(tEnd, 1))
         }
         let cells = shownCells
         let series = cells.map { c in
-            Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellColor(c),
+            Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellColor(c), dash: cellDash(c), cell: c,
                    points: c.samples.enumerated().map { ($0.offset < c.sampleTimes.count ? c.sampleTimes[$0.offset] : Double($0.offset), $0.element) })
         }
         let tEnd = max(series.flatMap { $0.points.map(\.t) }.max() ?? 0, 1)
@@ -978,23 +1009,33 @@ struct BenchDashboard: View {
                 ForEach(Array(buckets.enumerated()), id: \.offset) { k, bs in
                     ForEach(bs) { b in
                         AreaMark(x: .value("s", b.t), yStart: .value("min", b.lo), yEnd: .value("max", b.hi), series: .value("series", b.series + " band"))
-                            .foregroundStyle(shown.series[k].color.opacity(0.16))
+                            .foregroundStyle(BenchDashboard.tint(shown.series[k].color, 0.8))
                         LineMark(x: .value("s", b.t), y: .value("ms", b.trend), series: .value("series", b.series))
-                            .foregroundStyle(by: .value("series", b.series)).lineStyle(StrokeStyle(lineWidth: 2)).interpolationMethod(.monotone)
+                            .foregroundStyle(shown.series[k].color).lineStyle(StrokeStyle(lineWidth: 2, dash: shown.series[k].dash)).interpolationMethod(.monotone)
                     }
                 }
                 if !visible.isEmpty && shown.series.count == 1 {
                     RuleMark(y: .value("median", med)).foregroundStyle(.secondary.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                 }
             }
-            .chartForegroundStyleScale(domain: shown.series.map(\.name), range: shown.series.map(\.color))
             .chartYAxisLabel("ms").chartXAxisLabel("seconds")
             .chartXScale(domain: shown.tStart...max(shown.tEnd, shown.tStart + 1))
             .chartYScale(domain: range)
             .chartScrollableAxes(zoomX > 1 ? .horizontal : [])
             .chartXVisibleDomain(length: span / zoomX)
-            .chartLegend(shown.series.count > 1 ? .visible : .hidden)
+            .chartLegend(.hidden)
             .gesture(MagnifyGesture().onChanged { v in zoomY = max(1, min(64, pinchBase * v.magnification)) }.onEnded { _ in pinchBase = zoomY })
+            if shown.series.count > 1 {   // legend with the unit dash visible
+                HStack(spacing: 12) {
+                    ForEach(Array(shown.series.enumerated()), id: \.offset) { _, sr in
+                        HStack(spacing: 4) {
+                            Path { p in p.move(to: .init(x: 0, y: 5)); p.addLine(to: .init(x: 22, y: 5)) }
+                                .stroke(sr.color, style: StrokeStyle(lineWidth: 2, dash: sr.dash)).frame(width: 22, height: 10)
+                            Text(sr.name).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
@@ -1008,6 +1049,7 @@ struct BenchDashboard: View {
         let cell = focusCell
         let values: [Double] = bench.running ? bench.liveSamples.map(\.ms) : (cell?.samples ?? [])
         let color = cell.map { cellColor($0) } ?? brand
+        let fill: AnyShapeStyle = cell.map { cellFill($0) } ?? AnyShapeStyle(brand)
         var range = BenchDashboard.yRange(values)
         if zoomX > 1 {   // narrow the axis around the median
             let med = values.count > 1 ? StageStats(values).median : range.lowerBound
@@ -1030,7 +1072,7 @@ struct BenchDashboard: View {
             HStack(spacing: 8) {
                 Text("Latency distribution").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 if let c = cell {
-                    Circle().fill(color).frame(width: 8, height: 8)
+                    swatch(c)
                     Text("\(c.modelName) · \(c.compute.rawValue)").font(.caption.weight(.semibold)).foregroundStyle(.primary)
                     if !bench.running && shownCells.count > 1 { Text("click a bar or a row to switch").font(.caption2).foregroundStyle(.tertiary) }
                 }
@@ -1040,7 +1082,7 @@ struct BenchDashboard: View {
             Chart {
                 ForEach(bins) { b in
                     RectangleMark(xStart: .value("from", b.lo), xEnd: .value("to", b.hi), yStart: .value("zero", 0), yEnd: .value("count", b.n))
-                        .foregroundStyle(color)
+                        .foregroundStyle(fill)
                 }
                 if let st = stats {
                     RuleMark(x: .value("median", st.median)).foregroundStyle(.primary).lineStyle(StrokeStyle(lineWidth: 1.5)).annotation(position: .top, alignment: .leading) { Text("median").font(.caption2) }
@@ -1065,10 +1107,10 @@ struct BenchDashboard: View {
     private var comparisonChart: some View {
         let cells = bench.running ? bench.cells : shownCells
         let accuracyMode = shownKind == .accuracy
-        struct Row: Identifiable { let id: UUID; let name: String; let value: Double; let hi: Double; let color: Color }
+        struct Row: Identifiable { let id: UUID; let name: String; let value: Double; let hi: Double; let color: Color; let fill: AnyShapeStyle }
         let rows = cells.map { c -> Row in
-            if accuracyMode { return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.accuracy?.map5095 ?? 0, hi: c.accuracy?.map50 ?? 0, color: cellColor(c)) }
-            return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.cold?.median ?? 0, hi: c.cold?.p90 ?? 0, color: cellColor(c))
+            if accuracyMode { return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.accuracy?.map5095 ?? 0, hi: c.accuracy?.map50 ?? 0, color: cellColor(c), fill: cellFill(c)) }
+            return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.cold?.median ?? 0, hi: c.cold?.p90 ?? 0, color: cellColor(c), fill: cellFill(c))
         }
         return VStack(alignment: .leading, spacing: 6) {
             Text(accuracyMode ? "Cells side by side: mAP50-95 (bar) and mAP50 (tick)" : "Cells side by side: median (bar) and p90 (tick)")
@@ -1077,7 +1119,10 @@ struct BenchDashboard: View {
             Chart {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
                     BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62))
-                        .foregroundStyle(r.color).opacity(focusCell == nil || focusCell?.id == r.id ? 1 : 0.4)
+                        .foregroundStyle(r.fill)
+                    if focusCell?.id == r.id {   // the selected cell: a marker at the axis instead of dimming the others
+                        PointMark(x: .value("sel", 0), y: .value("cell", r.name)).symbol(.circle).foregroundStyle(r.color).symbolSize(60)
+                    }
                     if r.hi > 0 {
                         PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).symbol(.diamond).foregroundStyle(.primary).symbolSize(30)
                             .annotation(position: .trailing, spacing: 6) {
@@ -1179,7 +1224,7 @@ struct BenchDashboard: View {
                         }
                         .frame(height: rowH)
                         .padding(.horizontal, 6)
-                        .background(RoundedRectangle(cornerRadius: 5).fill(focusCell?.id == c.id ? cellColor(c).opacity(0.14) : .clear))
+                        .background(RoundedRectangle(cornerRadius: 5).fill(focusCell?.id == c.id ? BenchDashboard.tint(cellColor(c), 0.82) : .clear))
                         .contentShape(Rectangle())
                         .onTapGesture { selectedCellID = c.id }
                     }
