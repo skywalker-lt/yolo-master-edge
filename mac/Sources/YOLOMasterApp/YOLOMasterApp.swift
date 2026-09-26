@@ -1245,7 +1245,7 @@ struct ContentView: View {
                             }.pickerStyle(.segmented).labelsHidden().disabled(cameraOn)
                         }
                         segRow("Device") {
-                            SegmentedButtons(options: [(PreprocDevice.gpu, "GPU (Metal)"), (PreprocDevice.cpu, "CPU")], selection: $preprocDevice, tint: brandColor)
+                            SegmentedButtons(options: [(PreprocDevice.gpu, "GPU (Metal)"), (PreprocDevice.cpu, "CPU")], icons: ["memorychip", "cpu"], selection: $preprocDevice, tint: brandColor)
                         }
                         Text(preprocDevice == .gpu
                              ? "Letterbox, RGB conversion and the input tensor are built by a Metal kernel; the camera feed is read without a copy."
