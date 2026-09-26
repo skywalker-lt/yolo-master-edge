@@ -1044,10 +1044,13 @@ struct BenchDashboard: View {
                     RectangleMark(xStart: .value("from", b.lo), xEnd: .value("to", b.hi), yStart: .value("zero", 0), yEnd: .value("count", b.n))
                         .foregroundStyle(BenchDashboard.msColor((b.lo + b.hi) / 2))
                 }
-                if let st = stats {
-                    RuleMark(x: .value("median", st.median)).foregroundStyle(.primary).lineStyle(StrokeStyle(lineWidth: 1.5)).annotation(position: .top, alignment: .leading) { Text("median").font(.caption2) }
-                    RuleMark(x: .value("p90", st.p90)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3])).annotation(position: .top, alignment: .leading) { Text("p90").font(.caption2).foregroundStyle(.secondary) }
-                    RuleMark(x: .value("p99", st.p99)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3])).annotation(position: .top, alignment: .leading) { Text("p99").font(.caption2).foregroundStyle(.secondary) }
+                if let st = stats {   // labels sit inside the plot, at the top of their rule, never over the header
+                    RuleMark(x: .value("median", st.median)).foregroundStyle(.primary).lineStyle(StrokeStyle(lineWidth: 1.5))
+                        .annotation(position: .overlay, alignment: .top, spacing: 2) { ruleTag("median", .primary) }
+                    RuleMark(x: .value("p90", st.p90)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        .annotation(position: .overlay, alignment: .top, spacing: 2) { ruleTag("p90", .secondary) }
+                    RuleMark(x: .value("p99", st.p99)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
+                        .annotation(position: .overlay, alignment: .top, spacing: 2) { ruleTag("p99", .secondary) }
                 }
             }
             .chartXAxisLabel("ms")
@@ -1063,6 +1066,11 @@ struct BenchDashboard: View {
     /// One row of the side-by-side chart per cell; the card is capped and scrolls beyond six rows.
     private var comparisonRows: Int { max(bench.running ? bench.cells.count : shownCells.count, 1) }
     private var comparisonHeight: CGFloat { min(CGFloat(comparisonRows) * 40 + 70, 5 * 40 + 70) }
+    private func ruleTag(_ text: String, _ style: HierarchicalShapeStyle) -> some View {
+        Text(text).font(.caption2).foregroundStyle(style)
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.85), in: Capsule())
+    }
     /// Cells side by side: median with the p90 whisker (cold / sustained / dataset) or mAP50-95 (accuracy).
     private var comparisonChart: some View {
         let cells = bench.running ? bench.cells : shownCells
