@@ -1044,18 +1044,19 @@ struct BenchDashboard: View {
                     RectangleMark(xStart: .value("from", b.lo), xEnd: .value("to", b.hi), yStart: .value("zero", 0), yEnd: .value("count", b.n))
                         .foregroundStyle(BenchDashboard.msColor((b.lo + b.hi) / 2))
                 }
-                if let st = stats {   // labels sit inside the plot, at the top of their rule, never over the header
+                if let st = stats {   // labels above their rule; the chart keeps a top margin for them
                     RuleMark(x: .value("median", st.median)).foregroundStyle(.primary).lineStyle(StrokeStyle(lineWidth: 1.5))
-                        .annotation(position: .overlay, alignment: .top, spacing: 2) { ruleTag("median", .primary) }
+                        .annotation(position: .top, alignment: .leading) { Text("median").font(.caption2) }
                     RuleMark(x: .value("p90", st.p90)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                        .annotation(position: .overlay, alignment: .top, spacing: 2) { ruleTag("p90", .secondary) }
+                        .annotation(position: .top, alignment: .leading) { Text("p90").font(.caption2).foregroundStyle(.secondary) }
                     RuleMark(x: .value("p99", st.p99)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
-                        .annotation(position: .overlay, alignment: .top, spacing: 2) { ruleTag("p99", .secondary) }
+                        .annotation(position: .top, alignment: .leading) { Text("p99").font(.caption2).foregroundStyle(.secondary) }
                 }
             }
             .chartXAxisLabel("ms")
             .chartXScale(domain: range)
-            .chartYScale(domain: 0...Double(max(counts.max() ?? 1, 1)) * 1.12)   // headroom for the rule labels
+            .chartYScale(domain: 0...Double(max(counts.max() ?? 1, 1)) * 1.05)
+            .padding(.top, 16)   // room above the plot for the median / p90 / p99 labels (the y-axis label used to provide it)
             .gesture(MagnifyGesture().onChanged { v in zoomX = max(1, min(64, pinchBase * v.magnification)) }.onEnded { _ in pinchBase = zoomX })
         }
         .padding(12)
@@ -1066,11 +1067,6 @@ struct BenchDashboard: View {
     /// One row of the side-by-side chart per cell; the card is capped and scrolls beyond six rows.
     private var comparisonRows: Int { max(bench.running ? bench.cells.count : shownCells.count, 1) }
     private var comparisonHeight: CGFloat { min(CGFloat(comparisonRows) * 40 + 70, 5 * 40 + 70) }
-    private func ruleTag(_ text: String, _ style: HierarchicalShapeStyle) -> some View {
-        Text(text).font(.caption2).foregroundStyle(style)
-            .padding(.horizontal, 4).padding(.vertical, 1)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.85), in: Capsule())
-    }
     /// Cells side by side: median with the p90 whisker (cold / sustained / dataset) or mAP50-95 (accuracy).
     private var comparisonChart: some View {
         let cells = bench.running ? bench.cells : shownCells
