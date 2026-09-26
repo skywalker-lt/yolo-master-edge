@@ -1165,7 +1165,17 @@ struct ContentView: View {
         }
     }
     private func step(_ dir: Int, vertical: Bool) {
-        guard appMode == .inference else { return }
+        if appMode == .bench {   // up / down walk the run history (newest first); the dashboard follows
+            guard vertical, !bench.running else { return }
+            let ids = bench.store.records.map(\.id)
+            guard !ids.isEmpty else { return }
+            if let cur = selectedBenchRecord, let i = ids.firstIndex(of: cur) {
+                let j = i + dir
+                if j < 0 { selectedBenchRecord = nil }            // above the newest: back to the live / last run
+                else if j < ids.count { selectedBenchRecord = ids[j] }
+            } else if dir > 0 { selectedBenchRecord = ids[0] }
+            return
+        }
         switch sourceKind {
         case .folder where engine.hasResults && !folderImages.isEmpty:
             // Finder icon-view semantics: left/right move within the CURRENT ROW only (no
