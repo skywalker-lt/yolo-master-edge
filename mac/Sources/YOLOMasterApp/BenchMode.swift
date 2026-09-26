@@ -737,6 +737,34 @@ struct BenchSidebar: View {
     }
 }
 
+// MARK: - hatch tiles (fixed-size pattern fills, cached per colour and orientation)
+
+enum HatchTiles {
+    private static var cache: [String: NSImage] = [:]
+    /// An 8 x 8 pt tile: `bg` with 2 pt `fg` lines, diagonal (top-left to bottom-right, seamless) or
+    /// horizontal. Rendered at 2x so it stays crisp on retina.
+    static func tile(_ fg: Color, _ bg: Color, diagonal: Bool) -> NSImage {
+        let key = "\(fg)|\(bg)|\(diagonal)"
+        if let t = cache[key] { return t }
+        let size = NSSize(width: 8, height: 8)
+        let img = NSImage(size: size, flipped: false) { rect in
+            NSColor(bg).setFill(); rect.fill()
+            let path = NSBezierPath(); path.lineWidth = 2
+            if diagonal {
+                for off in [-8.0, 0.0, 8.0] {   // three passes so the stripe wraps seamlessly at the tile edges
+                    path.move(to: NSPoint(x: off, y: 0)); path.line(to: NSPoint(x: off + 8, y: 8))
+                }
+            } else {
+                path.move(to: NSPoint(x: 0, y: 4)); path.line(to: NSPoint(x: 8, y: 4))
+            }
+            NSColor(fg).setStroke(); path.stroke()
+            return true
+        }
+        cache[key] = img
+        return img
+    }
+}
+
 // MARK: - dashboard
 
 struct BenchDashboard: View {
@@ -775,21 +803,24 @@ struct BenchDashboard: View {
         let n = NSColor(c).usingColorSpace(.sRGB) ?? .gray
         return Color(nsColor: n.blended(withFraction: f, of: .black) ?? n)
     }
-    /// Fill by compute unit: three solid shades of the model's hue. ANE = the colour itself,
-    /// GPU = a darker shade, CPU = a lighter tint. Opaque, no patterns.
-    private func cellFill(_ c: BenchCell) -> AnyShapeStyle { AnyShapeStyle(cellSolid(c)) }
-    private func cellSolid(_ c: BenchCell) -> Color {
+    /// Fill by compute unit: ANE = solid model colour, GPU = diagonal hatch, CPU = horizontal hatch.
+    /// The hatch is a fixed 8-point tile (ImagePaint), so the stripe period is the same on a wide bar,
+    /// a thin bar and a legend swatch (a gradient would stretch with the mark).
+    private func cellFill(_ c: BenchCell) -> AnyShapeStyle {
         let base = cellColor(c)
         switch c.compute {
-        case .ane: return base
-        case .gpu: return BenchDashboard.shade(base, 0.32)
-        case .cpu: return BenchDashboard.tint(base, 0.45)
+        case .ane: return AnyShapeStyle(base)
+        case .gpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.72), diagonal: true)), scale: 1))
+        case .cpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.72), diagonal: false)), scale: 1))
         }
     }
+    /// The line / dot / text colour of a cell: the model colour (the unit is carried by the pattern).
+    private func cellSolid(_ c: BenchCell) -> Color { cellColor(c) }
     /// Line dash by compute unit for the time chart: ANE solid, GPU dashed, CPU dotted.
     private func cellDash(_ c: BenchCell) -> [CGFloat] { c.compute == .ane ? [] : (c.compute == .gpu ? [7, 4] : [2, 4]) }
     private func swatch(_ c: BenchCell) -> some View {
-        RoundedRectangle(cornerRadius: 2).fill(cellSolid(c)).frame(width: 14, height: 10)
+        RoundedRectangle(cornerRadius: 2).fill(cellFill(c)).frame(width: 16, height: 10)
+            .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(cellColor(c), lineWidth: 1))
     }
     // ---- zoom: the charts open on the full data range; the user zooms the value axis (pinch or the
     // Y buttons) and the time axis (X buttons; the chart then scrolls sideways) ----
