@@ -38,6 +38,7 @@ enum ComputeChoice: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
     var mode: ComputeMode { switch self { case .ane: return .all; case .gpu: return .cpuAndGPU; case .cpu: return .cpu } }
     var ep: String { "CoreML-" + rawValue }
+    var icon: String { switch self { case .ane: return "brain"; case .gpu: return "memorychip"; case .cpu: return "cpu" } }
 }
 
 /// One (model x compute unit) cell of a run.
@@ -615,8 +616,7 @@ struct BenchSidebar: View {
                                 Button {
                                     if on { bench.computes.remove(c) } else { bench.computes.insert(c) }
                                 } label: {
-                                    Label(c.rawValue, systemImage: on ? "checkmark" : "")
-                                        .labelStyle(.titleOnly).font(.callout)
+                                    Label(c.rawValue, systemImage: c.icon).font(.callout)
                                         .frame(maxWidth: .infinity).padding(.vertical, 4)
                                 }
                                 .buttonStyle(.bordered).tint(on ? brand : .secondary)
@@ -625,16 +625,16 @@ struct BenchSidebar: View {
                         }
                     }.disabled(bench.running)
                     row("Preprocess") {
-                        SegmentedButtons(options: [(PreprocDevice.gpu, "GPU (Metal)"), (PreprocDevice.cpu, "CPU")], selection: $bench.preproc, tint: brand)
+                        SegmentedButtons(options: [(PreprocDevice.gpu, "GPU (Metal)"), (PreprocDevice.cpu, "CPU")], icons: ["memorychip", "cpu"], selection: $bench.preproc, tint: brand)
                     }.disabled(bench.running)
                     Text("ANE = all compute units (Core ML decides), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 box("Protocol", "list.bullet.clipboard") {
-                    SegmentedButtons(options: BenchKind.allCases.map { ($0, $0.rawValue) }, selection: $bench.kind, tint: brand)
+                    SegmentedButtons(options: BenchKind.allCases.map { ($0, $0.rawValue) }, icons: BenchKind.allCases.map(\.icon), selection: $bench.kind, tint: brand)
                         .disabled(bench.running)
                     Text(bench.kind.blurb).font(.caption2).foregroundStyle(.secondary)
-                    if bench.kind == .sustained { slider("Minutes", $bench.minutes, 0.5...30) }
+                    if bench.kind == .sustained { row("Duration") { TimerDial(minutes: $bench.minutes).disabled(bench.running) } }
                     if bench.kind == .accuracy {
                         fileRow(icon: "photo.on.rectangle.angled", title: "Labelled set (images folder)",
                                 value: bench.datasetURL?.lastPathComponent ?? "Choose images folder…", set: bench.datasetURL != nil) { pickDataset() }
@@ -869,7 +869,7 @@ struct BenchDashboard: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
-            if let p = bench.progress, bench.running { ProgressView(value: p).frame(width: 160) }
+            if let p = bench.progress, bench.running { ProgressView(value: p).frame(maxWidth: .infinity).padding(.horizontal, 24) }
             if bench.running {
                 Button(role: .destructive) { bench.cancel() } label: { Label("Stop", systemImage: "stop.fill") }
                     .onAppear { zoomX = 1; zoomY = 1; pinchBase = 1; bench.selectedCellID = nil }
@@ -1100,9 +1100,9 @@ struct BenchDashboard: View {
             if accuracyMode { return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.accuracy?.map5095 ?? 0, hi: c.accuracy?.map50 ?? 0, color: cellSolid(c), fill: cellFill(c)) }
             return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.cold?.median ?? 0, hi: c.cold?.p90 ?? 0, color: cellSolid(c), fill: cellFill(c))
         }
-        let xMax: Double = accuracyMode ? 1.25 : max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1)
+        let xMax: Double = accuracyMode ? 1.0 : max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1)
         return VStack(alignment: .leading, spacing: 6) {
-            Text(accuracyMode ? "Cells side by side: mAP50-95 (bar) and mAP50 (tick) · click a row to inspect it" : "Cells side by side: median (bar) and p90 (tick) · click a row to inspect it")
+            Text(accuracyMode ? "Cells side by side: mAP50-95 (bar) / mAP50 (dashed tick) · click a row to inspect it" : "Cells side by side: median (bar) and p90 (tick) · click a row to inspect it")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             ScrollViewReader { sp in
             ScrollView(.vertical) {
@@ -1115,11 +1115,16 @@ struct BenchDashboard: View {
                     }
                     BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62))
                         .foregroundStyle(r.fill)
-                    if r.hi > 0 {
+                    if r.hi > 0 && accuracyMode {   // mAP50 as a dashed tick (drawn in the overlay); the label sits past the 1.0 edge
+                        PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).opacity(0)
+                        PointMark(x: .value("end", xMax), y: .value("cell", r.name)).opacity(0)
+                            .annotation(position: .trailing, spacing: 6) {
+                                Text(String(format: "%.4f / %.4f", r.value, r.hi)).font(.caption2.monospacedDigit())
+                            }
+                    } else if r.hi > 0 {
                         PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).symbol(.diamond).foregroundStyle(.primary).symbolSize(30)
                             .annotation(position: .trailing, spacing: 6) {
-                                Text(accuracyMode ? String(format: "%.4f  (mAP50 %.4f)", r.value, r.hi) : String(format: "%.2f ms  (p90 %.2f)", r.value, r.hi))
-                                    .font(.caption2.monospacedDigit())
+                                Text(String(format: "%.2f ms  (p90 %.2f)", r.value, r.hi)).font(.caption2.monospacedDigit())
                             }
                     } else {
                         PointMark(x: .value("value", r.value), y: .value("cell", r.name)).opacity(0)
@@ -1131,15 +1136,32 @@ struct BenchDashboard: View {
             }
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
             .chartXScale(domain: 0...xMax)
-            .chartOverlay { proxy in   // a click (not hover) picks the row under the pointer
+            .padding(.trailing, accuracyMode ? 110 : 0)   // the "map / map50" labels live past the 1.0 edge
+            .chartOverlay { proxy in   // dashed mAP50 ticks (accuracy), and a click (not hover) picks the row under the pointer
                 GeometryReader { geo in
-                    Rectangle().fill(.clear).contentShape(Rectangle())
-                        .onTapGesture { location in
-                            guard let anchor = proxy.plotFrame else { return }
-                            let plot = geo[anchor]
-                            let y = location.y - plot.origin.y
-                            if let name: String = proxy.value(atY: y), let r = rows.first(where: { $0.name == name }) { bench.selectedCellID = r.id }
+                    ZStack {
+                        if accuracyMode {
+                            Canvas { ctx, _ in
+                                guard let anchor = proxy.plotFrame, !rows.isEmpty else { return }
+                                let plot = geo[anchor]
+                                let rowH = plot.height / CGFloat(rows.count), barH = rowH * 0.62
+                                for r in rows where r.hi > 0 {
+                                    guard let yc = proxy.position(forY: r.name), let x = proxy.position(forX: min(r.hi, xMax)) else { continue }
+                                    var path = Path()
+                                    path.move(to: CGPoint(x: plot.minX + x, y: plot.minY + yc - barH / 2 - 3))
+                                    path.addLine(to: CGPoint(x: plot.minX + x, y: plot.minY + yc + barH / 2 + 3))
+                                    ctx.stroke(path, with: .color(.primary), style: StrokeStyle(lineWidth: 2, dash: [3, 2]))
+                                }
+                            }
                         }
+                        Rectangle().fill(.clear).contentShape(Rectangle())
+                            .onTapGesture { location in
+                                guard let anchor = proxy.plotFrame else { return }
+                                let plot = geo[anchor]
+                                let y = location.y - plot.origin.y
+                                if let name: String = proxy.value(atY: y), let r = rows.first(where: { $0.name == name }) { bench.selectedCellID = r.id }
+                            }
+                    }
                 }
             }
             .frame(height: CGFloat(max(rows.count, 1)) * 40 + 40)
@@ -1273,6 +1295,16 @@ struct BenchDashboard: View {
         return ""
     }
 
+    /// AP colour bands: below 0.1 red, 0.1 to 0.2 orange, 0.2 to 0.3 yellow, 0.3 to 0.6 green, 0.6 and up purple.
+    static func apColor(_ ap: Double) -> Color {
+        switch ap {
+        case ..<0.1: return Color(red: 0.96, green: 0.26, blue: 0.21)
+        case ..<0.2: return Color(red: 1.00, green: 0.58, blue: 0.00)
+        case ..<0.3: return Color(red: 0.98, green: 0.80, blue: 0.18)
+        case ..<0.6: return Color(red: 0.20, green: 0.84, blue: 0.29)
+        default: return Color(red: 0.69, green: 0.32, blue: 0.87)
+        }
+    }
     @State private var hoverClass: Int? = nil
     private func accuracyChart(_ a: BenchDocument.Accuracy) -> some View {
         let rows = a.per_class.sorted { $0.ap5095 > $1.ap5095 }
@@ -1294,7 +1326,7 @@ struct BenchDashboard: View {
             Chart {
                 ForEach(rows, id: \.class_id) { c in
                     BarMark(x: .value("class", "\(c.class_id)"), y: .value("AP", c.ap5095))
-                        .foregroundStyle(hoverClass == nil || hoverClass == c.class_id ? brand : brand.opacity(0.35))
+                        .foregroundStyle(hoverClass == nil || hoverClass == c.class_id ? BenchDashboard.apColor(c.ap5095) : BenchDashboard.apColor(c.ap5095).opacity(0.35))
                 }
                 RuleMark(y: .value("mAP", a.map5095)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
             }
@@ -1321,18 +1353,58 @@ struct BenchDashboard: View {
     }
 }
 
+/// A timer-style duration control: big MM : SS digits with steppers, like the Clock app's timer.
+/// Minutes 0 to 30, seconds in quarter-minute steps; the value is minutes as a Double.
+struct TimerDial: View {
+    @Binding var minutes: Double
+    private var mm: Int { Int(minutes) }
+    private var ss: Int { Int(((minutes - Double(mm)) * 60).rounded()) }
+    private func set(_ m: Int, _ s: Int) {
+        let clampedM = max(0, min(30, m)), clampedS = max(0, min(45, s))
+        let v = Double(clampedM) + Double(clampedS) / 60
+        minutes = max(0.25, min(30, v))
+    }
+    var body: some View {
+        HStack(spacing: 6) {
+            Spacer(minLength: 0)
+            digitColumn(value: mm, label: "min", up: { set(mm + 1, ss) }, down: { set(mm - 1, ss) })
+            Text(":").font(.system(size: 34, weight: .light, design: .rounded)).foregroundStyle(.secondary).padding(.bottom, 14)
+            digitColumn(value: ss, label: "sec", up: { set(mm, ss + 15) }, down: { set(mm, ss - 15) })
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
+    }
+    private func digitColumn(value: Int, label: String, up: @escaping () -> Void, down: @escaping () -> Void) -> some View {
+        VStack(spacing: 0) {
+            Button(action: up) { Image(systemName: "chevron.up").font(.caption2) }.buttonStyle(.borderless).foregroundStyle(.secondary)
+            Text(String(format: "%02d", value))
+                .font(.system(size: 34, weight: .light, design: .rounded).monospacedDigit())
+                .contentTransition(.numericText())
+                .animation(.easeInOut(duration: 0.15), value: value)
+            Button(action: down) { Image(systemName: "chevron.down").font(.caption2) }.buttonStyle(.borderless).foregroundStyle(.secondary)
+            Text(label).font(.caption2).foregroundStyle(.tertiary)
+        }
+        .frame(width: 64)
+    }
+}
+
 /// Equal-width bordered buttons that fill their row (the Units row look), used wherever a segmented
 /// picker would size itself to its labels and leave the row ragged.
 struct SegmentedButtons<T: Hashable>: View {
     let options: [(T, String)]
+    var icons: [String] = []          // optional SF Symbols, parallel to options
     @Binding var selection: T
     let tint: Color
     var body: some View {
         HStack(spacing: 8) {
-            ForEach(Array(options.enumerated()), id: \.offset) { _, o in
+            ForEach(Array(options.enumerated()), id: \.offset) { i, o in
                 let on = selection == o.0
                 Button { selection = o.0 } label: {
-                    Text(o.1).font(.callout).lineLimit(1).frame(maxWidth: .infinity).padding(.vertical, 4)
+                    Group {
+                        if i < icons.count { Label(o.1, systemImage: icons[i]) } else { Text(o.1) }
+                    }
+                    .font(.callout).lineLimit(1).frame(maxWidth: .infinity).padding(.vertical, 4)
                 }
                 .buttonStyle(.bordered).tint(on ? tint : .secondary)
                 .background(RoundedRectangle(cornerRadius: 6).fill(on ? tint.opacity(0.14) : .clear))
