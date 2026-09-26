@@ -731,12 +731,12 @@ struct BenchDashboard: View {
 
     /// The protocol being shown: the record's for a history record, else the live selection.
     private var shownKind: BenchKind { selectedRecord != nil ? (shownRecord?.kind ?? bench.kind) : (bench.running || bench.lastRecord == nil ? bench.kind : bench.lastRecord!.kind) }
-    /// Colour means SPEED, the iOS app's rule (StatsHUD.msColor): the cell's median model time decides it,
-    /// whatever the model or unit. Under 30 ms purple, under 50 green, under 100 orange, slower red.
+    /// Colour means SPEED (the iOS StatsHUD rule with Mac breakpoints): the cell's median model time
+    /// decides it, whatever the model or unit. Under 20 ms purple, 20 to 40 green, 40 to 100 orange, slower red.
     static func msColor(_ ms: Double) -> Color {
         switch ms {
-        case ..<30: return Color(red: 0.69, green: 0.32, blue: 0.87)
-        case ..<50: return Color(red: 0.20, green: 0.84, blue: 0.29)
+        case ..<20: return Color(red: 0.69, green: 0.32, blue: 0.87)
+        case ..<40: return Color(red: 0.20, green: 0.84, blue: 0.29)
         case ..<100: return Color(red: 1.00, green: 0.58, blue: 0.00)
         default: return Color(red: 0.96, green: 0.26, blue: 0.21)
         }
