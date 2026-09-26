@@ -600,7 +600,7 @@ struct BenchSidebar: View {
                     }.disabled(bench.running)
                     row("Preprocess") {
                         Picker("", selection: $bench.preproc) { Text("GPU (Metal)").tag(PreprocDevice.gpu); Text("CPU").tag(PreprocDevice.cpu) }
-                            .pickerStyle(.segmented).labelsHidden()
+                            .pickerStyle(.segmented).labelsHidden().frame(maxWidth: .infinity)
                     }.disabled(bench.running)
                     Text("ANE = all compute units (Core ML decides), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
                         .font(.caption2).foregroundStyle(.secondary)
@@ -614,7 +614,6 @@ struct BenchSidebar: View {
                     if bench.kind == .accuracy {
                         fileRow(icon: "photo.on.rectangle.angled", title: "Labelled set (images folder)",
                                 value: bench.datasetURL?.lastPathComponent ?? "Choose images folder…", set: bench.datasetURL != nil) { pickDataset() }
-                        intRow("Image limit (0 = all)", $bench.datasetLimit, 0...5000, step: 50)
                         Text("Labels are read from the sibling labels/ folder (the ultralytics layout) or next to each image.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
@@ -1031,7 +1030,7 @@ struct BenchDashboard: View {
         let stats = values.count > 1 ? StageStats(values) : nil
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text("Latency distribution").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Latency distribution (iterations per bin)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 if let c = cell {
                     swatch(c)
                     Text("\(c.modelName) · \(c.compute.rawValue)").font(.caption.weight(.semibold)).foregroundStyle(.primary)
@@ -1051,9 +1050,9 @@ struct BenchDashboard: View {
                     RuleMark(x: .value("p99", st.p99)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3])).annotation(position: .top, alignment: .leading) { Text("p99").font(.caption2).foregroundStyle(.secondary) }
                 }
             }
-            .chartXAxisLabel("ms").chartYAxisLabel("iterations")
+            .chartXAxisLabel("ms")
             .chartXScale(domain: range)
-            .chartYScale(domain: 0...Double(max(counts.max() ?? 1, 1)) * 1.08)
+            .chartYScale(domain: 0...Double(max(counts.max() ?? 1, 1)) * 1.12)   // headroom for the rule labels
             .gesture(MagnifyGesture().onChanged { v in zoomX = max(1, min(64, pinchBase * v.magnification)) }.onEnded { _ in pinchBase = zoomX })
         }
         .padding(12)

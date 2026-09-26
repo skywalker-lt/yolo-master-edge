@@ -1219,7 +1219,7 @@ struct ContentView: View {
             Picker("", selection: $appMode) {
                 ForEach(AppMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            .pickerStyle(.segmented).labelsHidden()
+            .pickerStyle(.segmented).labelsHidden().frame(maxWidth: .infinity)
             .disabled(engine.busy || bench.running)
 
             if appMode == .bench {
@@ -1251,7 +1251,7 @@ struct ContentView: View {
                             Picker("", selection: $preprocDevice) {
                                 Text("GPU (Metal)").tag(PreprocDevice.gpu)
                                 Text("CPU").tag(PreprocDevice.cpu)
-                            }.pickerStyle(.segmented).labelsHidden()
+                            }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: .infinity)
                         }
                         Text(preprocDevice == .gpu
                              ? "Letterbox, RGB conversion and the input tensor are built by a Metal kernel; the camera feed is read without a copy."
