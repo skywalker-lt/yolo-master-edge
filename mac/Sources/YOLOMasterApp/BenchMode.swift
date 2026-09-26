@@ -1011,7 +1011,6 @@ struct BenchDashboard: View {
         let cell = focusCell
         let values: [Double] = bench.running ? bench.liveSamples.map(\.ms) : (cell?.samples ?? [])
         let color = cell.map { cellColor($0) } ?? brand
-        let fill: AnyShapeStyle = cell.map { cellFill($0) } ?? AnyShapeStyle(brand)
         var range = BenchDashboard.yRange(values)
         if zoomX > 1 {   // narrow the axis around the median
             let med = values.count > 1 ? StageStats(values).median : range.lowerBound
@@ -1042,9 +1041,9 @@ struct BenchDashboard: View {
                 zoomBar()
             }
             Chart {
-                ForEach(bins) { b in
+                ForEach(bins) { b in   // each bin takes the speed colour of its own latency
                     RectangleMark(xStart: .value("from", b.lo), xEnd: .value("to", b.hi), yStart: .value("zero", 0), yEnd: .value("count", b.n))
-                        .foregroundStyle(fill)
+                        .foregroundStyle(BenchDashboard.msColor((b.lo + b.hi) / 2))
                 }
                 if let st = stats {
                     RuleMark(x: .value("median", st.median)).foregroundStyle(.primary).lineStyle(StrokeStyle(lineWidth: 1.5)).annotation(position: .top, alignment: .leading) { Text("median").font(.caption2) }
