@@ -365,6 +365,7 @@ final class BenchModel: ObservableObject {
     @Published private(set) var cells: [BenchCell] = []     // the current / last run
     @Published private(set) var lastRecord: BenchRecord?
     @Published var note = ""
+    @Published var selectedCellID: UUID? = nil      // the cell the dashboard inspects (table row / bar / arrow keys)
     let store = BenchStore()
 
     private let queue = DispatchQueue(label: "com.yolomaster.bench", qos: .userInitiated)
@@ -664,7 +665,6 @@ struct BenchSidebar: View {
                                 Button("Delete") { store.remove([r.id]); if selectedRecord == r.id { selectedRecord = nil } }
                             }
                         }
-                        Text("Up / down arrows walk the runs.").font(.caption2).foregroundStyle(.tertiary)
                         HStack {
                             Button { bench.exportCSV() } label: { Label("Export CSV", systemImage: "square.and.arrow.up") }
                             Spacer()
@@ -741,7 +741,7 @@ struct BenchSidebar: View {
 // MARK: - hatch tiles (fixed-size pattern fills, cached per colour and orientation)
 
 enum HatchTiles {
-    enum Kind { case stripes, dots }
+    enum Kind { case stripes, cross }
     private static var cache: [String: NSImage] = [:]
     /// A seamless 12 x 12 pt tile rendered as a 2x bitmap: `bg` with `fg` 45-degree stripes (2 pt
     /// wide, 6 pt apart) or a grid of 2.6 pt dots. Bitmap-backed so the pattern never resamples.
@@ -763,11 +763,13 @@ enum HatchTiles {
                 ctx.move(to: CGPoint(x: off - 6, y: -6)); ctx.addLine(to: CGPoint(x: off + 18, y: 18))
             }
             ctx.strokePath()
-        case .dots:
-            ctx.setFillColor(line)
-            for (x, y) in [(3.0, 3.0), (9.0, 9.0)] {   // staggered grid, 6 pt pitch
-                ctx.fillEllipse(in: CGRect(x: x - 1.3, y: y - 1.3, width: 2.6, height: 2.6))
+        case .cross:
+            ctx.setStrokeColor(line); ctx.setLineWidth(1.5); ctx.setLineCap(.butt)
+            for off in [-12.0, -6.0, 0.0, 6.0, 12.0] {   // both diagonals
+                ctx.move(to: CGPoint(x: off - 6, y: -6)); ctx.addLine(to: CGPoint(x: off + 18, y: 18))
+                ctx.move(to: CGPoint(x: off - 6, y: 18)); ctx.addLine(to: CGPoint(x: off + 18, y: -6))
             }
+            ctx.strokePath()
         }
         let img = NSImage(cgImage: ctx.makeImage()!, size: NSSize(width: pt, height: pt))
         cache[key] = img
@@ -823,7 +825,7 @@ struct BenchDashboard: View {
         switch c.compute {
         case .ane: return AnyShapeStyle(base)
         case .gpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.7), kind: .stripes)), scale: 1))
-        case .cpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.7), kind: .dots)), scale: 1))
+        case .cpu: return AnyShapeStyle(ImagePaint(image: Image(nsImage: HatchTiles.tile(base, BenchDashboard.tint(base, 0.7), kind: .cross)), scale: 1))
         }
     }
     /// The line / dot / text colour of a cell: the model colour (the unit is carried by the pattern).
@@ -839,12 +841,12 @@ struct BenchDashboard: View {
     @State private var zoomX: Double = 1
     @State private var zoomY: Double = 1
     @State private var pinchBase: Double = 1
-    // ---- the cell the distribution card shows: clicked in the side-by-side chart or the results table ----
-    @State private var selectedCellID: UUID? = nil
+    // ---- the cell the distribution card shows: clicked in the side-by-side chart or the results table,
+    // or moved with the up / down arrow keys ----
     private var focusCell: BenchCell? {
         if bench.running { return bench.liveCell }
         let cells = shownCells
-        return cells.first { $0.id == selectedCellID } ?? cells.first
+        return cells.first { $0.id == bench.selectedCellID } ?? cells.first
     }
     private func zoomBar() -> some View {
         HStack(spacing: 4) {
@@ -923,7 +925,7 @@ struct BenchDashboard: View {
             if let p = bench.progress, bench.running { ProgressView(value: p).frame(width: 160) }
             if bench.running {
                 Button(role: .destructive) { bench.cancel() } label: { Label("Stop", systemImage: "stop.fill") }
-                    .onAppear { zoomX = 1; zoomY = 1; pinchBase = 1; selectedCellID = nil }
+                    .onAppear { zoomX = 1; zoomY = 1; pinchBase = 1; bench.selectedCellID = nil }
             } else {
                 Button { bench.run() } label: { Label("Run", systemImage: "play.fill") }
                     .buttonStyle(.borderedProminent).tint(brand).keyboardShortcut(.return, modifiers: .command)
@@ -1129,6 +1131,20 @@ struct BenchDashboard: View {
             .chartXAxisLabel("ms").chartYAxisLabel("iterations")
             .chartXScale(domain: range)
             .chartYScale(domain: 0...Double(max(counts.max() ?? 1, 1)) * 1.08)
+            .chartOverlay { proxy in   // 1 pt border on every bar
+                GeometryReader { geo in
+                    Canvas { ctx, _ in
+                        guard let anchor = proxy.plotFrame else { return }
+                        let plot = geo[anchor]
+                        for b in bins {
+                            guard let x0 = proxy.position(forX: b.lo), let x1 = proxy.position(forX: b.hi),
+                                  let y0 = proxy.position(forY: 0.0), let y1 = proxy.position(forY: Double(b.n)) else { continue }
+                            let r = CGRect(x: plot.minX + x0, y: plot.minY + y1, width: x1 - x0, height: y0 - y1).insetBy(dx: 0.5, dy: 0.5)
+                            ctx.stroke(Path(r), with: .color(color), lineWidth: 1)
+                        }
+                    }
+                }
+            }
             .gesture(MagnifyGesture().onChanged { v in zoomX = max(1, min(64, pinchBase * v.magnification)) }.onEnded { _ in pinchBase = zoomX })
         }
         .padding(12)
@@ -1177,14 +1193,27 @@ struct BenchDashboard: View {
             }
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
             .chartXScale(domain: 0...xMax)
-            .chartOverlay { proxy in   // click (not hover) picks the row under the pointer
+            .chartOverlay { proxy in   // borders on every bar, and a click (not hover) picks the row under the pointer
                 GeometryReader { geo in
-                    Rectangle().fill(.clear).contentShape(Rectangle())
-                        .onTapGesture { location in
-                            let plot = geo[proxy.plotFrame!]
-                            let y = location.y - plot.origin.y
-                            if let name: String = proxy.value(atY: y), let r = rows.first(where: { $0.name == name }) { selectedCellID = r.id }
+                    ZStack {
+                        Canvas { ctx, _ in
+                            guard let anchor = proxy.plotFrame, !rows.isEmpty else { return }
+                            let plot = geo[anchor]
+                            let rowH = plot.height / CGFloat(rows.count), barH = rowH * 0.62
+                            for r in rows {
+                                guard let yc = proxy.position(forY: r.name), let x0 = proxy.position(forX: 0.0), let x1 = proxy.position(forX: r.value) else { continue }
+                                let rect = CGRect(x: plot.minX + x0, y: plot.minY + yc - barH / 2, width: x1 - x0, height: barH).insetBy(dx: 0.5, dy: 0.5)
+                                ctx.stroke(Path(rect), with: .color(r.color), lineWidth: 1)
+                            }
                         }
+                        Rectangle().fill(.clear).contentShape(Rectangle())
+                            .onTapGesture { location in
+                                guard let anchor = proxy.plotFrame else { return }
+                                let plot = geo[anchor]
+                                let y = location.y - plot.origin.y
+                                if let name: String = proxy.value(atY: y), let r = rows.first(where: { $0.name == name }) { bench.selectedCellID = r.id }
+                            }
+                    }
                 }
             }
             .frame(height: CGFloat(max(rows.count, 1)) * 40 + 40)
@@ -1270,7 +1299,7 @@ struct BenchDashboard: View {
                         .padding(.horizontal, 6)
                         .background(RoundedRectangle(cornerRadius: 5).fill(focusCell?.id == c.id ? BenchDashboard.tint(cellColor(c), 0.82) : .clear))
                         .contentShape(Rectangle())
-                        .onTapGesture { selectedCellID = c.id }
+                        .onTapGesture { bench.selectedCellID = c.id }
                     }
                 }
                 .padding(.trailing, 14)   // room for the scrollbar
