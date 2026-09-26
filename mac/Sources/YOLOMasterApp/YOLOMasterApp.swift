@@ -1165,15 +1165,13 @@ struct ContentView: View {
         }
     }
     private func step(_ dir: Int, vertical: Bool) {
-        if appMode == .bench {   // up / down walk the run history (newest first); the dashboard follows
+        if appMode == .bench {   // up / down move the inspected cell through the results table / side-by-side bars
             guard vertical, !bench.running else { return }
-            let ids = bench.store.records.map(\.id)
+            let cells = selectedBenchRecord.flatMap { id in bench.store.records.first { $0.id == id }?.cells } ?? bench.cells
+            let ids = cells.map(\.id)
             guard !ids.isEmpty else { return }
-            if let cur = selectedBenchRecord, let i = ids.firstIndex(of: cur) {
-                let j = i + dir
-                if j < 0 { selectedBenchRecord = nil }            // above the newest: back to the live / last run
-                else if j < ids.count { selectedBenchRecord = ids[j] }
-            } else if dir > 0 { selectedBenchRecord = ids[0] }
+            let i = bench.selectedCellID.flatMap { ids.firstIndex(of: $0) } ?? 0
+            bench.selectedCellID = ids[max(0, min(ids.count - 1, i + dir))]
             return
         }
         switch sourceKind {
