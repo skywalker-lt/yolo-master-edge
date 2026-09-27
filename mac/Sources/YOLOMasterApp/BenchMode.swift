@@ -349,7 +349,14 @@ final class BenchModel: ObservableObject {
     @Published var selectedModels: Set<URL> = []
     @Published var computes: Set<ComputeChoice> = [.gpu]
     @Published var preproc: PreprocDevice = .gpu
-    @Published var kind: BenchKind = .cold
+    @Published var kind: BenchKind = .cold { didSet { if kind == .sustained { collapseToSingle() } } }
+    /// Sustained runs one model on one unit: a timed loop only makes sense against one thermal history,
+    /// and running cells back to back would hand the second one a pre-heated machine.
+    var singleCell: Bool { kind == .sustained }
+    func collapseToSingle() {
+        if selectedModels.count > 1, let keep = models.first(where: { selectedModels.contains($0) }) { selectedModels = [keep] }
+        if computes.count > 1, let keep = ComputeChoice.allCases.first(where: { computes.contains($0) }) { computes = [keep] }
+    }
     let warmup = 10.0                            // fixed by the protocol (the Linux CLI's defaults)
     let iters = 100.0
     @Published var minutes = 2.0
@@ -396,7 +403,7 @@ final class BenchModel: ObservableObject {
             guard models.count < BenchModel.maxModels else { note = "At most \(BenchModel.maxModels) models in the list; remove one first."; return }
             models.append(url)
         }
-        selectedModels.insert(url)
+        if singleCell { selectedModels = [url] } else { selectedModels.insert(url) }
     }
     func removeModel(_ url: URL) { models.removeAll { $0 == url }; selectedModels.remove(url) }
 
@@ -434,6 +441,7 @@ final class BenchModel: ObservableObject {
         let targets = models.filter { selectedModels.contains($0) }
         guard !targets.isEmpty else { note = "Add and select at least one model."; return }
         guard !computes.isEmpty else { note = "Select at least one compute unit."; return }
+        if singleCell && (targets.count > 1 || computes.count > 1) { note = "Sustained runs one model on one compute unit at a time."; return }
         if kind == .accuracy && datasetURL == nil { note = "Choose the images folder first."; return }
         cancelLock.lock(); cancelFlag = false; cancelLock.unlock()
         running = true; cells = []; liveSamples = []; liveSeconds = []; liveCell = nil; progress = nil; note = ""
@@ -595,7 +603,8 @@ struct BenchSidebar: View {
                         HStack(spacing: 6) {
                             fileRow(icon: on ? "checkmark.circle.fill" : "circle", title: on ? "Model · included" : "Model · skipped",
                                     value: u.deletingPathExtension().lastPathComponent, set: on, chevron: false) {
-                                if on { bench.selectedModels.remove(u) } else { bench.selectedModels.insert(u) }
+                                if bench.singleCell { bench.selectedModels = [u] }
+                                else if on { bench.selectedModels.remove(u) } else { bench.selectedModels.insert(u) }
                             }
                             Button { bench.removeModel(u) } label: { Image(systemName: "minus.circle").foregroundStyle(.tertiary) }
                                 .buttonStyle(.borderless).help("Remove from the list")
@@ -614,7 +623,8 @@ struct BenchSidebar: View {
                             ForEach(ComputeChoice.allCases) { c in
                                 let on = bench.computes.contains(c)
                                 Button {
-                                    if on { bench.computes.remove(c) } else { bench.computes.insert(c) }
+                                    if bench.singleCell { bench.computes = [c] }
+                                    else if on { bench.computes.remove(c) } else { bench.computes.insert(c) }
                                 } label: {
                                     Label(c.rawValue, systemImage: c.icon).font(.callout)
                                         .frame(maxWidth: .infinity).padding(.vertical, 4)
@@ -627,7 +637,9 @@ struct BenchSidebar: View {
                     row("Preprocess") {
                         SegmentedButtons(options: [(PreprocDevice.gpu, "GPU"), (PreprocDevice.cpu, "CPU")], icons: ["rectangle.stack.fill", "cpu"], selection: $bench.preproc, tint: brand)
                     }.disabled(bench.running)
-                    Text("ANE = all compute units (Core ML decides), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
+                    Text(bench.singleCell
+                         ? "ANE = all compute units (Core ML decides), GPU = CPU and GPU, CPU only. Sustained runs one model on one unit; pick one of each."
+                         : "ANE = all compute units (Core ML decides), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 box("Protocol", "list.bullet.clipboard") {
