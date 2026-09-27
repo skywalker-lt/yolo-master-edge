@@ -38,7 +38,7 @@ enum ComputeChoice: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
     var mode: ComputeMode { switch self { case .ane: return .all; case .gpu: return .cpuAndGPU; case .cpu: return .cpu } }
     var ep: String { "CoreML-" + rawValue }
-    var icon: String { switch self { case .ane: return "brain"; case .gpu: return "memorychip"; case .cpu: return "cpu" } }
+    var icon: String { switch self { case .ane: return "sparkles"; case .gpu: return "rectangle.stack.fill"; case .cpu: return "cpu" } }
 }
 
 /// One (model x compute unit) cell of a run.
@@ -625,14 +625,15 @@ struct BenchSidebar: View {
                         }
                     }.disabled(bench.running)
                     row("Preprocess") {
-                        SegmentedButtons(options: [(PreprocDevice.gpu, "GPU (Metal)"), (PreprocDevice.cpu, "CPU")], icons: ["memorychip", "cpu"], selection: $bench.preproc, tint: brand)
+                        SegmentedButtons(options: [(PreprocDevice.gpu, "GPU (Metal)"), (PreprocDevice.cpu, "CPU")], icons: ["rectangle.stack.fill", "cpu"], selection: $bench.preproc, tint: brand)
                     }.disabled(bench.running)
                     Text("ANE = all compute units (Core ML decides), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 box("Protocol", "list.bullet.clipboard") {
-                    SegmentedButtons(options: BenchKind.allCases.map { ($0, $0.rawValue) }, icons: BenchKind.allCases.map(\.icon), selection: $bench.kind, tint: brand)
-                        .disabled(bench.running)
+                    Picker("", selection: $bench.kind) {
+                        ForEach(BenchKind.allCases, id: \.self) { Label($0.rawValue, systemImage: $0.icon).tag($0) }
+                    }.pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity).disabled(bench.running)
                     Text(bench.kind.blurb).font(.caption2).foregroundStyle(.secondary)
                     if bench.kind == .sustained { row("Duration") { TimerDial(minutes: $bench.minutes).disabled(bench.running) } }
                     if bench.kind == .accuracy {
@@ -765,6 +766,7 @@ struct BenchDashboard: View {
         }
     }
     private func cellColor(_ c: BenchCell) -> Color {
+        if shownKind == .sustained { return brand }   // the sustained traces are all blue; the throttle figure is the story there
         if bench.running, bench.liveCell?.id == c.id, bench.liveSamples.count > 1 { return BenchDashboard.msColor(StageStats(bench.liveSamples.map(\.ms)).median) }
         return BenchDashboard.msColor(c.headlineMs ?? 0)
     }
@@ -1360,7 +1362,7 @@ struct TimerDial: View {
     private var mm: Int { Int(minutes) }
     private var ss: Int { Int(((minutes - Double(mm)) * 60).rounded()) }
     private func set(_ m: Int, _ s: Int) {
-        let clampedM = max(0, min(30, m)), clampedS = max(0, min(45, s))
+        let clampedM = max(0, min(30, m)), clampedS = max(0, min(59, s))
         let v = Double(clampedM) + Double(clampedS) / 60
         minutes = max(0.25, min(30, v))
     }
@@ -1375,13 +1377,36 @@ struct TimerDial: View {
         .padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
     }
+    @State private var editing: String? = nil       // "min" | "sec" while a group is being typed
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+    private func commit() {
+        defer { editing = nil; draft = "" }
+        guard let n = Int(draft.trimmingCharacters(in: .whitespaces)) else { return }
+        if editing == "min" { set(min(n, 30), n >= 30 ? 0 : ss) }
+        else if editing == "sec" { set(mm, min(max(n, 0), 59)) }
+    }
     private func digitColumn(value: Int, label: String, up: @escaping () -> Void, down: @escaping () -> Void) -> some View {
         VStack(spacing: 0) {
             Button(action: up) { Image(systemName: "chevron.up").font(.caption2) }.buttonStyle(.borderless).foregroundStyle(.secondary)
-            Text(String(format: "%02d", value))
-                .font(.system(size: 34, weight: .light, design: .rounded).monospacedDigit())
-                .contentTransition(.numericText())
-                .animation(.easeInOut(duration: 0.15), value: value)
+            if editing == label {   // double-clicked: type the number (Return commits, Escape cancels)
+                TextField("", text: $draft)
+                    .textFieldStyle(.plain).multilineTextAlignment(.center)
+                    .font(.system(size: 34, weight: .light, design: .rounded).monospacedDigit())
+                    .focused($focused)
+                    .onSubmit { commit() }
+                    .onExitCommand { editing = nil; draft = "" }
+                    .onChange(of: focused) { if !focused && editing == label { commit() } }
+                    .onAppear { focused = true }
+            } else {
+                Text(String(format: "%02d", value))
+                    .font(.system(size: 34, weight: .light, design: .rounded).monospacedDigit())
+                    .contentTransition(.numericText())
+                    .animation(.easeInOut(duration: 0.15), value: value)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { draft = String(value); editing = label }
+                    .help("Double-click to type a value (30 minutes at most)")
+            }
             Button(action: down) { Image(systemName: "chevron.down").font(.caption2) }.buttonStyle(.borderless).foregroundStyle(.secondary)
             Text(label).font(.caption2).foregroundStyle(.tertiary)
         }
