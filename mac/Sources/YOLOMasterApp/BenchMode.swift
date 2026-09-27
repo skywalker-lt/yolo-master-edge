@@ -769,12 +769,10 @@ struct BenchDashboard: View {
         if bench.running, bench.liveCell?.id == c.id, bench.liveSamples.count > 1 { return BenchDashboard.msColor(StageStats(bench.liveSamples.map(\.ms)).median) }
         return BenchDashboard.msColor(c.headlineMs ?? 0)
     }
-    /// A lighter, still opaque tint of a colour (mixed with the window background, not translucent).
-    private static func tint(_ c: Color, _ f: CGFloat) -> Color {
-        let n = NSColor(c).usingColorSpace(.sRGB) ?? .gray
-        let bg = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .white
-        return Color(nsColor: n.blended(withFraction: f, of: bg) ?? n)
-    }
+    /// A light wash of a colour for bands and row highlights. Translucent on purpose: it composites over
+    /// whatever the card draws in the current appearance, so a light window never gets a band blended
+    /// against the dark window colour (that happened when the app switched modes).
+    private static func tint(_ c: Color, _ f: CGFloat) -> Color { c.opacity(1 - f) }
     /// A darker shade of a colour (mixed with black, opaque).
     private static func shade(_ c: Color, _ f: CGFloat) -> Color {
         let n = NSColor(c).usingColorSpace(.sRGB) ?? .gray
@@ -1373,7 +1371,7 @@ struct TimerDial: View {
             digitColumn(value: ss, label: "sec", up: { set(mm, ss + 15) }, down: { set(mm, ss - 15) })
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 14)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
     }
     @State private var editing: String? = nil       // "min" | "sec" while a group is being typed
@@ -1388,6 +1386,7 @@ struct TimerDial: View {
     private func digitColumn(value: Int, label: String, up: @escaping () -> Void, down: @escaping () -> Void) -> some View {
         VStack(spacing: 0) {
             Button(action: up) { Image(systemName: "chevron.up").font(.caption2) }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                .frame(height: 20)
             if editing == label {   // double-clicked: type the number (Return commits, Escape cancels)
                 TextField("", text: $draft)
                     .textFieldStyle(.plain).multilineTextAlignment(.center)
@@ -1407,6 +1406,7 @@ struct TimerDial: View {
                     .help("Double-click to type a value (30 minutes at most)")
             }
             Button(action: down) { Image(systemName: "chevron.down").font(.caption2) }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                .frame(height: 20)
             Text(label).font(.caption2).foregroundStyle(.tertiary)
         }
         .frame(width: 64)
@@ -1487,14 +1487,10 @@ struct ThermometerView: View {
                 let fill = h * frac
                 ZStack(alignment: .bottom) {
                     Capsule().fill(Color.primary.opacity(0.08)).frame(width: w)
-                    Capsule().fill(LinearGradient(stops: [                                                // 30..120 C on the tube
-                            .init(color: .blue, location: 0.0), .init(color: .blue, location: 0.17),        // < 50 C
-                            .init(color: .green, location: 0.27), .init(color: .green, location: 0.50),     // 50 - 80 C
-                            .init(color: .yellow, location: 0.60), .init(color: .orange, location: 0.83),   // 80 - 110 C
-                            .init(color: .red, location: 0.90), .init(color: .red, location: 1.0)           // >= 110 C
-                        ], startPoint: .bottom, endPoint: .top))
+                    Capsule().fill(thermalColor(level))                     // the whole column takes the zone colour
                         .frame(width: w).mask(alignment: .bottom) { Rectangle().frame(height: max(w, fill)) }
                         .animation(.easeInOut(duration: 0.6), value: frac)
+                        .animation(.easeInOut(duration: 0.4), value: level)
                 }.frame(maxWidth: .infinity)
             }
             Text(meters.celsius.map { String(format: "%.0f °C", $0) } ?? thermalName(level))
