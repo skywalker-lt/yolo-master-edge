@@ -1239,13 +1239,12 @@ struct ContentView: View {
                     }
                     sectionBox("Preprocess", "aspectratio") {
                         segRow("Input fit") {
-                            Picker("", selection: $preprocess) {
-                                Text("Letterbox").tag(Detector.PreprocessMode.letterbox)
-                                Text("Stretch").tag(Detector.PreprocessMode.stretch)
-                            }.pickerStyle(.segmented).labelsHidden().disabled(cameraOn)
+                            SegmentedButtons(options: [(Detector.PreprocessMode.letterbox, "Letterbox"), (Detector.PreprocessMode.stretch, "Stretch")],
+                                             icons: ["rectangle.inset.filled", "arrow.left.and.right.square"], selection: $preprocess, tint: brandColor)
+                                .disabled(cameraOn)
                         }
                         segRow("Device") {
-                            SegmentedButtons(options: [(PreprocDevice.gpu, "GPU (Metal)"), (PreprocDevice.cpu, "CPU")], icons: ["memorychip", "cpu"], selection: $preprocDevice, tint: brandColor)
+                            SegmentedButtons(options: [(PreprocDevice.gpu, "GPU"), (PreprocDevice.cpu, "CPU")], icons: ["rectangle.stack.fill", "cpu"], selection: $preprocDevice, tint: brandColor)
                         }
                         Text(preprocDevice == .gpu
                              ? "Letterbox, RGB conversion and the input tensor are built by a Metal kernel; the camera feed is read without a copy."
@@ -1254,16 +1253,15 @@ struct ContentView: View {
                     }
                     sectionBox("Slicing", "square.grid.3x3") {
                         segRow("Mode") {
-                            Picker("", selection: $tiling) {
-                                ForEach(TilingMode.allCases, id: \.self) { Text($0.label).tag($0) }
-                            }.pickerStyle(.segmented).labelsHidden()
+                            SegmentedButtons(options: TilingMode.allCases.map { ($0, $0.label) }, selection: $tiling, tint: brandColor)
                                 .disabled(cameraOn || sourceKind == .video)
                         }
                         if tiling != .off && !(cameraOn || sourceKind == .video) {
                             tileSizeRow
                             if engine.modelIsSegment {
-                                Toggle("Masks (global pass)", isOn: $tilingMasks)
-                                    .toggleStyle(.switch).controlSize(.small).font(.callout)
+                                segRow("Masks (global pass)") {
+                                    SegmentedButtons(options: [(false, "Off"), (true, "On")], icons: ["square.dashed", "square.fill.on.square"], selection: $tilingMasks, tint: brandColor)
+                                }
                                 Text("Masks come from the full-image pass; tile detections stay boxes-only.")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
@@ -1289,9 +1287,8 @@ struct ContentView: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         segRow("NMS") {
-                            Picker("", selection: $nmsMode) {
-                                ForEach(NMSMode.allCases, id: \.self) { Text($0.label).tag($0) }
-                            }.pickerStyle(.segmented).labelsHidden().disabled(videoTuningLocked)
+                            SegmentedButtons(options: NMSMode.allCases.map { ($0, $0.label) }, icons: ["rectangle.on.rectangle", "rectangle.3.group"], selection: $nmsMode, tint: brandColor)
+                                .disabled(videoTuningLocked)
                         }
                         if nmsMode == .clusterWeighted {
                             sliderRow("Sigma", $sigma, 0.01...0.5).disabled(videoTuningLocked)
@@ -1300,9 +1297,8 @@ struct ContentView: View {
                         }
                         if sourceKind == .video && !cameraOn {
                             segRow("Tracking") {
-                                Picker("", selection: $trackMode) {
-                                    Text("Off").tag("off"); Text("ByteTrack").tag("bytetrack"); Text("BoT-SORT").tag("botsort")
-                                }.pickerStyle(.segmented).labelsHidden().disabled(videoTuningLocked)
+                                SegmentedButtons(options: [("off", "Off"), ("bytetrack", "ByteTrack"), ("botsort", "BoT-SORT")], selection: $trackMode, tint: brandColor)
+                                    .disabled(videoTuningLocked)
                             }
                             if trackMode != "off" {
                                 Text(trackMode == "botsort"
@@ -1319,24 +1315,21 @@ struct ContentView: View {
                         }
                         if isSegModel && (!tiledActive || tilingMasks) {
                             segRow("Overlay") {
-                                Picker("", selection: $overlay) { ForEach(SegOverlay.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
-                                    .pickerStyle(.segmented).labelsHidden()
+                                SegmentedButtons(options: SegOverlay.allCases.map { ($0, $0.rawValue.capitalized) }, selection: $overlay, tint: brandColor)
                             }
                         }
                         if !(isSegModel && overlay == .masks) {   // box style is irrelevant with boxes hidden
                             segRow("Box style") {
-                                Picker("", selection: $style) { ForEach(BoxStyle.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
-                                    .pickerStyle(.segmented).labelsHidden()
+                                SegmentedButtons(options: BoxStyle.allCases.map { ($0, $0.rawValue.capitalized) }, selection: $style, tint: brandColor)
                             }
                         }
                         segRow("Label") {   // labels stay adjustable even in masks-only mode
-                            Picker("", selection: $label) { ForEach(LabelMode.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
-                                .pickerStyle(.segmented).labelsHidden()
+                            SegmentedButtons(options: LabelMode.allCases.map { ($0, $0.rawValue.capitalized) }, selection: $label, tint: brandColor)
                         }
                     }
                     sectionBox("Device", "cpu") {
-                        Picker("", selection: $compute) { ForEach(ComputeMode.allCases, id: \.self) { Text($0.label).tag($0) } }
-                            .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading).disabled(cameraOn)
+                        MenuButton(options: ComputeMode.allCases.map { ($0, $0.label) }, icons: ["rectangle.stack.fill", "sparkles", "cpu"], selection: $compute, tint: brandColor)
+                            .disabled(cameraOn)
                         if cameraOn {
                             Text("Stop the camera to change the compute backend.")
                                 .font(.caption2).foregroundStyle(.secondary)
