@@ -1044,7 +1044,6 @@ struct BenchDashboard: View {
     private var histogramChart: some View {
         let cell = focusCell
         let values: [Double] = bench.running ? bench.liveSamples.map(\.ms) : (cell?.samples ?? [])
-        let color = cell.map { cellColor($0) } ?? brand
         var range = BenchDashboard.yRange(values)
         if zoomX > 1 {   // narrow the axis around the median
             let med = values.count > 1 ? StageStats(values).median : range.lowerBound
