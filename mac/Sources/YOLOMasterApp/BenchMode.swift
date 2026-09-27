@@ -625,15 +625,14 @@ struct BenchSidebar: View {
                         }
                     }.disabled(bench.running)
                     row("Preprocess") {
-                        SegmentedButtons(options: [(PreprocDevice.gpu, "GPU (Metal)"), (PreprocDevice.cpu, "CPU")], icons: ["rectangle.stack.fill", "cpu"], selection: $bench.preproc, tint: brand)
+                        SegmentedButtons(options: [(PreprocDevice.gpu, "GPU"), (PreprocDevice.cpu, "CPU")], icons: ["rectangle.stack.fill", "cpu"], selection: $bench.preproc, tint: brand)
                     }.disabled(bench.running)
                     Text("ANE = all compute units (Core ML decides), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 box("Protocol", "list.bullet.clipboard") {
-                    Picker("", selection: $bench.kind) {
-                        ForEach(BenchKind.allCases, id: \.self) { Label($0.rawValue, systemImage: $0.icon).tag($0) }
-                    }.pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity).disabled(bench.running)
+                    MenuButton(options: BenchKind.allCases.map { ($0, $0.rawValue) }, icons: BenchKind.allCases.map(\.icon), selection: $bench.kind, tint: brand)
+                        .disabled(bench.running)
                     Text(bench.kind.blurb).font(.caption2).foregroundStyle(.secondary)
                     if bench.kind == .sustained { row("Duration") { TimerDial(minutes: $bench.minutes).disabled(bench.running) } }
                     if bench.kind == .accuracy {
@@ -1429,12 +1428,47 @@ struct SegmentedButtons<T: Hashable>: View {
                     Group {
                         if i < icons.count { Label(o.1, systemImage: icons[i]) } else { Text(o.1) }
                     }
-                    .font(.callout).lineLimit(1).frame(maxWidth: .infinity).padding(.vertical, 4)
+                    .font(.callout).lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity).padding(.vertical, 4)
                 }
                 .buttonStyle(.bordered).tint(on ? tint : .secondary)
                 .background(RoundedRectangle(cornerRadius: 6).fill(on ? tint.opacity(0.14) : .clear))
             }
         }
+    }
+}
+
+/// A dropdown in the same dress as `SegmentedButtons`: full width, tinted, the current choice with its
+/// icon and a chevron. `Picker(.menu)` on macOS is an NSPopUpButton that sizes to its content and
+/// ignores `frame(maxWidth:)`; a `Menu` with our own label does not.
+struct MenuButton<T: Hashable>: View {
+    let options: [(T, String)]
+    var icons: [String] = []
+    @Binding var selection: T
+    let tint: Color
+    var body: some View {
+        Menu {
+            Picker("", selection: $selection) {
+                ForEach(Array(options.enumerated()), id: \.offset) { i, o in
+                    Group { if i < icons.count { Label(o.1, systemImage: icons[i]) } else { Text(o.1) } }.tag(o.0)
+                }
+            }.pickerStyle(.inline).labelsHidden()
+        } label: {
+            HStack(spacing: 6) {
+                if let i = options.firstIndex(where: { $0.0 == selection }) {
+                    if i < icons.count { Image(systemName: icons[i]) }
+                    Text(options[i].1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .font(.callout).lineLimit(1).padding(.vertical, 7).padding(.horizontal, 10).frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+        .foregroundStyle(tint)
+        .background(RoundedRectangle(cornerRadius: 6).fill(tint.opacity(0.14)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(tint.opacity(0.35), lineWidth: 1))
+        .frame(maxWidth: .infinity)
     }
 }
 
