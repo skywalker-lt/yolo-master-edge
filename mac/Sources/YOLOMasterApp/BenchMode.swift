@@ -1246,20 +1246,19 @@ struct BenchDashboard: View {
     }
 
     private var resultsTable: some View {
-        let hasExtra = shownCells.contains { !extra($0).isEmpty }
-        let headers = ["Model", "Unit", "Pre", "Median ms", "p90", "p99", "Min", "FPS"] + (hasExtra ? ["Extra"] : [])
+        let headers = ["Model", "Unit", "Pre", "Median ms", "p90", "p99", "Min", "FPS"]
         let rowH: CGFloat = 26
         return VStack(alignment: .leading, spacing: 6) {
             Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             // header outside the scroll view so it never scrolls away; the same column widths as the rows
-            resultsRow(headers, bold: true, extraWide: hasExtra, trailing: { Spacer().frame(width: 22, height: 1) })
+            resultsRow(headers, bold: true, trailing: { Spacer().frame(width: 22, height: 1) })
                 .frame(height: 18).padding(.horizontal, 6)
             Divider()
             ScrollViewReader { sp in
             ScrollView(.vertical) {
                 VStack(spacing: 0) {
                     ForEach(shownCells) { c in
-                        resultsRow(rowValues(c) + (hasExtra ? [extra(c)] : []), bold: false, extraWide: hasExtra) {
+                        resultsRow(rowValues(c), bold: false) {
                             Button { bench.saveJSON(c) } label: { Image(systemName: "square.and.arrow.down") }
                                 .buttonStyle(.borderless).help("Save the yolomaster-bench/v1 JSON").disabled(c.document == nil).frame(width: 22)
                         }
@@ -1282,8 +1281,8 @@ struct BenchDashboard: View {
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
     }
-    /// One table line: a fixed model column, equal shares for the numbers, the Extra column as wide as the rest allow.
-    private func resultsRow<T: View>(_ cells: [String], bold: Bool, extraWide: Bool, @ViewBuilder trailing: () -> T) -> some View {
+    /// One table line: a fixed model column, equal shares for the numbers.
+    private func resultsRow<T: View>(_ cells: [String], bold: Bool, @ViewBuilder trailing: () -> T) -> some View {
         HStack(spacing: 8) {
             ForEach(Array(cells.enumerated()), id: \.offset) { i, v in
                 Text(v).font(bold ? .caption.weight(.semibold) : .callout.monospacedDigit()).lineLimit(1).truncationMode(.middle)
@@ -1300,11 +1299,6 @@ struct BenchDashboard: View {
     }
     private func cellText(_ v: String) -> some View {
         Text(v).font(.callout.monospacedDigit()).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private func extra(_ c: BenchCell) -> String {
-        if let su = c.sustained { return String(format: "throttle %+.1f%% over %.0fs, peak %@", su.throttle_pct, su.duration_s, thermalName(c.thermal.max() ?? 0)) }
-        if let a = c.accuracy { return String(format: "mAP50 %.4f · mAP50-95 %.4f · %d images", a.map50, a.map5095, a.images) }
-        return ""
     }
 
     /// AP colour bands: below 0.1 red, 0.1 to 0.2 orange, 0.2 to 0.3 yellow, 0.3 to 0.6 green, 0.6 and up purple.
