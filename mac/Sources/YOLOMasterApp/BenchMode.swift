@@ -1097,7 +1097,7 @@ struct BenchDashboard: View {
     /// geometry, with the hatch drawn by an overlay annotation sized to it) and the label past the 1.0 edge.
     @ChartContentBuilder private func accuracyMarks(_ r: Row, xMax: Double) -> some ChartContent {
         if r.hi > r.value {
-            BarMark(xStart: .value("lo", r.value), xEnd: .value("hi", min(r.hi, xMax)), y: .value("cell", r.name), width: .ratio(0.62))
+            BarMark(xStart: .value("lo", r.value), xEnd: .value("hi", min(r.hi, xMax)), y: .value("cell", r.name), height: .ratio(0.62))
                 .foregroundStyle(r.color.opacity(0.18))
                 .annotation(position: .overlay, alignment: .center) { ctx in
                     Stripes().stroke(r.color.opacity(0.9), lineWidth: 2)
