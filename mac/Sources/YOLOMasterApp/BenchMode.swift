@@ -1092,11 +1092,42 @@ struct BenchDashboard: View {
     /// One row of the side-by-side chart per cell; the card is capped and scrolls beyond six rows.
     private var comparisonRows: Int { max(bench.running ? bench.cells.count : shownCells.count, 1) }
     private var comparisonHeight: CGFloat { min(CGFloat(comparisonRows) * 40 + 70, 5 * 40 + 70) }
+    private struct Row: Identifiable { let id: UUID; let name: String; let value: Double; let hi: Double; let color: Color; let fill: AnyShapeStyle }
+    /// Accuracy row: the striped mAP50 extension (a bar mark of its own, so it has exactly the bar's
+    /// geometry, with the hatch drawn by an overlay annotation sized to it) and the label past the 1.0 edge.
+    @ChartContentBuilder private func accuracyMarks(_ r: Row, xMax: Double) -> some ChartContent {
+        if r.hi > r.value {
+            BarMark(xStart: .value("lo", r.value), xEnd: .value("hi", min(r.hi, xMax)), y: .value("cell", r.name), width: .ratio(0.62))
+                .foregroundStyle(r.color.opacity(0.18))
+                .annotation(position: .overlay, alignment: .center) { ctx in
+                    Stripes().stroke(r.color.opacity(0.9), lineWidth: 2)
+                        .frame(width: ctx.targetSize.width, height: ctx.targetSize.height)
+                        .clipped()
+                }
+        }
+        PointMark(x: .value("end", xMax), y: .value("cell", r.name)).opacity(0)
+            .annotation(position: .trailing, spacing: 6) {
+                Text(r.hi > 0 ? String(format: "%.4f / %.4f", r.value, r.hi) : String(format: "%.4f", r.value)).font(.caption2.monospacedDigit())
+            }
+    }
+    /// Latency row: the p90 diamond and the "median (p90)" label after it.
+    @ChartContentBuilder private func latencyMarks(_ r: Row) -> some ChartContent {
+        if r.hi > 0 {
+            PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).symbol(.diamond).foregroundStyle(.primary).symbolSize(30)
+                .annotation(position: .trailing, spacing: 6) {
+                    Text(String(format: "%.2f ms  (p90 %.2f)", r.value, r.hi)).font(.caption2.monospacedDigit())
+                }
+        } else {
+            PointMark(x: .value("value", r.value), y: .value("cell", r.name)).opacity(0)
+                .annotation(position: .trailing, spacing: 6) {
+                    Text(String(format: "%.2f ms", r.value)).font(.caption2.monospacedDigit())
+                }
+        }
+    }
     /// Cells side by side: median with the p90 whisker (cold / sustained / dataset) or mAP50-95 (accuracy).
     private var comparisonChart: some View {
         let cells = bench.running ? bench.cells : shownCells
         let accuracyMode = shownKind == .accuracy
-        struct Row: Identifiable { let id: UUID; let name: String; let value: Double; let hi: Double; let color: Color; let fill: AnyShapeStyle }
         let rows = cells.map { c -> Row in
             if accuracyMode { return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.accuracy?.map5095 ?? 0, hi: c.accuracy?.map50 ?? 0, color: cellSolid(c), fill: cellFill(c)) }
             return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.cold?.median ?? 0, hi: c.cold?.p90 ?? 0, color: cellSolid(c), fill: cellFill(c))
@@ -1114,38 +1145,14 @@ struct BenchDashboard: View {
             ScrollView(.vertical) {
             ZStack(alignment: .top) {
             Chart {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
+                ForEach(rows) { r in
                     if focusCell?.id == r.id {   // the selected cell: a light band across its whole row
                         RectangleMark(xStart: .value("a", 0), xEnd: .value("b", xMax), y: .value("cell", r.name))
                             .foregroundStyle(BenchDashboard.tint(r.color, 0.86))
                     }
                     BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62))
                         .foregroundStyle(r.fill)
-                    if r.hi > 0 && accuracyMode {   // mAP50 as a striped extension of the bar; the label sits past the 1.0 edge
-                        if r.hi > r.value {
-                            BarMark(xStart: .value("lo", r.value), xEnd: .value("hi", min(r.hi, xMax)), y: .value("cell", r.name), width: .ratio(0.62))
-                                .foregroundStyle(r.color.opacity(0.18))
-                                .annotation(position: .overlay, alignment: .center) { ctx in
-                                    Stripes().stroke(r.color.opacity(0.9), lineWidth: 2)
-                                        .frame(width: ctx.targetSize.width, height: ctx.targetSize.height)
-                                        .clipped()
-                                }
-                        }
-                        PointMark(x: .value("end", xMax), y: .value("cell", r.name)).opacity(0)
-                            .annotation(position: .trailing, spacing: 6) {
-                                Text(String(format: "%.4f / %.4f", r.value, r.hi)).font(.caption2.monospacedDigit())
-                            }
-                    } else if r.hi > 0 {
-                        PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).symbol(.diamond).foregroundStyle(.primary).symbolSize(30)
-                            .annotation(position: .trailing, spacing: 6) {
-                                Text(String(format: "%.2f ms  (p90 %.2f)", r.value, r.hi)).font(.caption2.monospacedDigit())
-                            }
-                    } else {
-                        PointMark(x: .value("value", r.value), y: .value("cell", r.name)).opacity(0)
-                            .annotation(position: .trailing, spacing: 6) {
-                                Text(accuracyMode ? String(format: "%.4f", r.value) : String(format: "%.2f ms", r.value)).font(.caption2.monospacedDigit())
-                            }
-                    }
+                    if accuracyMode { accuracyMarks(r, xMax: xMax) } else { latencyMarks(r) }
                 }
             }
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
