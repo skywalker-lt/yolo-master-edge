@@ -1516,15 +1516,15 @@ struct MetersStrip: View {
         let level = meters.thermal
         let frac = meters.celsius.map { CGFloat(min(max(($0 - 30) / 90, 0.04), 1)) } ?? CGFloat(level + 1) / 4   // 30..120 C
         let b = meters.battery, w = b.watts
-        VStack(spacing: 10) {
+        VStack(spacing: 16) {
             gaugeRow(icon: "thermometer.medium", title: thermalName(level), color: thermalColor(level),
                      value: meters.celsius.map { String(format: "%.0f °C", $0) } ?? "no sensor") { width in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.08))
-                    Capsule().fill(thermalColor(level)).frame(width: max(tube, width * frac))
+                    Capsule().fill(Color.primary.opacity(0.08)).frame(width: width, height: tube)
+                    Capsule().fill(thermalColor(level)).frame(width: max(tube, width * frac), height: tube)
                         .animation(.easeInOut(duration: 0.6), value: frac)
                         .animation(.easeInOut(duration: 0.4), value: level)
-                }
+                }.frame(width: width, height: tube)
             }
             gaugeRow(icon: b.present ? (b.state == .onBattery ? "battery.50percent" : "powerplug.fill") : "powerplug",
                      title: b.present ? b.state.rawValue : "Power",
@@ -1532,22 +1532,20 @@ struct MetersStrip: View {
                      value: b.present ? String(format: "%@%.1f W", w < 0 ? "-" : "+", abs(w)) : "no battery") { width in
                 let half = width / 2, len = min(half, half * CGFloat(abs(w)) / 100)   // full half-bar = 100 W
                 ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.08))
-                    Rectangle().fill(Color.primary.opacity(0.35)).frame(width: 1, height: tube + 6).offset(x: half)   // zero line
-                    if b.present {
-                        Rectangle().fill(w < 0 ? Color.orange : Color.green)
-                            .frame(width: max(2, len), height: tube)
-                            .offset(x: w < 0 ? half - len : half)
-                            .frame(width: width, alignment: .leading)
-                            .clipShape(Capsule())
+                    Capsule().fill(Color.primary.opacity(0.08)).frame(width: width, height: tube)
+                    if b.present {   // a rounded fill growing from the zero line, right when charging, left when draining
+                        Capsule().fill(w < 0 ? Color.orange : Color.green)
+                            .frame(width: max(tube, len), height: tube)
+                            .offset(x: w < 0 ? half - max(tube, len) : half)
                             .animation(.easeInOut(duration: 0.25), value: w)
                     }
-                }
+                    Rectangle().fill(Color.primary.opacity(0.35)).frame(width: 1, height: tube + 6).offset(x: half)   // zero line
+                }.frame(width: width, height: tube)
             }
         }
     }
     private func gaugeRow<C: View>(icon: String, title: String, color: Color, value: String, @ViewBuilder bar: @escaping (CGFloat) -> C) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: icon).foregroundStyle(color).frame(width: 14)
                 Text(title).font(.caption.weight(.semibold)).foregroundStyle(color).lineLimit(1)
