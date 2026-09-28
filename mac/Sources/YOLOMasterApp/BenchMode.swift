@@ -1103,8 +1103,13 @@ struct BenchDashboard: View {
         }
         let xMax: Double = accuracyMode ? 1.0 : max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1)
         return VStack(alignment: .leading, spacing: 6) {
-            Text(accuracyMode ? "Cells side by side: mAP50-95 (solid) extended to mAP50 (striped) · click a row to inspect it" : "Cells side by side: median (bar) and p90 (tick) · click a row to inspect it")
-                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack {
+                Text(accuracyMode ? "Accuracy Comparison per Run" : "Latency Comparison per Run")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Text(accuracyMode ? "mAP50-95 / mAP50" : "median (p90)")   // the column of labels past the axis
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.trailing, 14)
+            }
             ScrollViewReader { sp in
             ScrollView(.vertical) {
             ZStack(alignment: .top) {
@@ -1146,9 +1151,10 @@ struct BenchDashboard: View {
                                 guard let anchor = proxy.plotFrame, !rows.isEmpty else { return }
                                 let plot = geo[anchor]
                                 let rowH = plot.height / CGFloat(rows.count), barH = rowH * 0.62
-                                for r in rows where r.hi > r.value {
-                                    guard let yc = proxy.position(forY: r.name),
-                                          let x0 = proxy.position(forX: min(r.value, xMax)), let x1 = proxy.position(forX: min(r.hi, xMax)) else { continue }
+                                for (i, r) in rows.enumerated() where r.hi > r.value {
+                                    // rows are laid out top to bottom in data order; the bar sits in the middle of its band
+                                    let yc = (CGFloat(i) + 0.5) * rowH
+                                    guard let x0 = proxy.position(forX: min(r.value, xMax)), let x1 = proxy.position(forX: min(r.hi, xMax)) else { continue }
                                     let rect = CGRect(x: plot.minX + x0, y: plot.minY + yc - barH / 2, width: x1 - x0, height: barH)
                                     // the extension: a faint wash of the bar colour, 45-degree stripes on top, clipped to the rect
                                     var layer = ctx
