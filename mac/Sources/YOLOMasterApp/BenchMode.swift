@@ -1121,8 +1121,16 @@ struct BenchDashboard: View {
                     }
                     BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62))
                         .foregroundStyle(r.fill)
-                    if r.hi > 0 && accuracyMode {   // mAP50 as a striped extension of the bar (drawn in the overlay); the label sits past the 1.0 edge
-                        PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).opacity(0)
+                    if r.hi > 0 && accuracyMode {   // mAP50 as a striped extension of the bar; the label sits past the 1.0 edge
+                        if r.hi > r.value {
+                            BarMark(xStart: .value("lo", r.value), xEnd: .value("hi", min(r.hi, xMax)), y: .value("cell", r.name), width: .ratio(0.62))
+                                .foregroundStyle(r.color.opacity(0.18))
+                                .annotation(position: .overlay, alignment: .center) { ctx in
+                                    Stripes().stroke(r.color.opacity(0.9), lineWidth: 2)
+                                        .frame(width: ctx.targetSize.width, height: ctx.targetSize.height)
+                                        .clipped()
+                                }
+                        }
                         PointMark(x: .value("end", xMax), y: .value("cell", r.name)).opacity(0)
                             .annotation(position: .trailing, spacing: 6) {
                                 Text(String(format: "%.4f / %.4f", r.value, r.hi)).font(.caption2.monospacedDigit())
@@ -1143,35 +1151,9 @@ struct BenchDashboard: View {
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
             .chartXScale(domain: 0...xMax)
             .padding(.trailing, accuracyMode ? 110 : 0)   // the "map / map50" labels live past the 1.0 edge
-            .chartOverlay { proxy in   // striped mAP50 extensions (accuracy), and a click (not hover) picks the row under the pointer
+            .chartOverlay { proxy in   // a click (not hover) picks the row under the pointer
                 GeometryReader { geo in
                     ZStack {
-                        if accuracyMode {
-                            Canvas { ctx, _ in
-                                guard let anchor = proxy.plotFrame, !rows.isEmpty else { return }
-                                let plot = geo[anchor]
-                                let rowH = plot.height / CGFloat(rows.count), barH = rowH * 0.62
-                                for (i, r) in rows.enumerated() where r.hi > r.value {
-                                    // rows are laid out top to bottom in data order; the bar sits in the middle of its band
-                                    let yc = (CGFloat(i) + 0.5) * rowH
-                                    guard let x0 = proxy.position(forX: min(r.value, xMax)), let x1 = proxy.position(forX: min(r.hi, xMax)) else { continue }
-                                    let rect = CGRect(x: plot.minX + x0, y: plot.minY + yc - barH / 2, width: x1 - x0, height: barH)
-                                    // the extension: a faint wash of the bar colour, 45-degree stripes on top, clipped to the rect
-                                    var layer = ctx
-                                    layer.clip(to: Path(rect))
-                                    layer.fill(Path(rect), with: .color(r.color.opacity(0.18)))
-                                    var stripes = Path()
-                                    let step: CGFloat = 7
-                                    var x = rect.minX - rect.height
-                                    while x < rect.maxX + rect.height {
-                                        stripes.move(to: CGPoint(x: x, y: rect.maxY))
-                                        stripes.addLine(to: CGPoint(x: x + rect.height, y: rect.minY))
-                                        x += step
-                                    }
-                                    layer.stroke(stripes, with: .color(r.color.opacity(0.9)), style: StrokeStyle(lineWidth: 2))
-                                }
-                            }
-                        }
                         Rectangle().fill(.clear).contentShape(Rectangle())
                             .onTapGesture { location in
                                 guard let anchor = proxy.plotFrame else { return }
@@ -1447,6 +1429,20 @@ struct SegmentedButtons<T: Hashable>: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(on ? tint.opacity(0.14) : .clear))
             }
         }
+    }
+}
+
+/// 45-degree hatch lines across a rect (stroke it); used for the mAP50 extension of the accuracy bars.
+struct Stripes: Shape {
+    var step: CGFloat = 7
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        var x = r.minX - r.height
+        while x < r.maxX + r.height {
+            p.move(to: CGPoint(x: x, y: r.maxY)); p.addLine(to: CGPoint(x: x + r.height, y: r.minY))
+            x += step
+        }
+        return p
     }
 }
 
