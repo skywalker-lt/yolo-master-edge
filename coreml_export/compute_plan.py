@@ -11,6 +11,15 @@ by the Bench is the Neural Engine or a CPU fallback with sync boundaries.
 import argparse, collections, sys
 
 import coremltools as ct
+
+try:   # the native bridge: absent when pip could only install the pure-Python part (no wheel for this Python)
+    from coremltools import libcoremlpython  # noqa: F401
+except ImportError:
+    sys.exit(f"coremltools {ct.__version__} on Python {sys.version.split()[0]} has no native bridge "
+             "(libcoremlpython): pip installed the pure-Python package only, so nothing can be compiled or "
+             "planned. Use a Python that coremltools ships binaries for (3.11 or 3.12), e.g.\n"
+             "  python3.12 -m venv ~/ctplan && ~/ctplan/bin/pip install -U coremltools\n"
+             "  ~/ctplan/bin/python coreml_export/compute_plan.py model.mlpackage --units ane")
 from coremltools.models.compute_plan import MLComputePlan
 
 UNITS = {"ane": ct.ComputeUnit.CPU_AND_NE, "gpu": ct.ComputeUnit.CPU_AND_GPU,
