@@ -63,7 +63,7 @@ unique with `uniqueStem`. Empty files are written for images without detections.
 `AccuracyRunner.run` uses the confidence floor `Float(0.001).nextDown` because the Kit keeps
 candidates with score `>` floor where the C++ keeps `>=` conf; the Kit's decode is already
 multi-label. `BenchDocument` is `Codable` with the same keys as `bench::to_json`, `tool =
-"macos"`, `model.execution_provider` = `CoreML-ANE | CoreML-GPU | CoreML-CPU`, `ep_note` =
+"macos"`, `model.execution_provider` = `CoreML-ANE | CoreML-GPU | CoreML-CPU | CoreML-ALL` (ANE = `cpuAndNeuralEngine`, ALL = Core ML's own partitioning), `ep_note` =
 `preproc=cpu|gpu`. The app accumulates cold, sustained and accuracy into one document per
 model + compute unit.
 

@@ -36,7 +36,10 @@ enum BenchKind: String, CaseIterable, Codable {
 enum ComputeChoice: String, CaseIterable, Codable, Identifiable {
     case ane = "ANE", gpu = "GPU", cpu = "CPU"
     var id: String { rawValue }
-    var mode: ComputeMode { switch self { case .ane: return .all; case .gpu: return .cpuAndGPU; case .cpu: return .cpu } }
+    /// ANE = CPU + Neural Engine (the ANE runs everything it supports, the CPU the rest; the GPU is
+    /// never used), GPU = CPU + GPU, CPU = CPU only. Not `.all`: that is Core ML's own partitioning
+    /// across the three units and measures the scheduler, not the Neural Engine.
+    var mode: ComputeMode { switch self { case .ane: return .cpuAndNeuralEngine; case .gpu: return .cpuAndGPU; case .cpu: return .cpu } }
     var ep: String { "CoreML-" + rawValue }
     var icon: String { switch self { case .ane: return "sparkles"; case .gpu: return "rectangle.stack.fill"; case .cpu: return "cpu" } }
 }
@@ -638,8 +641,8 @@ struct BenchSidebar: View {
                         SegmentedButtons(options: [(PreprocDevice.gpu, "GPU"), (PreprocDevice.cpu, "CPU")], icons: ["rectangle.stack.fill", "cpu"], selection: $bench.preproc, tint: brand)
                     }.disabled(bench.running)
                     Text(bench.singleCell
-                         ? "ANE = all compute units (Core ML decides), GPU = CPU and GPU, CPU only. Sustained runs one model on one unit; pick one of each."
-                         : "ANE = all compute units (Core ML decides), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
+                         ? "ANE = Neural Engine (ops it cannot run fall back to the CPU, never the GPU), GPU = CPU and GPU, CPU only. Sustained runs one model on one unit; pick one of each."
+                         : "ANE = Neural Engine (ops it cannot run fall back to the CPU, never the GPU), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 box("Protocol", "list.bullet.clipboard") {

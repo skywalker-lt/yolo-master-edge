@@ -129,7 +129,8 @@ public enum BenchEnvironment {
         let id = det.modelURL.deletingPathExtension().lastPathComponent
         let ep: String = {
             switch det.computeMode {
-            case .all: return "CoreML-ANE"
+            case .cpuAndNeuralEngine: return "CoreML-ANE"
+            case .all: return "CoreML-ALL"
             case .cpuAndGPU: return "CoreML-GPU"
             case .cpu: return "CoreML-CPU"
             }
