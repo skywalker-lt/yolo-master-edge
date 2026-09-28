@@ -1507,6 +1507,58 @@ struct ThermometerView: View {
 
 /// Battery power flow: the bar grows downward from the zero line while discharging (watts drawn
 /// from the battery) and upward while charging; a Mac on mains with a full battery sits at zero.
+/// The two gauges as one compact card for the Inference sidebar: horizontal tubes, one row each.
+/// Same readings and colours as the Bench dashboard's meters, in the sidebar's card style.
+struct MetersStrip: View {
+    @ObservedObject var meters: MeterModel
+    private let tube: CGFloat = 10
+    var body: some View {
+        let level = meters.thermal
+        let frac = meters.celsius.map { CGFloat(min(max(($0 - 30) / 90, 0.04), 1)) } ?? CGFloat(level + 1) / 4   // 30..120 C
+        let b = meters.battery, w = b.watts
+        VStack(spacing: 10) {
+            gaugeRow(icon: "thermometer.medium", title: thermalName(level), color: thermalColor(level),
+                     value: meters.celsius.map { String(format: "%.0f °C", $0) } ?? "no sensor") { width in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    Capsule().fill(thermalColor(level)).frame(width: max(tube, width * frac))
+                        .animation(.easeInOut(duration: 0.6), value: frac)
+                        .animation(.easeInOut(duration: 0.4), value: level)
+                }
+            }
+            gaugeRow(icon: b.present ? (b.state == .onBattery ? "battery.50percent" : "powerplug.fill") : "powerplug",
+                     title: b.present ? b.state.rawValue : "Power",
+                     color: b.present ? (w < -0.05 ? .orange : (w > 0.05 ? .green : .secondary)) : .secondary,
+                     value: b.present ? String(format: "%@%.1f W", w < 0 ? "-" : "+", abs(w)) : "no battery") { width in
+                let half = width / 2, len = min(half, half * CGFloat(abs(w)) / 100)   // full half-bar = 100 W
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    Rectangle().fill(Color.primary.opacity(0.35)).frame(width: 1, height: tube + 6).offset(x: half)   // zero line
+                    if b.present {
+                        Rectangle().fill(w < 0 ? Color.orange : Color.green)
+                            .frame(width: max(2, len), height: tube)
+                            .offset(x: w < 0 ? half - len : half)
+                            .frame(width: width, alignment: .leading)
+                            .clipShape(Capsule())
+                            .animation(.easeInOut(duration: 0.25), value: w)
+                    }
+                }
+            }
+        }
+    }
+    private func gaugeRow<C: View>(icon: String, title: String, color: Color, value: String, @ViewBuilder bar: @escaping (CGFloat) -> C) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).foregroundStyle(color).frame(width: 14)
+                Text(title).font(.caption.weight(.semibold)).foregroundStyle(color).lineLimit(1)
+                Spacer(minLength: 4)
+                Text(value).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            GeometryReader { g in bar(g.size.width) }.frame(height: tube)
+        }
+    }
+}
+
 struct PowerMeterView: View {
     @ObservedObject var meters: MeterModel
     var body: some View {
