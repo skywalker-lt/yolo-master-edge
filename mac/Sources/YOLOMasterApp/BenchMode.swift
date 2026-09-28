@@ -1144,12 +1144,15 @@ struct BenchDashboard: View {
             ScrollViewReader { sp in
             ScrollView(.vertical) {
             ZStack(alignment: .top) {
+            VStack(spacing: 0) {   // the selected cell: a wash across its whole row (name, bar and label), behind the chart
+                ForEach(rows) { r in
+                    RoundedRectangle(cornerRadius: 6).fill(focusCell?.id == r.id ? BenchDashboard.tint(r.color, 0.86) : .clear)
+                        .frame(height: 40)
+                }
+            }
+            .padding(.top, 8).padding(.trailing, 14).allowsHitTesting(false)
             Chart {
                 ForEach(rows) { r in
-                    if focusCell?.id == r.id {   // the selected cell: a light band across its whole row
-                        RectangleMark(xStart: .value("a", 0), xEnd: .value("b", xMax), y: .value("cell", r.name))
-                            .foregroundStyle(BenchDashboard.tint(r.color, 0.86))
-                    }
                     BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62))
                         .foregroundStyle(r.fill)
                     if accuracyMode { accuracyMarks(r, xMax: xMax) } else { latencyMarks(r) }
