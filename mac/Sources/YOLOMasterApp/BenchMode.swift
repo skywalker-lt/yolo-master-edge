@@ -886,7 +886,7 @@ struct BenchDashboard: View {
             if let p = bench.progress, bench.running { ProgressView(value: p).frame(maxWidth: .infinity).padding(.horizontal, 24) }
             if bench.running {
                 Button(role: .destructive) { bench.cancel() } label: { Label("Stop", systemImage: "stop.fill") }
-                    .onAppear { zoomX = 1; pinchBase = 1; bench.selectedCellID = nil }
+                    .onAppear { zoomX = 1; pinchBase = 1; bench.selectedCellID = nil; expanded = nil }
             } else {
                 Button { bench.run() } label: { Label("Run", systemImage: "play.fill") }
                     .buttonStyle(.borderedProminent).tint(brand).keyboardShortcut(.return, modifiers: .command)
@@ -1151,7 +1151,7 @@ struct BenchDashboard: View {
                 Spacer()
                 Text(accuracyMode ? "mAP50-95 / mAP50" : "median (p90)")   // the column of labels past the axis
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                expandButton(.comparison).padding(.leading, 6)
+                if comparisonRows > 5 || expanded == .comparison { expandButton(.comparison).padding(.leading, 6) }
             }
             ScrollViewReader { sp in
             ScrollView(.vertical) {
@@ -1267,7 +1267,7 @@ struct BenchDashboard: View {
             HStack {
                 Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                expandButton(.results)
+                if shownCells.count > 5 || expanded == .results { expandButton(.results) }
             }
             // header outside the scroll view so it never scrolls away; the same column widths as the rows
             resultsRow(headers, bold: true, trailing: { Spacer().frame(width: 22, height: 1) })
