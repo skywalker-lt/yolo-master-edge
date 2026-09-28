@@ -1093,17 +1093,12 @@ struct BenchDashboard: View {
     private var comparisonRows: Int { max(bench.running ? bench.cells.count : shownCells.count, 1) }
     private var comparisonHeight: CGFloat { min(CGFloat(comparisonRows) * 40 + 70, 5 * 40 + 70) }
     private struct Row: Identifiable { let id: UUID; let name: String; let value: Double; let hi: Double; let color: Color; let fill: AnyShapeStyle }
-    /// Accuracy row: the striped mAP50 extension (a bar mark of its own, so it has exactly the bar's
-    /// geometry, with the hatch drawn by an overlay annotation sized to it) and the label past the 1.0 edge.
+    /// Accuracy row: the mAP50 extension (a lighter bar of the same colour continuing the mAP50-95 bar)
+    /// and the label past the 1.0 edge.
     @ChartContentBuilder private func accuracyMarks(_ r: Row, xMax: Double) -> some ChartContent {
         if r.hi > r.value {
             BarMark(xStart: .value("lo", r.value), xEnd: .value("hi", min(r.hi, xMax)), y: .value("cell", r.name), height: .ratio(0.62))
-                .foregroundStyle(r.color.opacity(0.18))
-                .annotation(position: .overlay, alignment: .center) {
-                    Stripes().stroke(r.color.opacity(0.9), lineWidth: 2)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
-                }
+                .foregroundStyle(r.color.opacity(0.28))
         }
         PointMark(x: .value("end", xMax), y: .value("cell", r.name)).opacity(0)
             .annotation(position: .trailing, spacing: 6) {
@@ -1443,20 +1438,6 @@ struct SegmentedButtons<T: Hashable>: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(on ? tint.opacity(0.14) : .clear))
             }
         }
-    }
-}
-
-/// 45-degree hatch lines across a rect (stroke it); used for the mAP50 extension of the accuracy bars.
-struct Stripes: Shape {
-    var step: CGFloat = 7
-    func path(in r: CGRect) -> Path {
-        var p = Path()
-        var x = r.minX - r.height
-        while x < r.maxX + r.height {
-            p.move(to: CGPoint(x: x, y: r.maxY)); p.addLine(to: CGPoint(x: x + r.height, y: r.minY))
-            x += step
-        }
-        return p
     }
 }
 
