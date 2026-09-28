@@ -104,6 +104,11 @@ final class BenchStore: ObservableObject {
         }
     }
     func add(_ r: BenchRecord) { records.insert(r, at: 0); save() }
+    /// Replace a record in place (a sustained session growing by one cell per run); adds it if it is gone.
+    func replace(_ id: UUID, with r: BenchRecord) {
+        if let i = records.firstIndex(where: { $0.id == id }) { records[i] = r } else { records.insert(r, at: 0) }
+        save()
+    }
     func remove(_ ids: Set<UUID>) { records.removeAll { ids.contains($0.id) }; save() }
     func rename(_ id: UUID, _ name: String) { if let i = records.firstIndex(where: { $0.id == id }) { records[i].name = name; save() } }
     func clear() { records = []; save() }
@@ -455,14 +460,18 @@ final class BenchModel: ObservableObject {
         if singleCell && (targets.count > 1 || computes.count > 1) { note = "Sustained runs one model on one compute unit at a time."; return }
         if kind == .accuracy && datasetURL == nil { note = "Choose the images folder first."; return }
         cancelLock.lock(); cancelFlag = false; cancelLock.unlock()
-        running = true; cells = []; liveSamples = []; liveSeconds = []; liveCell = nil; progress = nil; note = ""
+        // Sustained runs one cell at a time, so consecutive sustained runs extend one record (the
+        // previous cells stay in the table and the comparison chart); any other kind starts a new one.
+        let carried: [BenchCell] = (kind == .sustained && lastRecord?.kind == .sustained) ? (lastRecord?.cells ?? []) : []
+        let continuing: UUID? = carried.isEmpty ? nil : lastRecord?.id
+        running = true; cells = carried; liveSamples = []; liveSeconds = []; liveCell = nil; progress = nil; note = ""
         runPowerW = []; meters.startRun()
         let kind = self.kind, warm = Int(warmup), iters = Int(iters), minutes = self.minutes
         let computes = ComputeChoice.allCases.filter { self.computes.contains($0) }
         let dataset = datasetURL, limit = Int(datasetLimit), conf = Float(self.conf), iou = CGFloat(self.iou)
         queue.async { [weak self] in
             guard let self else { return }
-            var done: [BenchCell] = []
+            var done: [BenchCell] = carried
             outer: for url in targets {
                 for c in computes {
                     if self.isCancelled { break outer }
@@ -545,12 +554,16 @@ final class BenchModel: ObservableObject {
             }
             let cancelled = self.isCancelled
             let env = BenchEnvironment.collect()
-            let record = BenchRecord(name: BenchModel.defaultName(kind, done), date: Date(), kind: kind, warmup: warm, iters: iters, minutes: minutes,
+            let record = BenchRecord(id: continuing ?? UUID(), name: BenchModel.defaultName(kind, done), date: Date(), kind: kind,
+                                     warmup: warm, iters: iters, minutes: minutes,
                                      cells: done, hostName: env.host, cpuModel: env.cpu_model, osVersion: env.os)
             self.main {
                 self.running = false; self.progress = nil; self.meters.endRun()
                 self.phase = cancelled ? "Stopped." : "Done."
-                if !done.isEmpty { self.store.add(record); self.lastRecord = record }
+                if done.count > carried.count {
+                    if let id = continuing { self.store.replace(id, with: record) } else { self.store.add(record) }
+                    self.lastRecord = record
+                }
             }
         }
     }
