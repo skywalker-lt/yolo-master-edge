@@ -799,8 +799,7 @@ struct BenchDashboard: View {
     }
     // ---- zoom: the charts open on the full data range; the user zooms the value axis (pinch or the
     // Y buttons) and the time axis (X buttons; the chart then scrolls sideways) ----
-    @State private var zoomX: Double = 1
-    @State private var zoomY: Double = 1
+    @State private var zoomX: Double = 1          // histogram only: narrows the latency axis around the median
     @State private var pinchBase: Double = 1
     // ---- the cell the distribution card shows: clicked in the side-by-side chart or the results table,
     // or moved with the up / down arrow keys ----
@@ -814,21 +813,9 @@ struct BenchDashboard: View {
             Text("X").font(.caption2).foregroundStyle(.tertiary)
             Button { zoomX = max(1, zoomX / 1.5) } label: { Image(systemName: "minus.magnifyingglass") }.disabled(zoomX <= 1)
             Button { zoomX = min(64, zoomX * 1.5) } label: { Image(systemName: "plus.magnifyingglass") }
-            Text("Y").font(.caption2).foregroundStyle(.tertiary).padding(.leading, 6)
-            Button { zoomY = max(1, zoomY / 1.5) } label: { Image(systemName: "minus.magnifyingglass") }.disabled(zoomY <= 1)
-            Button { zoomY = min(64, zoomY * 1.5) } label: { Image(systemName: "plus.magnifyingglass") }
-            Button { zoomX = 1; zoomY = 1 } label: { Image(systemName: "arrow.counterclockwise") }.disabled(zoomX == 1 && zoomY == 1).padding(.leading, 6)
+            Button { zoomX = 1 } label: { Image(systemName: "arrow.counterclockwise") }.disabled(zoomX == 1).padding(.leading, 6)
         }
         .buttonStyle(.borderless).controlSize(.mini).foregroundStyle(.secondary)
-    }
-    /// Full data range with padding, then narrowed around the median by the Y zoom.
-    private func valueRange(_ values: [Double]) -> ClosedRange<Double> {
-        guard let mn = values.min(), let mx = values.max() else { return 0...1 }
-        let pad = max((mx - mn) * 0.05, 0.05)
-        if zoomY <= 1 { return (mn - pad)...(mx + pad) }
-        let med = StageStats(values).median
-        let half = max((mx - mn + 2 * pad) / 2 / zoomY, 0.01)
-        return (med - half)...(med + half)
     }
 
     var body: some View {
@@ -883,7 +870,7 @@ struct BenchDashboard: View {
             if let p = bench.progress, bench.running { ProgressView(value: p).frame(maxWidth: .infinity).padding(.horizontal, 24) }
             if bench.running {
                 Button(role: .destructive) { bench.cancel() } label: { Label("Stop", systemImage: "stop.fill") }
-                    .onAppear { zoomX = 1; zoomY = 1; pinchBase = 1; bench.selectedCellID = nil }
+                    .onAppear { zoomX = 1; pinchBase = 1; bench.selectedCellID = nil }
             } else {
                 Button { bench.run() } label: { Label("Run", systemImage: "play.fill") }
                     .buttonStyle(.borderedProminent).tint(brand).keyboardShortcut(.return, modifiers: .command)
@@ -988,18 +975,25 @@ struct BenchDashboard: View {
         return out
     }
 
+    /// Adaptive range for the sustained trace: the 1st to 99th percentile of the visible samples with
+    /// 10 % padding, so a single outlier does not flatten the trace (it is clamped into the band).
+    private static func adaptiveRange(_ values: [Double]) -> ClosedRange<Double> {
+        guard values.count > 1 else { let v = values.first ?? 0; return (v - 0.5)...(v + 0.5) }
+        let sorted = values.sorted()
+        let lo = sorted[Int(Double(sorted.count) * 0.01)], hi = sorted[min(Int(Double(sorted.count) * 0.99), sorted.count - 1)]
+        let pad = max((hi - lo) * 0.10, 0.05)
+        return (lo - pad)...(hi + pad)
+    }
     private var timeChart: some View {
         let shown = seriesToShow
         let visible = shown.series.flatMap { s in (shown.tStart > 0 ? s.points.filter { $0.t >= shown.tStart } : s.points).map(\.ms) }
-        let range = valueRange(visible)
+        let range = BenchDashboard.adaptiveRange(visible)
         let med = visible.isEmpty ? 0 : StageStats(visible).median
         let buckets = shown.series.map { BenchDashboard.decimate($0.points, name: $0.name, from: shown.tStart, to: shown.tEnd, into: range, live: bench.running) }
-        let span = max(shown.tEnd - shown.tStart, 1)
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Model time per iteration").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                zoomBar()
             }
             Chart {
                 ForEach(Array(buckets.enumerated()), id: \.offset) { k, bs in
@@ -1017,10 +1011,7 @@ struct BenchDashboard: View {
             .chartYAxisLabel("ms").chartXAxisLabel("seconds")
             .chartXScale(domain: shown.tStart...max(shown.tEnd, shown.tStart + 1))
             .chartYScale(domain: range)
-            .chartScrollableAxes(zoomX > 1 ? .horizontal : [])
-            .chartXVisibleDomain(length: span / zoomX)
             .chartLegend(.hidden)
-            .gesture(MagnifyGesture().onChanged { v in zoomY = max(1, min(64, pinchBase * v.magnification)) }.onEnded { _ in pinchBase = zoomY })
             if shown.series.count > 1 {   // legend with the unit dash visible
                 HStack(spacing: 12) {
                     ForEach(Array(shown.series.enumerated()), id: \.offset) { _, sr in
