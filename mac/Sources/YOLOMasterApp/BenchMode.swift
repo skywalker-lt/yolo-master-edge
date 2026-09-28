@@ -1099,9 +1099,9 @@ struct BenchDashboard: View {
         if r.hi > r.value {
             BarMark(xStart: .value("lo", r.value), xEnd: .value("hi", min(r.hi, xMax)), y: .value("cell", r.name), height: .ratio(0.62))
                 .foregroundStyle(r.color.opacity(0.18))
-                .annotation(position: .overlay, alignment: .center) { ctx in
+                .annotation(position: .overlay, alignment: .center) {
                     Stripes().stroke(r.color.opacity(0.9), lineWidth: 2)
-                        .frame(width: ctx.targetSize.width, height: ctx.targetSize.height)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .clipped()
                 }
         }
@@ -1144,13 +1144,6 @@ struct BenchDashboard: View {
             ScrollViewReader { sp in
             ScrollView(.vertical) {
             ZStack(alignment: .top) {
-            VStack(spacing: 0) {   // the selected cell: a wash across its whole row (name, bar and label), behind the chart
-                ForEach(rows) { r in
-                    RoundedRectangle(cornerRadius: 6).fill(focusCell?.id == r.id ? BenchDashboard.tint(r.color, 0.86) : .clear)
-                        .frame(height: 40)
-                }
-            }
-            .padding(.top, 8).padding(.trailing, 14).allowsHitTesting(false)
             Chart {
                 ForEach(rows) { r in
                     BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62))
@@ -1160,6 +1153,17 @@ struct BenchDashboard: View {
             }
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
             .chartXScale(domain: 0...xMax)
+            .chartBackground { proxy in   // the selected cell: a wash across its whole row, sized from the chart's own band geometry
+                GeometryReader { geo in
+                    if let anchor = proxy.plotFrame, let i = rows.firstIndex(where: { $0.id == focusCell?.id }) {
+                        let plot = geo[anchor]
+                        let band = plot.height / CGFloat(max(rows.count, 1))
+                        RoundedRectangle(cornerRadius: 6).fill(BenchDashboard.tint(rows[i].color, 0.86))
+                            .frame(width: geo.size.width + (accuracyMode ? 110 : 0), height: band)   // out to the labels past the axis
+                            .offset(y: plot.minY + CGFloat(i) * band)
+                    }
+                }
+            }
             .padding(.trailing, accuracyMode ? 110 : 0)   // the "map / map50" labels live past the 1.0 edge
             .chartOverlay { proxy in   // a click (not hover) picks the row under the pointer
                 GeometryReader { geo in
