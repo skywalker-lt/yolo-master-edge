@@ -612,11 +612,19 @@ struct BenchSidebar: View {
                         if i > 0 { Divider() }
                         let on = bench.selectedModels.contains(u)
                         HStack(spacing: 6) {
-                            fileRow(icon: on ? "checkmark.circle.fill" : "circle", title: on ? "Model · included" : "Model · skipped",
-                                    value: u.deletingPathExtension().lastPathComponent, set: on, chevron: false) {
+                            Button {
                                 if bench.singleCell { bench.selectedModels = [u] }
                                 else if on { bench.selectedModels.remove(u) } else { bench.selectedModels.insert(u) }
-                            }
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: on ? "checkmark.circle.fill" : "circle").font(.system(size: 15))
+                                        .foregroundStyle(on ? brand : .secondary).frame(width: 20)
+                                    Text(u.deletingPathExtension().lastPathComponent).font(.callout).lineLimit(1).truncationMode(.middle)
+                                        .foregroundStyle(on ? Color.primary : .secondary)
+                                    Spacer(minLength: 4)
+                                }
+                                .contentShape(Rectangle())
+                            }.buttonStyle(.plain).disabled(bench.running)
                             Button { bench.removeModel(u) } label: { Image(systemName: "minus.circle").foregroundStyle(.tertiary) }
                                 .buttonStyle(.borderless).help("Remove from the list")
                         }
@@ -1248,20 +1256,21 @@ struct BenchDashboard: View {
         }()
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Sustained: per-second median and thermal state").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Sustained: FPS per second and thermal state").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
                 ForEach(0..<4, id: \.self) { l in HStack(spacing: 3) { Circle().fill(thermalColor(l)).frame(width: 7, height: 7); Text(thermalName(l)).font(.caption2).foregroundStyle(.secondary) } }
             }
+            let fps = points.map { (t: $0.t, fps: $0.med > 0 ? 1000 / $0.med : 0, thermal: $0.thermal) }
             Chart {
-                ForEach(Array(points.enumerated()), id: \.offset) { _, p in
-                    LineMark(x: .value("s", p.t), y: .value("ms", p.med)).foregroundStyle(.secondary)
-                    PointMark(x: .value("s", p.t), y: .value("ms", p.med)).foregroundStyle(thermalColor(p.thermal)).symbolSize(18)
+                ForEach(Array(fps.enumerated()), id: \.offset) { _, p in
+                    LineMark(x: .value("s", p.t), y: .value("fps", p.fps)).foregroundStyle(.secondary)
+                    PointMark(x: .value("s", p.t), y: .value("fps", p.fps)).foregroundStyle(thermalColor(p.thermal)).symbolSize(18)
                 }
             }
-            .chartYAxisLabel("ms").chartXAxisLabel("seconds")
-            .chartXScale(domain: 0...max(points.map(\.t).max() ?? 1, 1))
-            .chartYScale(domain: {   // every second is one median: show them all, padded, never outside the plot
-                let ys = points.map(\.med); let lo = ys.min() ?? 0, hi = ys.max() ?? 1; let pad = max((hi - lo) * 0.12, 0.05)
+            .chartYAxisLabel("fps").chartXAxisLabel("seconds")
+            .chartXScale(domain: 0...max(fps.map(\.t).max() ?? 1, 1))
+            .chartYScale(domain: {   // one value per second: show them all, padded, never outside the plot
+                let ys = fps.map(\.fps); let lo = ys.min() ?? 0, hi = ys.max() ?? 1; let pad = max((hi - lo) * 0.12, 0.5)
                 return (lo - pad)...(hi + pad)
             }())
             .chartLegend(.hidden)
