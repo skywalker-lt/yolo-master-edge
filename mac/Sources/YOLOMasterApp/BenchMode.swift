@@ -857,7 +857,7 @@ struct BenchDashboard: View {
         return VStack(spacing: 14) {
             statCards
             mainChart.frame(minHeight: expanded == nil ? 220 : 0, maxHeight: expanded == nil ? .infinity : half)
-            if shownKind == .sustained && expanded == nil { sustainedChart.frame(height: 180) }
+            if shownKind == .sustained && expanded == nil { sustainedChart.frame(height: 260) }
             if showComparison {
                 if expanded == .comparison { comparisonChart } else { comparisonChart.frame(height: comparisonHeight) }
             }
@@ -1256,19 +1256,34 @@ struct BenchDashboard: View {
         }()
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Sustained: FPS per second and thermal state").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Sustained: FPS and thermal state").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
                 ForEach(0..<4, id: \.self) { l in HStack(spacing: 3) { Circle().fill(thermalColor(l)).frame(width: 7, height: 7); Text(thermalName(l)).font(.caption2).foregroundStyle(.secondary) } }
             }
             let fps = points.map { (t: $0.t, fps: $0.med > 0 ? 1000 / $0.med : 0, thermal: $0.thermal) }
+            let tMax = max(fps.map(\.t).max() ?? 1, 1)
+            // one smooth line; the thermal state colours it along x through a hard-stop gradient (the line's
+            // frame spans 0...tMax, the x domain, so a stop at t / tMax lands exactly on that second)
+            let stops: [Gradient.Stop] = {
+                var out: [Gradient.Stop] = []
+                for (i, p) in fps.enumerated() {
+                    let color = thermalColor(p.thermal)
+                    let x0 = i == 0 ? 0 : (fps[i - 1].t + p.t) / 2 / tMax     // the colour changes halfway between samples
+                    let x1 = i == fps.count - 1 ? 1 : (p.t + fps[i + 1].t) / 2 / tMax
+                    out.append(.init(color: color, location: x0)); out.append(.init(color: color, location: x1))
+                }
+                return out.isEmpty ? [.init(color: .secondary, location: 0), .init(color: .secondary, location: 1)] : out
+            }()
             Chart {
                 ForEach(Array(fps.enumerated()), id: \.offset) { _, p in
-                    LineMark(x: .value("s", p.t), y: .value("fps", p.fps)).foregroundStyle(.secondary)
-                    PointMark(x: .value("s", p.t), y: .value("fps", p.fps)).foregroundStyle(thermalColor(p.thermal)).symbolSize(18)
+                    LineMark(x: .value("s", p.t), y: .value("fps", p.fps))
                 }
+                .interpolationMethod(.monotone)
+                .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                .foregroundStyle(LinearGradient(stops: stops, startPoint: .leading, endPoint: .trailing))
             }
             .chartYAxisLabel("fps").chartXAxisLabel("seconds")
-            .chartXScale(domain: 0...max(fps.map(\.t).max() ?? 1, 1))
+            .chartXScale(domain: 0...tMax)
             .chartYScale(domain: {   // one value per second: show them all, padded, never outside the plot
                 let ys = fps.map(\.fps); let lo = ys.min() ?? 0, hi = ys.max() ?? 1; let pad = max((hi - lo) * 0.12, 0.5)
                 return (lo - pad)...(hi + pad)
