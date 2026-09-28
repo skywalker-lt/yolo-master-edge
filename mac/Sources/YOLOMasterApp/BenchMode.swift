@@ -834,7 +834,7 @@ struct BenchDashboard: View {
                         histogramChart.frame(minHeight: 220, maxHeight: .infinity)
                         if shownCells.count > 1 || (bench.running && !bench.cells.isEmpty) { comparisonChart.frame(height: comparisonHeight) }
                     case .accuracy:
-                        if let acc = (selectedRecord == nil ? bench.liveCell?.accuracy ?? shownCells.first?.accuracy : shownCells.first?.accuracy) {
+                        if let acc = focusCell?.accuracy {
                             accuracyChart(acc).frame(minHeight: 220, maxHeight: .infinity)
                         } else {
                             accuracyPending.frame(minHeight: 220, maxHeight: .infinity)
@@ -1103,7 +1103,7 @@ struct BenchDashboard: View {
         }
         let xMax: Double = accuracyMode ? 1.0 : max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1)
         return VStack(alignment: .leading, spacing: 6) {
-            Text(accuracyMode ? "Cells side by side: mAP50-95 (bar) / mAP50 (dashed tick) · click a row to inspect it" : "Cells side by side: median (bar) and p90 (tick) · click a row to inspect it")
+            Text(accuracyMode ? "Cells side by side: mAP50-95 (solid) extended to mAP50 (striped) · click a row to inspect it" : "Cells side by side: median (bar) and p90 (tick) · click a row to inspect it")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             ScrollViewReader { sp in
             ScrollView(.vertical) {
@@ -1116,7 +1116,7 @@ struct BenchDashboard: View {
                     }
                     BarMark(x: .value("value", r.value), y: .value("cell", r.name), width: .ratio(0.62))
                         .foregroundStyle(r.fill)
-                    if r.hi > 0 && accuracyMode {   // mAP50 as a dashed tick (drawn in the overlay); the label sits past the 1.0 edge
+                    if r.hi > 0 && accuracyMode {   // mAP50 as a striped extension of the bar (drawn in the overlay); the label sits past the 1.0 edge
                         PointMark(x: .value("hi", r.hi), y: .value("cell", r.name)).opacity(0)
                         PointMark(x: .value("end", xMax), y: .value("cell", r.name)).opacity(0)
                             .annotation(position: .trailing, spacing: 6) {
@@ -1138,7 +1138,7 @@ struct BenchDashboard: View {
             .chartXAxisLabel(accuracyMode ? "mAP" : "ms")
             .chartXScale(domain: 0...xMax)
             .padding(.trailing, accuracyMode ? 110 : 0)   // the "map / map50" labels live past the 1.0 edge
-            .chartOverlay { proxy in   // dashed mAP50 ticks (accuracy), and a click (not hover) picks the row under the pointer
+            .chartOverlay { proxy in   // striped mAP50 extensions (accuracy), and a click (not hover) picks the row under the pointer
                 GeometryReader { geo in
                     ZStack {
                         if accuracyMode {
@@ -1146,12 +1146,23 @@ struct BenchDashboard: View {
                                 guard let anchor = proxy.plotFrame, !rows.isEmpty else { return }
                                 let plot = geo[anchor]
                                 let rowH = plot.height / CGFloat(rows.count), barH = rowH * 0.62
-                                for r in rows where r.hi > 0 {
-                                    guard let yc = proxy.position(forY: r.name), let x = proxy.position(forX: min(r.hi, xMax)) else { continue }
-                                    var path = Path()
-                                    path.move(to: CGPoint(x: plot.minX + x, y: plot.minY + yc - barH / 2 - 3))
-                                    path.addLine(to: CGPoint(x: plot.minX + x, y: plot.minY + yc + barH / 2 + 3))
-                                    ctx.stroke(path, with: .color(.primary), style: StrokeStyle(lineWidth: 2, dash: [3, 2]))
+                                for r in rows where r.hi > r.value {
+                                    guard let yc = proxy.position(forY: r.name),
+                                          let x0 = proxy.position(forX: min(r.value, xMax)), let x1 = proxy.position(forX: min(r.hi, xMax)) else { continue }
+                                    let rect = CGRect(x: plot.minX + x0, y: plot.minY + yc - barH / 2, width: x1 - x0, height: barH)
+                                    // the extension: a faint wash of the bar colour, 45-degree stripes on top, clipped to the rect
+                                    var layer = ctx
+                                    layer.clip(to: Path(rect))
+                                    layer.fill(Path(rect), with: .color(r.color.opacity(0.18)))
+                                    var stripes = Path()
+                                    let step: CGFloat = 7
+                                    var x = rect.minX - rect.height
+                                    while x < rect.maxX + rect.height {
+                                        stripes.move(to: CGPoint(x: x, y: rect.maxY))
+                                        stripes.addLine(to: CGPoint(x: x + rect.height, y: rect.minY))
+                                        x += step
+                                    }
+                                    layer.stroke(stripes, with: .color(r.color.opacity(0.9)), style: StrokeStyle(lineWidth: 2))
                                 }
                             }
                         }
@@ -1327,7 +1338,7 @@ struct BenchDashboard: View {
             Chart {
                 ForEach(rows, id: \.class_id) { c in
                     BarMark(x: .value("class", "\(c.class_id)"), y: .value("AP", c.ap5095))
-                        .foregroundStyle(hoverClass == nil || hoverClass == c.class_id ? BenchDashboard.apColor(c.ap5095) : BenchDashboard.apColor(c.ap5095).opacity(0.35))
+                        .foregroundStyle(hoverClass == nil || hoverClass == c.class_id ? brand : brand.opacity(0.35))
                 }
                 RuleMark(y: .value("mAP", a.map5095)).foregroundStyle(.secondary).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
             }
