@@ -34,16 +34,22 @@ enum BenchKind: String, CaseIterable, Codable {
 }
 
 enum ComputeChoice: String, CaseIterable, Codable, Identifiable {
-    case ane = "ANE", gpu = "GPU", cpu = "CPU", auto = "Auto"
+    case auto = "Auto", gpu = "GPU", cpu = "CPU"
     var id: String { rawValue }
+    /// Older records carry "ANE" (the forced Neural Engine unit, dropped: every segment the ANE
+    /// refuses lands on the CPU, which measures nothing useful); they read back as Auto.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = ComputeChoice(rawValue: raw) ?? (raw == "ANE" ? .auto : .gpu)
+    }
     /// ANE = CPU + Neural Engine (the ANE runs everything it supports, the CPU the rest; the GPU is
     /// never used), GPU = CPU + GPU, CPU = CPU only. Not `.all`: that is Core ML's own partitioning
     /// across the three units and measures the scheduler, not the Neural Engine.
     /// Auto = every unit, Core ML partitions the graph itself (the setting the iOS app's "ANE" button
     /// measures): the ANE takes the segments it accepts and the GPU the rest.
-    var mode: ComputeMode { switch self { case .ane: return .cpuAndNeuralEngine; case .gpu: return .cpuAndGPU; case .cpu: return .cpu; case .auto: return .all } }
+    var mode: ComputeMode { switch self { case .auto: return .all; case .gpu: return .cpuAndGPU; case .cpu: return .cpu } }
     var ep: String { self == .auto ? "CoreML-ALL" : "CoreML-" + rawValue }
-    var icon: String { switch self { case .ane: return "sparkles"; case .gpu: return "rectangle.stack.fill"; case .cpu: return "cpu"; case .auto: return "square.stack.3d.up" } }
+    var icon: String { switch self { case .auto: return "sparkles"; case .gpu: return "rectangle.stack.fill"; case .cpu: return "cpu" } }
 }
 
 /// One (model x compute unit) cell of a run.
@@ -643,8 +649,8 @@ struct BenchSidebar: View {
                         SegmentedButtons(options: [(PreprocDevice.gpu, "GPU"), (PreprocDevice.cpu, "CPU")], icons: ["rectangle.stack.fill", "cpu"], selection: $bench.preproc, tint: brand)
                     }.disabled(bench.running)
                     Text(bench.singleCell
-                         ? "ANE = Neural Engine (ops it cannot run fall back to the CPU, never the GPU), GPU = CPU and GPU, CPU only, Auto = Core ML splits the graph across all three (what the iPhone app's ANE button measures). Sustained runs one model on one unit; pick one of each."
-                         : "ANE = Neural Engine (ops it cannot run fall back to the CPU, never the GPU), GPU = CPU and GPU, CPU only, Auto = Core ML splits the graph across all three (what the iPhone app's ANE button measures). Each selected model runs on each selected unit.")
+                         ? "Auto = Core ML splits the graph across ANE, GPU and CPU (the iPhone app's ANE setting), GPU = CPU and GPU, CPU only. Sustained runs one model on one unit; pick one of each."
+                         : "Auto = Core ML splits the graph across ANE, GPU and CPU (the iPhone app's ANE setting), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 box("Protocol", "list.bullet.clipboard") {
