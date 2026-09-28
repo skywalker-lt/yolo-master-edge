@@ -1328,7 +1328,7 @@ struct ContentView: View {
                         }
                     }
                     sectionBox("Device", "cpu") {
-                        MenuButton(options: ComputeMode.allCases.map { ($0, $0.label) }, icons: ["rectangle.stack.fill", "sparkles", "cpu"], selection: $compute, tint: brandColor)
+                        MenuButton(options: ComputeMode.allCases.map { ($0, $0.label) }, icons: ["rectangle.stack.fill", "sparkles", "square.stack.3d.up", "cpu"], selection: $compute, tint: brandColor)
                             .disabled(cameraOn)
                         if cameraOn {
                             Text("Stop the camera to change the compute backend.")

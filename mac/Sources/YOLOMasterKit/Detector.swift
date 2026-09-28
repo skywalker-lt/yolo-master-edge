@@ -59,26 +59,34 @@ public struct MaskBitmap: @unchecked Sendable {
 
 /// Core ML compute unit selection. Default cpuAndGPU: the ANE can crash on this
 /// fragmented MoE+attention graph.
+///
+/// `cpuAndNeuralEngine` is the Neural Engine measurement: every op the ANE supports runs there and
+/// the rest falls back to the CPU, never the GPU. `all` hands the whole decision to Core ML, which
+/// partitions the graph across all three units and can end up slower than the GPU alone on a
+/// graph with many ANE-unsupported segments (each boundary is a sync and a copy).
 public enum ComputeMode: String, CaseIterable, Sendable {
-    case cpuAndGPU, all, cpu
+    case cpuAndGPU, cpuAndNeuralEngine, all, cpu
     public var mlUnits: MLComputeUnits {
         switch self {
         case .all: return .all
         case .cpu: return .cpuOnly
         case .cpuAndGPU: return .cpuAndGPU
+        case .cpuAndNeuralEngine: return .cpuAndNeuralEngine
         }
     }
     /// Human-readable label for the UI.
     public var label: String {
         switch self {
         case .cpuAndGPU: return "CPU + GPU"
-        case .all: return "CPU + GPU + Neural Engine"
+        case .cpuAndNeuralEngine: return "CPU + Neural Engine"
+        case .all: return "All units (Core ML decides)"
         case .cpu: return "CPU only"
         }
     }
     public init(_ s: String) {
         switch s.lowercased() {
         case "all": self = .all
+        case "ane", "neuralengine", "cpuandneuralengine", "cpuandane": self = .cpuAndNeuralEngine
         case "cpu", "cpuonly": self = .cpu
         default: self = .cpuAndGPU
         }

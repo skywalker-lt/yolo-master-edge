@@ -6,7 +6,7 @@
 //   folder  -> annotated folder (--out preds/) + batch timing
 //   video   -> annotated video  (--out out.mp4), size/fps preserved
 //   --benchmark -> model-only latency (percentiles + img/s)
-// Compute defaults cpuAndGPU (the ANE can crash on this fragmented MoE graph); --compute all|cpu.
+// Compute defaults cpuAndGPU (the ANE can crash on this fragmented MoE graph); --compute ane|all|cpu.
 //
 // Build:  swift build -c release --package-path mac
 import Foundation
@@ -36,7 +36,7 @@ if hasFlag("--core-selftest") {
 
 guard let modelPath = argValue("--model"), let srcPath = argValue("--source") else {
     die("usage: yolomaster-coreml --model M.mlpackage --source img|dir/|vid.mp4 [--out o] " +
-        "[--conf 0.25] [--iou 0.5] [--compute cpuAndGPU|all|cpu] [--style hud|solid|neon] " +
+        "[--conf 0.25] [--iou 0.5] [--compute cpuAndGPU|ane|all|cpu] [--style hud|solid|neon] " +
         "[--label full|min|off] [--resize N] [--limit N] [--no-save] [--save-txt DIR] " +
         "[--slicing off|dense|sparse [--tile-size N] [--slicing-masks] [--max-det N]] [--cw-nms [--sigma 0.1]] " +
         "[--bench off|cold|sustained] [--bench-iters 50] [--bench-warmup 10] [--bench-minutes 2] [--bench-json PATH] " +
