@@ -45,34 +45,49 @@ def main() -> int:
         print("not an ML program; nothing to report"); return 1
     ops = list(program.functions["main"].block.operations)
 
-    by_dev_cost, by_dev_n = collections.Counter(), collections.Counter()
-    off_ane = []
-    total = 0.0
+    pref_cost, pref_n, cap_n = collections.Counter(), collections.Counter(), collections.Counter()
+    off_ane, demoted = [], []
+    total, n_real = 0.0, 0
     for op in ops:
-        if op.operator_name == "const":
+        if op.operator_name == "const" or "constexpr" in op.operator_name:   # weights and their dequantizers
             continue
+        n_real += 1
         usage = plan.get_compute_device_usage_for_mlprogram_operation(op)
         cost = plan.get_estimated_cost_for_mlprogram_operation(op)
-        w = float(cost.weight) if cost is not None else 0.0
+        w = float(cost.weight) if cost is not None and cost.weight is not None else 0.0
         total += w
         dev = device_name(usage.preferred_compute_device) if usage is not None else "?"
-        by_dev_cost[dev] += w; by_dev_n[dev] += 1
+        pref_cost[dev] += w; pref_n[dev] += 1
         supported = {device_name(d) for d in (usage.supported_compute_devices if usage is not None else [])}
+        for d in supported: cap_n[d] += 1
+        name = op.outputs[0].name if op.outputs else "?"
         if "ANE" not in supported:
-            name = op.outputs[0].name if op.outputs else "?"
             off_ane.append((w, op.operator_name, name, ",".join(sorted(supported)) or "?"))
+        elif dev != "ANE":
+            demoted.append((w, op.operator_name, name, dev))
 
-    print(f"{a.model}  units={a.units}  ops={len(ops)}")
-    for dev in sorted(by_dev_cost, key=lambda d: -by_dev_cost[d]):
-        share = 100 * by_dev_cost[dev] / total if total else 0
-        print(f"  {dev:>4}: {by_dev_n[dev]:5d} ops  {share:5.1f}% of estimated cost")
+    print(f"{a.model}  units={a.units}  ops={n_real} (weights and dequantizers excluded)")
+    if total == 0:
+        print("  (Core ML gave no cost estimates for this plan; shares are by op count)")
+    print("  scheduled on (preferred device):")
+    for dev in sorted(pref_n, key=lambda d: -(pref_cost[d] if total else pref_n[d])):
+        share = 100 * (pref_cost[dev] / total if total else pref_n[dev] / n_real)
+        print(f"    {dev:>4}: {pref_n[dev]:5d} ops  {share:5.1f}%")
+    print("  capable of (supported devices): " + ", ".join(f"{d}:{n}" for d, n in cap_n.most_common()))
     off_ane.sort(reverse=True)
-    off_cost = sum(w for w, *_ in off_ane)
-    print(f"ops the ANE cannot run: {len(off_ane)} ({100 * off_cost / total if total else 0:.1f}% of estimated cost)")
+    print(f"ops the ANE cannot run: {len(off_ane)}")
     kinds = collections.Counter(t for _, t, _, _ in off_ane)
-    print("  by type: " + ", ".join(f"{t}:{n}" for t, n in kinds.most_common()))
+    if kinds:
+        print("  by type: " + ", ".join(f"{t}:{n}" for t, n in kinds.most_common()))
     for w, t, name, sup in off_ane[: a.top]:
-        print(f"  {100 * w / total if total else 0:5.2f}%  {t:<24} {name:<40} runs on {sup}")
+        print(f"  {100 * w / total if total else 0:5.2f}%  {t:<24} {name:<44} runs on {sup}")
+    if demoted:
+        kinds = collections.Counter(t for _, t, _, _ in demoted)
+        print(f"ANE-capable ops that Core ML scheduled elsewhere anyway: {len(demoted)} "
+              f"(by type: {', '.join(f'{t}:{n}' for t, n in kinds.most_common(12))})")
+        print("  every op says it can run on the ANE, yet the plan puts the segment on another unit: Core ML rejected")
+        print("  the ANE partition as a whole, typically a tensor beyond the ANE's shape limits or an op that fails")
+        print("  at ANE compile time. Compare with --units all and with the fp16 package to narrow it down.")
     return 0
 
 
