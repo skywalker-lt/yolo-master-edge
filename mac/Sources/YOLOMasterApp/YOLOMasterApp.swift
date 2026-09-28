@@ -1335,6 +1335,7 @@ struct ContentView: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
+                    sectionBox("System", "gauge.with.dots.needle.33percent") { MetersStrip(meters: bench.meters) }
                     sectionBox("Inference", "chart.bar.doc.horizontal") { summaryContent }
                 }
             }
