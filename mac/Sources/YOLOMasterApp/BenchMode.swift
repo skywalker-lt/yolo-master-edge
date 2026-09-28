@@ -818,31 +818,47 @@ struct BenchDashboard: View {
         .buttonStyle(.borderless).controlSize(.mini).foregroundStyle(.secondary)
     }
 
+    /// Which lower card is expanded: the main chart folds to half the stage and the other card retracts.
+    enum Expanded { case comparison, results }
+    @State private var expanded: Expanded? = nil
+    private func expandButton(_ which: Expanded) -> some View {
+        let on = expanded == which
+        return Button { withAnimation(.easeInOut(duration: 0.2)) { expanded = on ? nil : which } } label: {
+            Image(systemName: on ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+        }
+        .buttonStyle(.borderless).controlSize(.small).foregroundStyle(.secondary)
+        .help(on ? "Restore the layout" : "Expand this card (the main chart folds to half, the other card retracts)")
+    }
+    /// The charts column: stat cards, the main chart (the whole stage, or half of it while a lower card
+    /// is expanded), then the comparison card and the results table (the expanded one takes the rest,
+    /// the other retracts).
+    private func stageContent(_ stage: GeometryProxy) -> some View {
+        let half = max(stage.size.height / 2, 160)
+        let showComparison = expanded != .results && (shownCells.count > 1 || (bench.running && !bench.cells.isEmpty && shownKind == .cold))
+        return VStack(spacing: 14) {
+            statCards
+            mainChart.frame(minHeight: expanded == nil ? 220 : 0, maxHeight: expanded == nil ? .infinity : half)
+            if shownKind == .sustained && expanded == nil { sustainedChart.frame(height: 180) }
+            if showComparison {
+                if expanded == .comparison { comparisonChart } else { comparisonChart.frame(height: comparisonHeight) }
+            }
+            if !shownCells.isEmpty && expanded != .comparison { resultsTable }
+        }
+        .frame(width: stage.size.width, height: stage.size.height, alignment: .top)
+    }
+    @ViewBuilder private var mainChart: some View {
+        switch shownKind {
+        case .sustained: timeChart
+        case .cold: histogramChart
+        case .accuracy:
+            if let acc = focusCell?.accuracy { accuracyChart(acc) } else { accuracyPending }
+        }
+    }
     var body: some View {
         VStack(spacing: 14) {
             header
             HStack(alignment: .top, spacing: 14) {
-                VStack(spacing: 14) {
-                    statCards
-                    // the main chart takes whatever height the stage has; the secondary charts keep a fixed band
-                    switch shownKind {
-                    case .sustained:
-                        timeChart.frame(minHeight: 220, maxHeight: .infinity)
-                        sustainedChart.frame(height: 180)
-                        if shownCells.count > 1 { comparisonChart.frame(height: comparisonHeight) }
-                    case .cold:
-                        histogramChart.frame(minHeight: 220, maxHeight: .infinity)
-                        if shownCells.count > 1 || (bench.running && !bench.cells.isEmpty) { comparisonChart.frame(height: comparisonHeight) }
-                    case .accuracy:
-                        if let acc = focusCell?.accuracy {
-                            accuracyChart(acc).frame(minHeight: 220, maxHeight: .infinity)
-                        } else {
-                            accuracyPending.frame(minHeight: 220, maxHeight: .infinity)
-                        }
-                        if shownCells.count > 1 { comparisonChart.frame(height: comparisonHeight) }
-                    }
-                    if !shownCells.isEmpty { resultsTable }
-                }
+                GeometryReader { stage in stageContent(stage) }
                 ThermometerView(meters: bench.meters, running: bench.running).frame(width: 96)
                 PowerMeterView(meters: bench.meters).frame(width: 96)
             }
@@ -1134,7 +1150,8 @@ struct BenchDashboard: View {
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
                 Text(accuracyMode ? "mAP50-95 / mAP50" : "median (p90)")   // the column of labels past the axis
-                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.trailing, 14)
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                expandButton(.comparison).padding(.leading, 6)
             }
             ScrollViewReader { sp in
             ScrollView(.vertical) {
@@ -1184,6 +1201,7 @@ struct BenchDashboard: View {
             .onChange(of: bench.selectedCellID) { if let id = bench.selectedCellID { withAnimation { sp.scrollTo(id, anchor: .center) } } }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: expanded == .comparison ? .infinity : nil, alignment: .top)
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
@@ -1246,7 +1264,11 @@ struct BenchDashboard: View {
         let headers = ["Model", "Unit", "Pre", "Median ms", "p90", "p99", "Min", "FPS"]
         let rowH: CGFloat = 26
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack {
+                Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                expandButton(.results)
+            }
             // header outside the scroll view so it never scrolls away; the same column widths as the rows
             resultsRow(headers, bold: true, trailing: { Spacer().frame(width: 22, height: 1) })
                 .frame(height: 18).padding(.horizontal, 6)
@@ -1269,11 +1291,12 @@ struct BenchDashboard: View {
                 }
                 .padding(.trailing, 14)   // room for the scrollbar
             }
-            .frame(height: rowH * CGFloat(min(shownCells.count, 5)))
+            .frame(height: expanded == .results ? nil : rowH * CGFloat(min(shownCells.count, 5)))
+            .frame(maxHeight: expanded == .results ? .infinity : nil)
             .onChange(of: bench.selectedCellID) { if let id = bench.selectedCellID { withAnimation { sp.scrollTo(id, anchor: .center) } } }
             }
         }
-        .fixedSize(horizontal: false, vertical: true)   // the card is exactly as tall as header + rows
+        .fixedSize(horizontal: false, vertical: expanded != .results)   // the card is exactly as tall as header + rows unless expanded
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
