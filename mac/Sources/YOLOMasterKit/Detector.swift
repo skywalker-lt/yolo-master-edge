@@ -79,7 +79,7 @@ public enum ComputeMode: String, CaseIterable, Sendable {
         switch self {
         case .cpuAndGPU: return "CPU + GPU"
         case .cpuAndNeuralEngine: return "CPU + Neural Engine"
-        case .all: return "All units (Core ML decides)"
+        case .all: return "Auto (ANE + GPU + CPU)"
         case .cpu: return "CPU only"
         }
     }
