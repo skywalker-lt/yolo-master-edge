@@ -1496,10 +1496,12 @@ struct TimerDial: View {
     @Binding var minutes: Double
     private var mm: Int { Int(minutes) }
     private var ss: Int { Int(((minutes - Double(mm)) * 60).rounded()) }
+    /// Seconds carry into minutes like a clock (:45 + 15 s -> next minute :00, :00 - 15 s -> previous :45);
+    /// the total is held to 0:15 ... 30:00, so 29:45 + 15 s lands on 30:00 and stops there.
     private func set(_ m: Int, _ s: Int) {
-        let clampedM = max(0, min(30, m)), clampedS = max(0, min(59, s))
-        let v = Double(clampedM) + Double(clampedS) / 60
-        minutes = max(0.25, min(30, v))
+        var total = m * 60 + s
+        total = max(15, min(30 * 60, total))
+        minutes = Double(total) / 60
     }
     var body: some View {
         HStack(spacing: 6) {
