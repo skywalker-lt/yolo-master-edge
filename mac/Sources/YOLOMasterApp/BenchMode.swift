@@ -95,15 +95,29 @@ final class BenchStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("bench_history.json")
         if let d = try? Data(contentsOf: url) {
-            if let r = try? JSONDecoder().decode([BenchRecord].self, from: d) { records = r }
+            if let r = BenchStore.decode(d) { records = r }
             else if let arr = (try? JSONSerialization.jsonObject(with: d)) as? [[String: Any]] {
                 // older files: a renamed protocol, or a protocol that no longer exists (dropped)
                 let kept = arr.filter { ($0["kind"] as? String) != "Dataset" }.map { rec -> [String: Any] in
                     var r = rec; if let k = r["kind"] as? String, k.hasPrefix("Cold "), k != "Cold run" { r["kind"] = "Cold run" }; return r
                 }
-                if let d2 = try? JSONSerialization.data(withJSONObject: kept), let r = try? JSONDecoder().decode([BenchRecord].self, from: d2) { records = r }
+                if let d2 = try? JSONSerialization.data(withJSONObject: kept), let r = BenchStore.decode(d2) { records = r }
+            }
+            if records.isEmpty, let arr = (try? JSONSerialization.jsonObject(with: d)) as? [Any], !arr.isEmpty {
+                // parseable JSON that still yields nothing: keep the file out of harm's way instead of
+                // letting the next save() overwrite it with an empty list
+                let backup = url.deletingPathExtension().appendingPathExtension("unreadable.json")
+                try? FileManager.default.removeItem(at: backup)
+                try? FileManager.default.copyItem(at: url, to: backup)
             }
         }
+    }
+    /// The file is written with ISO-8601 dates (`save()`); decode it the same way, and accept the
+    /// numeric form as a fallback so a file from another writer still loads.
+    private static func decode(_ d: Data) -> [BenchRecord]? {
+        let iso = JSONDecoder(); iso.dateDecodingStrategy = .iso8601
+        if let r = try? iso.decode([BenchRecord].self, from: d) { return r }
+        return try? JSONDecoder().decode([BenchRecord].self, from: d)
     }
     func add(_ r: BenchRecord) { records.insert(r, at: 0); save() }
     /// Replace a record in place (a sustained session growing by one cell per run); adds it if it is gone.
