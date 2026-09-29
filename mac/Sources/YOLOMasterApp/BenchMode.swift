@@ -547,6 +547,7 @@ final class BenchModel: ObservableObject {
                     }
                     cell.thermal = thermalTrack
                     cell.document = doc
+                    if self.isCancelled && cell.headlineMs == nil { break outer }   // stopped before any statistic: nothing to keep
                     done.append(cell)
                     let snapshot = done
                     self.main { self.cells = snapshot; self.liveCell = cell; self.progress = nil }
@@ -1172,9 +1173,13 @@ struct BenchDashboard: View {
     private var comparisonChart: some View {
         let cells = bench.running ? bench.cells : shownCells
         let accuracyMode = shownKind == .accuracy
+        var seen: [String: Int] = [:]
         let rows = cells.map { c -> Row in
-            if accuracyMode { return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.accuracy?.map5095 ?? 0, hi: c.accuracy?.map50 ?? 0, color: cellSolid(c), fill: cellFill(c)) }
-            return Row(id: c.id, name: "\(c.modelName) · \(c.compute.rawValue)", value: c.cold?.median ?? 0, hi: c.cold?.p90 ?? 0, color: cellSolid(c), fill: cellFill(c))
+            let base = "\(c.modelName) · \(c.compute.rawValue)"
+            seen[base, default: 0] += 1
+            let name = seen[base]! > 1 ? "\(base) #\(seen[base]!)" : base
+            if accuracyMode { return Row(id: c.id, name: name, value: c.accuracy?.map5095 ?? 0, hi: c.accuracy?.map50 ?? 0, color: cellSolid(c), fill: cellFill(c)) }
+            return Row(id: c.id, name: name, value: c.cold?.median ?? 0, hi: c.cold?.p90 ?? 0, color: cellSolid(c), fill: cellFill(c))
         }
         let xMax: Double = accuracyMode ? 1.0 : max((rows.map(\.hi).max() ?? 1) * 1.3, 0.1)
         return VStack(alignment: .leading, spacing: 6) {
