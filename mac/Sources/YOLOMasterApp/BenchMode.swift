@@ -838,7 +838,7 @@ struct BenchDashboard: View {
     private var focusCell: BenchCell? {
         if bench.running { return bench.liveCell }
         let cells = shownCells
-        return cells.first { $0.id == bench.selectedCellID } ?? cells.first
+        return cells.first { $0.id == bench.selectedCellID } ?? (shownKind == .sustained ? cells.last : cells.first)
     }
     private func zoomBar() -> some View {
         HStack(spacing: 4) {
@@ -866,7 +866,8 @@ struct BenchDashboard: View {
     /// the other retracts).
     private func stageContent(_ stage: GeometryProxy) -> some View {
         let half = max(stage.size.height / 2, 160)
-        let showComparison = expanded != .results && (shownCells.count > 1 || (bench.running && !bench.cells.isEmpty && shownKind == .cold))
+        let sustainedLive = bench.running && shownKind == .sustained   // the earlier cells fold away while a new one streams
+        let showComparison = expanded != .results && !sustainedLive && (shownCells.count > 1 || (bench.running && !bench.cells.isEmpty && shownKind == .cold))
         return VStack(spacing: 14) {
             statCards
             mainChart.frame(minHeight: expanded == nil ? 220 : 0, maxHeight: expanded == nil ? .infinity : half)
@@ -874,7 +875,7 @@ struct BenchDashboard: View {
             if showComparison {
                 if expanded == .comparison { comparisonChart } else { comparisonChart.frame(height: comparisonHeight) }
             }
-            if !shownCells.isEmpty && expanded != .comparison { resultsTable }
+            if !shownCells.isEmpty && expanded != .comparison && !sustainedLive { resultsTable }
         }
         .frame(width: stage.size.width, height: stage.size.height, alignment: .top)
     }
@@ -971,7 +972,7 @@ struct BenchDashboard: View {
             return ([Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellSolid(c), dash: cellDash(c), cell: c, points: pts)],
                     tStart, tStart > 0 ? tStart + BenchDashboard.windowSeconds : max(tEnd, 1))
         }
-        let cells = shownCells
+        let cells = focusCell.map { [$0] } ?? []   // one run at a time: the selected cell (arrow keys / clicks switch it)
         let series = cells.map { c in
             Series(name: "\(c.modelName) · \(c.compute.rawValue)", color: cellSolid(c), dash: cellDash(c), cell: c,
                    points: c.samples.enumerated().map { ($0.offset < c.sampleTimes.count ? c.sampleTimes[$0.offset] : Double($0.offset), $0.element) })
@@ -1261,8 +1262,8 @@ struct BenchDashboard: View {
     /// Sustained: one median per second, coloured by the thermal state of that second.
     private var sustainedChart: some View {
         let points: [(t: Double, med: Double, thermal: Int)] = {
-            if bench.running || selectedRecord == nil, !bench.liveSeconds.isEmpty { return bench.liveSeconds }
-            if let c = shownCells.first, let su = c.sustained {
+            if bench.running, !bench.liveSeconds.isEmpty { return bench.liveSeconds }
+            if let c = focusCell, let su = c.sustained {
                 return su.sparkline.enumerated().map { (Double($0.offset), $0.element, $0.offset < c.thermal.count ? c.thermal[$0.offset] : 0) }
             }
             return []
