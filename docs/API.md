@@ -144,7 +144,9 @@ writes: `model`, `environment` (host, CPU, GPU, threads, commit, build flags, ve
 tabs' convention) plus `request_id` and `worker`. The run holds that worker for its duration;
 other workers keep serving. Accuracy is not measured over HTTP: use the CLI's `--accuracy`.
 `tool` names the producer: `cli`, `server`, `macos` (the Core ML runner's CLI and app, whose
-`sustained` block adds a `thermal` array of ProcessInfo states), `android`, `ios`. Any document
+`sustained` block adds a `thermal` array, one sample per second, in the bands Cool / Normal /
+Hot / Critical: die-temperature bands from the SMC in the app, ProcessInfo pressure states
+mapped onto the same names in the CLI), `android`, `ios`. Any document
 can be checked with `scripts/bench_schema_check.py`.
 
 Optional blocks a producer may add (absent elsewhere, never required): `model.moe_export`

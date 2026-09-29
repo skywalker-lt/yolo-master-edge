@@ -48,7 +48,10 @@ public struct BenchDocument: Codable {
         public var infer_ms: StageStats
         public var cold_median_ms, sustained_median_ms, throttle_pct: Double
         public var sparkline: [Double]; public var duration_s: Double; public var probe_mode: String
-        /// macOS / iOS only: ProcessInfo thermal state samples (nominal, fair, serious, critical) once per second.
+        /// macOS / iOS only, one sample per second in the thermal bands Cool / Normal / Hot / Critical:
+        /// the die temperature bands (< 50, < 80, < 110 C) when the producer reads the SMC (the macOS
+        /// app), else ProcessInfo's pressure states mapped onto the same four names (nominal -> Cool,
+        /// fair -> Normal, serious -> Hot, critical -> Critical).
         public var thermal: [String]?
     }
     public struct Dataset: Codable {
@@ -222,7 +225,8 @@ public enum BenchRunner {
     /// one sparkline median and one thermal-state sample per second. `cancel()` stops early.
     public static func sustainedLoop(_ det: Detector, warmup: Int, minutes: Double, coldIters: Int = 50,
                                      cancel: (() -> Bool)? = nil, tick: ((Double, Double) -> Void)? = nil,
-                                     onSample: ((Int, Double) -> Void)? = nil) -> BenchDocument.Sustained {
+                                     onSample: ((Int, Double) -> Void)? = nil,
+                                     thermalSampler: (() -> String)? = nil) -> BenchDocument.Sustained {
         var r = BenchDocument.Sustained(infer_ms: StageStats([]), cold_median_ms: 0, sustained_median_ms: 0, throttle_pct: 0,
                                         sparkline: [], duration_s: 0, probe_mode: "infer_only", thermal: [])
         guard let probe = probeImage(det.imgsz) else { return r }
@@ -239,7 +243,7 @@ public enum BenchRunner {
             onSample?(all.count - 1, t)
             if Date().timeIntervalSince(secStart) >= 1 {
                 r.sparkline.append(StageStats(second).median)
-                r.thermal?.append(thermalName(ProcessInfo.processInfo.thermalState))
+                r.thermal?.append(thermalSampler?() ?? thermalName(ProcessInfo.processInfo.thermalState))
                 tick?(elapsed, StageStats(second).median)
                 second.removeAll(); secStart = Date()
             }
@@ -252,9 +256,10 @@ public enum BenchRunner {
         return r
     }
 
+    /// ProcessInfo's pressure state in the document's four-band vocabulary.
     public static func thermalName(_ s: ProcessInfo.ThermalState) -> String {
-        switch s { case .nominal: return "nominal"; case .fair: return "fair"; case .serious: return "serious"; case .critical: return "critical"
-        @unknown default: return "unknown" }
+        switch s { case .nominal: return "Cool"; case .fair: return "Normal"; case .serious: return "Hot"; case .critical: return "Critical"
+        @unknown default: return "Cool" }
     }
 }
 

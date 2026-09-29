@@ -553,7 +553,8 @@ final class BenchModel: ObservableObject {
                                                            },
                                                            onSample: { _, ms in
                                                                cell.samples.append(ms); cell.sampleTimes.append(Date().timeIntervalSince(cellStart)); self.push(ms)
-                                                           })
+                                                           },
+                                                           thermalSampler: { thermalName(self.meters.thermal) })   // the die-temperature band, as on the meter
                         cell.sustained = su; doc.sustained = su
                         var coldStats = StageStats(Array(cell.samples.prefix(max(iters, 1))))
                         coldStats.n = min(cell.samples.count, max(iters, 1))
