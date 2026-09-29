@@ -79,7 +79,7 @@ struct BenchRecord: Identifiable, Codable {
     let date: Date
     let kind: BenchKind
     let warmup: Int, iters: Int, minutes: Double
-    let cells: [BenchCell]
+    var cells: [BenchCell]
     let hostName: String, cpuModel: String, osVersion: String
     var fastest: BenchCell? { cells.min { ($0.headlineMs ?? .infinity) < ($1.headlineMs ?? .infinity) } }
 }
@@ -569,6 +569,25 @@ final class BenchModel: ObservableObject {
         }
     }
 
+    /// Remove one run from the record it belongs to (the store entry is rewritten or, if it is now
+    /// empty, dropped). Returns true when the whole record went away.
+    @discardableResult
+    func deleteCell(_ id: UUID, from record: BenchRecord?) -> Bool {
+        guard !running else { return false }
+        if selectedCellID == id { selectedCellID = nil }
+        cells.removeAll { $0.id == id }
+        guard var r = record else { return false }
+        r.cells.removeAll { $0.id == id }
+        if r.cells.isEmpty {
+            store.remove([r.id])
+            if lastRecord?.id == r.id { lastRecord = nil; cells = [] }
+            return true
+        }
+        store.replace(r.id, with: r)
+        if lastRecord?.id == r.id { lastRecord = r; cells = r.cells }
+        return false
+    }
+
     private static func defaultName(_ kind: BenchKind, _ cells: [BenchCell]) -> String {
         let f = DateFormatter(); f.dateFormat = "MMM d HH:mm"
         let m = Set(cells.map(\.modelName)).sorted().joined(separator: "+")
@@ -839,8 +858,13 @@ struct BenchDashboard: View {
     private var focusCell: BenchCell? {
         if bench.running { return bench.liveCell }
         let cells = shownCells
-        return cells.first { $0.id == bench.selectedCellID } ?? (shownKind == .sustained ? cells.last : cells.first)
+        return cells.first { $0.id == bench.selectedCellID }
+            ?? (shownKind == .sustained ? (cells.last { $0.headlineMs != nil } ?? cells.last) : cells.first)
     }
+    private func deleteRun(_ id: UUID) {
+        if bench.deleteCell(id, from: shownRecord) { selectedRecord = nil }
+    }
+    @State private var hoverRowID: UUID? = nil     // the comparison row under the pointer (for its context menu)
     private func zoomBar() -> some View {
         HStack(spacing: 4) {
             Text("X").font(.caption2).foregroundStyle(.tertiary)
@@ -869,16 +893,30 @@ struct BenchDashboard: View {
         let half = max(stage.size.height / 2, 160)
         let sustainedLive = bench.running && shownKind == .sustained   // the earlier cells fold away while a new one streams
         let showComparison = expanded != .results && !sustainedLive && (shownCells.count > 1 || (bench.running && !bench.cells.isEmpty && shownKind == .cold))
-        return VStack(spacing: 14) {
+        // the height the column needs with the main chart at its minimum; past that, the column scrolls
+        let showResults = !shownCells.isEmpty && expanded != .comparison && !sustainedLive
+        var needed: CGFloat = 64 + 14 + 240
+        if shownKind == .sustained && expanded == nil { needed += 14 + 260 }
+        if showComparison { needed += 14 + (expanded == .comparison ? 5 * 40 + 70 : comparisonHeight) }
+        if showResults { needed += 14 + 26 * CGFloat(min(shownCells.count, 5)) + 70 }
+        let scrolls = expanded == nil && needed > stage.size.height
+        let column = VStack(spacing: 14) {
             statCards
-            mainChart.frame(minHeight: expanded == nil ? 220 : 0, maxHeight: expanded == nil ? .infinity : half)
+            mainChart.frame(minHeight: expanded == nil ? 220 : 0, maxHeight: scrolls ? 320 : (expanded == nil ? .infinity : half))
             if shownKind == .sustained && expanded == nil { sustainedChart.frame(height: 260) }
             if showComparison {
                 if expanded == .comparison { comparisonChart } else { comparisonChart.frame(height: comparisonHeight) }
             }
-            if !shownCells.isEmpty && expanded != .comparison && !sustainedLive { resultsTable }
+            if showResults { resultsTable }
         }
-        .frame(width: stage.size.width, height: stage.size.height, alignment: .top)
+        return Group {
+            if scrolls {
+                ScrollView(.vertical) { column.frame(width: stage.size.width) }
+                    .frame(width: stage.size.width, height: stage.size.height)
+            } else {
+                column.frame(width: stage.size.width, height: stage.size.height, alignment: .top)
+            }
+        }
     }
     @ViewBuilder private var mainChart: some View {
         switch shownKind {
@@ -1225,6 +1263,20 @@ struct BenchDashboard: View {
                                 let y = location.y - plot.origin.y
                                 if let name: String = proxy.value(atY: y), let r = rows.first(where: { $0.name == name }) { bench.selectedCellID = r.id }
                             }
+                            .onContinuousHover { phase in
+                                switch phase {
+                                case .active(let loc):
+                                    guard let anchor = proxy.plotFrame else { return }
+                                    let plot = geo[anchor]
+                                    if let name: String = proxy.value(atY: loc.y - plot.origin.y), let r = rows.first(where: { $0.name == name }) { hoverRowID = r.id } else { hoverRowID = nil }
+                                case .ended: hoverRowID = nil
+                                }
+                            }
+                            .contextMenu {   // right-click: the row under the pointer
+                                if let id = hoverRowID, let r = rows.first(where: { $0.id == id }) {
+                                    Button("Delete run \"\(r.name)\"", role: .destructive) { deleteRun(id) }.disabled(bench.running)
+                                }
+                            }
                     }
                 }
             }
@@ -1340,6 +1392,9 @@ struct BenchDashboard: View {
                         .background(RoundedRectangle(cornerRadius: 5).fill(focusCell?.id == c.id ? BenchDashboard.tint(cellColor(c), 0.82) : .clear))
                         .contentShape(Rectangle())
                         .onTapGesture { bench.selectedCellID = c.id }
+                        .contextMenu {
+                            Button("Delete run \"\(c.modelName) · \(c.compute.rawValue)\"", role: .destructive) { deleteRun(c.id) }.disabled(bench.running)
+                        }
                         .id(c.id)
                     }
                 }
