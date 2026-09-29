@@ -297,10 +297,24 @@ public final class Detector {
     }
 
     // ---------- decode + NMS (split so forward is cached once, tuning stays cheap) ----------
+    /// Rows the decoder will read down dim 1 (anchor layout) or across dim 2 (end2end rows).
+    /// `nc` and `nm` come from the package's own metadata, so a package whose names list or `nm`
+    /// stamp exceeds its head would otherwise send the raw-pointer scan past the tensor.
+    private func outputFits(_ y: MLMultiArray) -> Bool {
+        guard y.shape.count == 3 else { return false }
+        if end2end { return y.shape[2].intValue >= 6 }
+        return y.shape[1].intValue >= 4 + nc + nm
+    }
+    private func validatedOutput(_ out: MLFeatureProvider) throws -> MLMultiArray {
+        guard let y = out.featureValue(for: outputName)?.multiArrayValue, outputFits(y) else { throw DetectorError.badOutput }
+        return y
+    }
+
     /// All boxes above `confFloor` (NO NMS), ORIGINAL-image pixels, sorted by score desc.
     /// Cache this once per image after `forward`; then re-run `nms(_:conf:iou:)` for cheap tuning.
     public func candidates(_ raw: RawOutput, confFloor: Float = 0.05) -> [Detection] {
         let y = raw.y
+        guard outputFits(y) else { return [] }   // a mask-only raw ([1]) or a foreign RawOutput: nothing to decode
         let na = y.shape[2].intValue
         let s1 = y.strides[1].intValue, s2 = y.strides[2].intValue
         let scaleX = raw.scaleX, scaleY = raw.scaleY, padX = raw.padX, padY = raw.padY
@@ -548,9 +562,7 @@ public final class Detector {
         let preMs = t0.timeIntervalSince(tp) * 1000
         let out = try model.prediction(from: input)
         let infMs = Date().timeIntervalSince(t0) * 1000
-        guard let y = out.featureValue(for: outputName)?.multiArrayValue, y.shape.count == 3 else {
-            throw DetectorError.badOutput
-        }
+        let y = try validatedOutput(out)
         let proto = isSegment ? out.featureValue(for: protoName)?.multiArrayValue : nil
         return RawOutput(y: y, proto: proto, scaleX: lb.scaleX, scaleY: lb.scaleY, padX: lb.padX, padY: lb.padY,
                          origW: image.width, origH: image.height, inferMs: infMs, preMs: preMs)
@@ -563,9 +575,7 @@ public final class Detector {
         let t0 = Date()
         let out = try model.prediction(from: input)
         let infMs = Date().timeIntervalSince(t0) * 1000
-        guard let y = out.featureValue(for: outputName)?.multiArrayValue, y.shape.count == 3 else {
-            throw DetectorError.badOutput
-        }
+        let y = try validatedOutput(out)
         let proto = isSegment ? out.featureValue(for: protoName)?.multiArrayValue : nil
         let g = o.geometry
         return RawOutput(y: y, proto: proto, scaleX: g.scaleX, scaleY: g.scaleY, padX: CGFloat(g.padX), padY: CGFloat(g.padY),
@@ -628,9 +638,7 @@ public final class Detector {
         let preMs = t0.timeIntervalSince(tp) * 1000
         let out = try model.prediction(from: input)
         let infMs = Date().timeIntervalSince(t0) * 1000
-        guard let y = out.featureValue(for: outputName)?.multiArrayValue, y.shape.count == 3 else {
-            throw DetectorError.badOutput
-        }
+        let y = try validatedOutput(out)
         // proto deliberately nil: tile coeffs are meaningless against a full-image proto tensor.
         return RawOutput(y: y, proto: nil, scaleX: s, scaleY: s, padX: 0, padY: 0,
                          origW: cw, origH: ch, inferMs: infMs, preMs: preMs)
