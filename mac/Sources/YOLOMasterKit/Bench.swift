@@ -111,7 +111,7 @@ public struct BenchDocument: Codable {
 
     public func json() throws -> Data {
         let enc = JSONEncoder()
-        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return try enc.encode(self)
     }
 }

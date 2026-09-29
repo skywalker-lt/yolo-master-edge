@@ -651,7 +651,7 @@ final class BenchModel: ObservableObject {
         panel.allowedContentTypes = [.json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             try enc.encode(docs).write(to: url); note = "Exported \(docs.count) cells to \(url.lastPathComponent)"
         } catch { note = "Export failed: \(error.localizedDescription)" }
     }
