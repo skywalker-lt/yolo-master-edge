@@ -15,7 +15,8 @@ the Linux CLI would produce for the same detections.
   the convention the phone Bench tabs and the Linux CLI already use.
 - **Sustained**: a timed loop (0.5 to 10 minutes) with one median per second, the throttle
   percentage (slowest-quarter median vs the cold median) and the thermal state sampled once per
-  second (`sustained.thermal`, macOS / iOS only).
+  second (`sustained.thermal`, macOS / iOS only, in the bands Cool / Normal / Hot / Critical: the
+  app reads the die temperature from the SMC, the CLI maps ProcessInfo's pressure states).
 - **Accuracy**: choose the `images` folder of a labelled set (labels next to it in `labels/`, the
   ultralytics layout, or the images -> labels rule per file); the runner runs the val protocol
   (conf 0.001, IoU 0.7, max_det 300, multi-label) and prints mAP50 / mAP50-95 and the per-class
