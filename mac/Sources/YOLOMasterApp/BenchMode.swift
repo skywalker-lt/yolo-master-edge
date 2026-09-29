@@ -1321,7 +1321,9 @@ struct BenchDashboard: View {
         let points: [(t: Double, med: Double, thermal: Int)] = {
             if bench.running, !bench.liveSeconds.isEmpty { return bench.liveSeconds }
             if let c = focusCell, let su = c.sustained {
-                return su.sparkline.enumerated().map { (Double($0.offset), $0.element, $0.offset < c.thermal.count ? c.thermal[$0.offset] : 0) }
+                // the thermal track is sampled once per completed second; the sparkline's last (partial)
+                // second has no sample of its own and keeps the last known state, not "Cool"
+                return su.sparkline.enumerated().map { (Double($0.offset), $0.element, $0.offset < c.thermal.count ? c.thermal[$0.offset] : (c.thermal.last ?? 0)) }
             }
             return []
         }()
