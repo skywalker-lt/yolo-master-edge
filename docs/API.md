@@ -147,6 +147,14 @@ other workers keep serving. Accuracy is not measured over HTTP: use the CLI's `-
 `sustained` block adds a `thermal` array of ProcessInfo states), `android`, `ios`. Any document
 can be checked with `scripts/bench_schema_check.py`.
 
+Optional blocks a producer may add (absent elsewhere, never required): `model.moe_export`
+(`ane_safe_rank` or `topk_gather`, how a MoE package was exported) and, from the macOS app,
+`host_meters` (per-cell, one sample per second: `seconds`, `thermal_start` / `thermal_peak` in the
+app's die-temperature bands Cool / Normal / Hot / Critical, `die_celsius_*` start / peak / mean
+and the `die_celsius` track when the SMC sensor exists, `power_state` and `power_w_*` mean / min /
+max plus the `power_w` track when a battery exists, positive = charging). The app's "Export run"
+writes every cell of a run as one JSON array of such documents.
+
 ### GET /metrics
 
 Prometheus exposition: `yolomaster_requests_total{model,code}`, `yolomaster_queue_depth{model}`,

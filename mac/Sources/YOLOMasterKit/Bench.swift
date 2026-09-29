@@ -19,6 +19,8 @@ public struct BenchDocument: Codable {
     public struct Model: Codable {
         public var id, path, backend, runtime, execution_provider, ep_note, precision: String
         public var nc: Int; public var is_seg: Bool; public var imgsz: Int
+        /// How the MoE mixture was exported (`ane_safe_rank` or `topk_gather`, from the package metadata; absent on other models).
+        public var moe_export: String?
     }
     public struct Environment: Codable {
         public var host, os, cpu_model: String
@@ -54,6 +56,27 @@ public struct BenchDocument: Codable {
         public var pre_ms, infer_ms, post_ms, total_ms: StageStats
         public var model_fps, wall_s: Double
     }
+    /// macOS only, optional: what the machine did while THIS cell ran, sampled once per second. Thermal
+    /// names are the app's die-temperature bands (Cool / Normal / Hot / Critical); `die_celsius` is the
+    /// SMC sensor mean (absent without a sensor), `power_w` the battery flow (positive = charging,
+    /// negative = discharging; absent without a battery).
+    public struct HostMeters: Codable {
+        public var seconds: Int
+        public var thermal_start, thermal_peak: String
+        public var die_celsius_start, die_celsius_peak, die_celsius_mean: Double?
+        public var power_state: String
+        public var power_w_mean, power_w_min, power_w_max: Double?
+        public var die_celsius: [Double]?
+        public var power_w: [Double]?
+        public init(seconds: Int, thermal_start: String, thermal_peak: String, die_celsius_start: Double?, die_celsius_peak: Double?,
+                    die_celsius_mean: Double?, power_state: String, power_w_mean: Double?, power_w_min: Double?, power_w_max: Double?,
+                    die_celsius: [Double]?, power_w: [Double]?) {
+            self.seconds = seconds; self.thermal_start = thermal_start; self.thermal_peak = thermal_peak
+            self.die_celsius_start = die_celsius_start; self.die_celsius_peak = die_celsius_peak; self.die_celsius_mean = die_celsius_mean
+            self.power_state = power_state; self.power_w_mean = power_w_mean; self.power_w_min = power_w_min; self.power_w_max = power_w_max
+            self.die_celsius = die_celsius; self.power_w = power_w
+        }
+    }
     public struct AccuracyProtocol: Codable { public var conf, iou: Float; public var max_det: Int; public var multi_label: Bool }
     public struct PerClass: Codable { public var class_id, n_gt, n_pred: Int; public var ap50, ap5095: Double }
     public struct Accuracy: Codable {
@@ -75,6 +98,7 @@ public struct BenchDocument: Codable {
     public var sustained: Sustained?
     public var dataset: Dataset?
     public var accuracy: Accuracy?
+    public var host_meters: HostMeters?
 
     public init(timestamp: String, tool: String, model: Model, environment: Environment, protocol proto: ProtocolInfo,
                 cold: Cold? = nil, sustained: Sustained? = nil, dataset: Dataset? = nil, accuracy: Accuracy? = nil) {
@@ -137,7 +161,8 @@ public enum BenchEnvironment {
         }()
         let precision = det.metadata["precision"] ?? det.metadata["quantization"] ?? "unknown"
         return BenchDocument.Model(id: id, path: path, backend: "coreml", runtime: "coreml", execution_provider: ep,
-                                   ep_note: "", precision: precision, nc: det.nc, is_seg: det.isSegment, imgsz: det.imgsz)
+                                   ep_note: "", precision: precision, nc: det.nc, is_seg: det.isSegment, imgsz: det.imgsz,
+                                   moe_export: det.metadata["moe_export"])
     }
 }
 

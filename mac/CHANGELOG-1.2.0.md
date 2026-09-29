@@ -11,7 +11,7 @@ engineering record.
 | Sources/YOLOMasterKit/Core.swift (new) | Swift face of the core: `YMCore`, `StageStats`, `SustainedSummary`, `MapEvaluator`, `CoreSelfTest` |
 | Sources/YOLOMasterKit/Tracker.swift (new) | `Tracker`, `TrackerConfig`, `CameraMotion`, `CameraMotionEstimator` |
 | Sources/YOLOMasterKit/Motion.swift (new) | `VisionCameraMotion` (translational registration) |
-| Sources/YOLOMasterKit/Bench.swift (new) | `BenchDocument`, `BenchEnvironment`, `BenchRunner`, `AccuracyRunner` |
+| Sources/YOLOMasterKit/Bench.swift (new) | `BenchDocument` (+ optional `model.moe_export`, `host_meters`), `BenchEnvironment`, `BenchRunner`, `AccuracyRunner` |
 | Sources/YOLOMasterKit/TxtDump.swift (new) | `TxtDump`, `TxtDumpWriter` |
 | Sources/YOLOMasterKit/Preproc.swift (new) | `PreprocDevice`, `MetalPreprocessor` (runtime-compiled kernel) |
 | Sources/YOLOMasterKit/Detector.swift | `Detection.trackId`, `RawOutput.preMs/preGpuMs`, `Result.preMs/postMs`, `preprocDevice`, GPU `forward`, `inputTensorBytes`, `modelURL`, `metadata` |
@@ -19,6 +19,7 @@ engineering record.
 | Sources/YOLOMasterKit/Annotate.swift | `#id` labels and per-id colours |
 | Sources/YOLOMasterCoreML/main.swift | `--save-txt`, `--limit`, `--bench*`, `--accuracy`, `--track*`, `--cpu-preproc`, `--dump-input`, `--core-selftest` |
 | Sources/YOLOMasterApp/YOLOMasterApp.swift | Bench section, Tracking picker, Preprocess > Device, stage / tracks stat rows, engine tracking and bench methods |
+| Sources/YOLOMasterApp/BenchMode.swift (new) | Bench mode: models / units / protocol sidebar, the dashboard (charts, comparison, results), meters (SMC die temperature, IOKit battery power), history store, CSV (45 columns) and JSON (per cell, per run) export |
 | Sources/YOLOMasterApp/Camera.swift | preprocessing device hot-swap |
 | Sources/YOLOMasterApp/Info.swift, make_app.sh, scripts/release.sh | version 1.2.0 from the repo `VERSION` file |
 | tests/run_mac_tests.sh (new) | the Mac battery (M1 to M5c) |
