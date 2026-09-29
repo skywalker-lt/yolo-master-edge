@@ -1038,9 +1038,8 @@ struct BenchDashboard: View {
     private var statCards: some View {
         let s = liveStats
         let cell = bench.running ? bench.liveCell : shownCells.first
-        let who = cell.map { " · \($0.modelName) · \($0.compute.rawValue)" } ?? ""
         return HStack(spacing: 10) {
-            card("Median" + who, s.map { String(format: "%.2f ms  ·  %.1f fps", $0.median, $0.median > 0 ? 1000 / $0.median : 0) } ?? "-")
+            card("Median", s.map { String(format: "%.2f ms  ·  %.1f fps", $0.median, $0.median > 0 ? 1000 / $0.median : 0) } ?? "-")
             card("p90 / p99", s.map { String(format: "%.2f / %.2f ms", $0.p90, $0.p99) } ?? "-")
             card("Min / max", s.map { String(format: "%.2f / %.2f ms", $0.min, $0.max) } ?? "-")
             card("Samples", s.map { "\($0.n)" } ?? "-")
