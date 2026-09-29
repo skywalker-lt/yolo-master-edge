@@ -976,7 +976,7 @@ struct ContentView: View {
             controls.frame(width: 300).padding(16)
             Divider()
             if appMode == .bench {
-                BenchDashboard(bench: bench, store: bench.store, selectedRecord: selectedBenchRecord, brand: brandColor)
+                BenchDashboard(bench: bench, store: bench.store, selectedRecord: $selectedBenchRecord, brand: brandColor)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 if !cameraOn && sourceKind == .folder && engine.hasResults && !engine.exporting {
