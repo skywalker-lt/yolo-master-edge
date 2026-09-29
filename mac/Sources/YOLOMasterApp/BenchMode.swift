@@ -804,7 +804,7 @@ struct BenchSidebar: View {
 struct BenchDashboard: View {
     @ObservedObject var bench: BenchModel
     @ObservedObject var store: BenchStore
-    let selectedRecord: UUID?
+    @Binding var selectedRecord: UUID?
     let brand: Color
 
     private var shownCells: [BenchCell] {
