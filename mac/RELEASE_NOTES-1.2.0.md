@@ -20,9 +20,13 @@ the Linux CLI would produce for the same detections.
   ultralytics layout, or the images -> labels rule per file); the runner runs the val protocol
   (conf 0.001, IoU 0.7, max_det 300, multi-label) and prints mAP50 / mAP50-95 and the per-class
   table. The first Core ML mAP number of this project.
-- **Save JSON**: the document (`tool: "macos"`, model card with compute unit and preprocessing
-  device, environment from `sysctl` and Metal, protocol, cold / sustained / dataset / accuracy
-  blocks) validates with `scripts/bench_schema_check.py` like every other producer's.
+- **Save JSON**: the document (`tool: "macos"`, model card with compute unit, preprocessing
+  device, precision and `moe_export`, environment from `sysctl` and Metal, protocol, cold /
+  sustained / accuracy blocks and the per-cell `host_meters` block: thermal band, die temperature
+  and battery power once per second) validates with `scripts/bench_schema_check.py` like every
+  other producer's. **Export run** writes every cell of a run as one JSON array of such
+  documents; **Export CSV** (History) writes one row per cell with every dashboard metric
+  (percentiles, FPS, thermal and power summary, precision, MoE export, host).
 - CLI: `--bench cold|sustained`, `--bench-iters`, `--bench-warmup`, `--bench-minutes`,
   `--bench-json`, `--accuracy auto|LABELS_DIR`, `--limit N`; the Linux `[summary]`, `[bench]` and
   `[accuracy]` lines. The old `--benchmark [--iters N]` still works as an alias of `--bench cold`.

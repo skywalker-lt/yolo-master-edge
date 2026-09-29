@@ -48,6 +48,16 @@ def check(doc, iters=None, frames=None, images=None, accuracy=False):
         errs.append(f"protocol.probe_mode {p.get('probe_mode')!r}")
     if images is not None and p.get("image_count") != images:
         errs.append(f"protocol.image_count {p.get('image_count')} != {images}")
+    if "host_meters" in doc:   # optional (macOS app): per-cell thermal / temperature / power summary
+        hm = doc["host_meters"]
+        need(hm, ("seconds", "thermal_start", "thermal_peak", "power_state"), "host_meters")
+        for k in ("die_celsius", "power_w"):
+            if k in hm and hm[k] is not None and not isinstance(hm[k], list):
+                errs.append(f"host_meters.{k} is not a list")
+        if isinstance(hm.get("seconds"), int) and hm.get("die_celsius") and len(hm["die_celsius"]) > hm["seconds"]:
+            errs.append("host_meters.die_celsius longer than host_meters.seconds")
+    if "moe_export" in doc.get("model", {}) and doc["model"]["moe_export"] not in ("ane_safe_rank", "topk_gather", None):
+        errs.append(f"model.moe_export {doc['model']['moe_export']!r} unknown")
     has_cold, has_sus = "cold" in doc, "sustained" in doc
     if not has_cold and not has_sus:
         errs.append("neither cold nor sustained block")

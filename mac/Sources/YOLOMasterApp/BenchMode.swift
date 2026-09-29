@@ -67,6 +67,8 @@ struct BenchCell: Identifiable, Codable {
     var samples: [Double] = []           // the per-iteration series (model ms)
     var sampleTimes: [Double] = []       // seconds since the cell's run started, parallel to samples
     var thermal: [Int] = []              // thermal level per second (sustained) or per sample bucket
+    var celsius: [Double]? = nil         // die temperature per second while this cell ran (nil: no sensor)
+    var power: [Double]? = nil           // battery watts per second while this cell ran (nil: no battery)
     var document: BenchDocument?
     var headlineMs: Double? { cold?.median ?? sustained?.sustained_median_ms ?? dataset?.infer_ms.median ?? accuracy?.timings["infer_ms"]?.median }
     var fps: Double { (headlineMs ?? 0) > 0 ? 1000 / headlineMs! : 0 }
@@ -116,19 +118,44 @@ final class BenchStore: ObservableObject {
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
         if let d = try? enc.encode(records) { try? d.write(to: url) }
     }
-    /// One row per cell of every record: what a spreadsheet wants.
+    /// One row per cell of every record: what a spreadsheet wants. The first 21 columns are the
+    /// 1.2.0 layout; everything the dashboard shows since (percentiles, FPS, thermal and power,
+    /// precision, MoE export, host) follows, so old sheets keep their column positions.
+    static let csvHeader = ["run", "date", "kind", "model", "compute", "preproc", "warmup", "iters", "minutes",
+                            "cold_median_ms", "cold_p90_ms", "cold_p99_ms", "cold_min_ms", "sustained_median_ms", "throttle_pct",
+                            "dataset_pre_ms", "dataset_infer_ms", "dataset_post_ms", "map50", "map5095", "images",
+                            "cold_mean_ms", "cold_p95_ms", "cold_max_ms", "samples", "fps",
+                            "sustained_cold_median_ms", "sustained_duration_s",
+                            "thermal_start", "thermal_peak", "die_c_start", "die_c_peak", "die_c_mean",
+                            "power_state", "power_w_mean", "power_w_min", "power_w_max",
+                            "precision", "moe_export", "execution_provider", "imgsz", "host", "cpu", "os", "cell_id"]
     func csv() -> String {
-        var out = ["run,date,kind,model,compute,preproc,warmup,iters,minutes,cold_median_ms,cold_p90_ms,cold_p99_ms,cold_min_ms,sustained_median_ms,throttle_pct,dataset_pre_ms,dataset_infer_ms,dataset_post_ms,map50,map5095,images"]
+        var out = [BenchStore.csvHeader.joined(separator: ",")]
         let f = ISO8601DateFormatter()
+        func q(_ v: String) -> String {   // RFC 4180: quote when the field carries a comma, a quote or a newline
+            v.contains(",") || v.contains("\"") || v.contains("\n") ? "\"" + v.replacingOccurrences(of: "\"", with: "\"\"") + "\"" : v
+        }
         for r in records {
             for c in r.cells {
                 func s(_ v: Double?) -> String { v.map { String(format: "%.4f", $0) } ?? "" }
-                out.append([r.name.replacingOccurrences(of: ",", with: " "), f.string(from: r.date), r.kind.rawValue, c.modelName, c.compute.rawValue, c.preproc,
-                            "\(r.warmup)", "\(r.iters)", "\(r.minutes)",
-                            s(c.cold?.median), s(c.cold?.p90), s(c.cold?.p99), s(c.cold?.min),
-                            s(c.sustained?.sustained_median_ms), s(c.sustained?.throttle_pct),
-                            s(c.dataset?.pre_ms.median), s(c.dataset?.infer_ms.median), s(c.dataset?.post_ms.median),
-                            s(c.accuracy?.map50), s(c.accuracy?.map5095), c.accuracy.map { "\($0.images)" } ?? ""].joined(separator: ","))
+                func s1(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "" }
+                let hm = c.document?.host_meters, m = c.document?.model
+                let row: [String] = [
+                    q(r.name), f.string(from: r.date), r.kind.rawValue, q(c.modelName), c.compute.rawValue, c.preproc,
+                    "\(r.warmup)", "\(r.iters)", "\(r.minutes)",
+                    s(c.cold?.median), s(c.cold?.p90), s(c.cold?.p99), s(c.cold?.min),
+                    s(c.sustained?.sustained_median_ms), s(c.sustained?.throttle_pct),
+                    s(c.dataset?.pre_ms.median), s(c.dataset?.infer_ms.median), s(c.dataset?.post_ms.median),
+                    s(c.accuracy?.map50), s(c.accuracy?.map5095), c.accuracy.map { "\($0.images)" } ?? "",
+                    s(c.cold?.mean), s(c.cold?.p95), s(c.cold?.max), c.cold.map { "\($0.n)" } ?? "\(c.samples.count)", s1(c.fps),
+                    s(c.sustained?.cold_median_ms), s1(c.sustained?.duration_s),
+                    hm?.thermal_start ?? (c.thermal.first.map(thermalName) ?? ""), hm?.thermal_peak ?? (c.thermal.max().map(thermalName) ?? ""),
+                    s1(hm?.die_celsius_start), s1(hm?.die_celsius_peak), s1(hm?.die_celsius_mean),
+                    hm?.power_state ?? "", s(hm?.power_w_mean), s(hm?.power_w_min), s(hm?.power_w_max),
+                    m?.precision ?? "", m?.moe_export ?? "", m?.execution_provider ?? c.compute.ep, m.map { "\($0.imgsz)" } ?? "",
+                    q(r.hostName), q(r.cpuModel), q(r.osVersion), c.id.uuidString,
+                ]
+                out.append(row.joined(separator: ","))
             }
         }
         return out.joined(separator: "\n") + "\n"
@@ -496,11 +523,16 @@ final class BenchModel: ObservableObject {
                                                             multi_label: true, slicing: "off", tile_size: 0, warmup: warm, iters: iters, minutes: minutes,
                                                             probe: "gray114", probe_mode: "infer_only", dataset: dataset?.lastPathComponent ?? "",
                                                             image_count: 0, image_list_sha256: YMCore.imageListSha256([])))
-                    var thermalTrack: [Int] = []
+                    var thermalTrack: [Int] = [], celsiusTrack: [Double] = [], powerTrack: [Double] = []
                     let t0 = Date(); var lastSec = -1
+                    let sampleMeters: () -> Void = {   // one row per second: level, die temperature, battery watts
+                        thermalTrack.append(self.meters.thermal)
+                        if let c = self.meters.celsius { celsiusTrack.append(c) }
+                        if self.meters.battery.present { powerTrack.append(self.meters.battery.watts) }
+                    }
                     let sampleThermal: () -> Void = {
                         let sec = Int(Date().timeIntervalSince(t0))
-                        if sec != lastSec { lastSec = sec; thermalTrack.append(self.meters.thermal) }
+                        if sec != lastSec { lastSec = sec; sampleMeters() }
                     }
                     switch kind {
                     case .cold:
@@ -516,7 +548,7 @@ final class BenchModel: ObservableObject {
                                                            cancel: { self.isCancelled },
                                                            tick: { elapsed, med in
                                                                let th = self.meters.thermal
-                                                               thermalTrack.append(th)
+                                                               sampleMeters()
                                                                self.main { self.liveSeconds.append((elapsed, med, th)); self.progress = min(1, elapsed / (minutes * 60)) }
                                                            },
                                                            onSample: { _, ms in
@@ -546,6 +578,10 @@ final class BenchModel: ObservableObject {
                         cell.cold = o.inferMs
                     }
                     cell.thermal = thermalTrack
+                    cell.celsius = celsiusTrack.isEmpty ? nil : celsiusTrack
+                    cell.power = powerTrack.isEmpty ? nil : powerTrack
+                    doc.host_meters = BenchModel.hostMeters(thermal: thermalTrack, celsius: cell.celsius, power: cell.power,
+                                                            state: self.meters.battery.present ? self.meters.battery.state.rawValue : "no battery")
                     cell.document = doc
                     if self.isCancelled && cell.headlineMs == nil { break outer }   // stopped before any statistic: nothing to keep
                     done.append(cell)
@@ -594,7 +630,30 @@ final class BenchModel: ObservableObject {
         return "\(kind.rawValue) · \(m.isEmpty ? "-" : m) · \(f.string(from: Date()))"
     }
 
+    static func hostMeters(thermal: [Int], celsius: [Double]?, power: [Double]?, state: String) -> BenchDocument.HostMeters? {
+        guard !thermal.isEmpty else { return nil }
+        func mean(_ a: [Double]) -> Double { a.reduce(0, +) / Double(a.count) }
+        return .init(seconds: thermal.count, thermal_start: thermalName(thermal.first ?? 0), thermal_peak: thermalName(thermal.max() ?? 0),
+                     die_celsius_start: celsius?.first, die_celsius_peak: celsius?.max(), die_celsius_mean: celsius.map(mean),
+                     power_state: state, power_w_mean: power.map(mean), power_w_min: power?.min(), power_w_max: power?.max(),
+                     die_celsius: celsius, power_w: power)
+    }
+
     // ---- export ----
+    /// Every cell of a record as one JSON array of `yolomaster-bench/v1` documents (each element
+    /// validates on its own with scripts/bench_schema_check.py).
+    func exportRecordJSON(_ record: BenchRecord) {
+        let docs = record.cells.compactMap(\.document)
+        guard !docs.isEmpty else { note = "Nothing to export: this run has no documents"; return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "bench-\(record.name.replacingOccurrences(of: " · ", with: "-").replacingOccurrences(of: " ", with: "_")).json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try enc.encode(docs).write(to: url); note = "Exported \(docs.count) cells to \(url.lastPathComponent)"
+        } catch { note = "Export failed: \(error.localizedDescription)" }
+    }
     func saveJSON(_ cell: BenchCell) {
         guard let doc = cell.document else { return }
         let panel = NSSavePanel()
@@ -960,6 +1019,10 @@ struct BenchDashboard: View {
                 Button(role: .destructive) { bench.cancel() } label: { Label("Stop", systemImage: "stop.fill") }
                     .onAppear { zoomX = 1; pinchBase = 1; bench.selectedCellID = nil; expanded = nil }
             } else {
+                if let r = shownRecord, r.cells.contains(where: { $0.document != nil }) {
+                    Button { bench.exportRecordJSON(r) } label: { Label("Export run", systemImage: "square.and.arrow.up") }
+                        .help("Every cell of this run as one JSON array of yolomaster-bench/v1 documents")
+                }
                 Button { bench.run() } label: { Label("Run", systemImage: "play.fill") }
                     .buttonStyle(.borderedProminent).tint(brand).keyboardShortcut(.return, modifiers: .command)
                     .disabled(bench.selectedModels.isEmpty || bench.computes.isEmpty)

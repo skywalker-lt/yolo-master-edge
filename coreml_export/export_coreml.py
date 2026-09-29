@@ -260,6 +260,7 @@ def export(weights: str, imgsz: int, out: str, target: str = "macos13",
     meta["output"] = out_name
     meta["imgsz"] = str(imgsz)
     meta["moe_export"] = "ane_safe_rank" if ane_safe_moe else "topk_gather"
+    meta["precision"] = "fp16"                     # ML program default compute precision (weights and activations)
     if names: meta["names"] = ",".join(names)
     mlmodel.save(out)
 
