@@ -1496,6 +1496,11 @@ struct TimerDial: View {
     @Binding var minutes: Double
     private var mm: Int { Int(minutes) }
     private var ss: Int { Int(((minutes - Double(mm)) * 60).rounded()) }
+    /// The seconds steppers snap to the quarter-minute grid: from a typed :08, up goes to :15 and down to :00.
+    private func nextQuarter(_ s: Int, up: Bool) -> Int {
+        if up { return (s / 15 + 1) * 15 }
+        return s % 15 == 0 ? s - 15 : (s / 15) * 15
+    }
     /// Seconds carry into minutes like a clock (:45 + 15 s -> next minute :00, :00 - 15 s -> previous :45);
     /// the total is held to 0:15 ... 30:00, so 29:45 + 15 s lands on 30:00 and stops there.
     private func set(_ m: Int, _ s: Int) {
@@ -1508,7 +1513,7 @@ struct TimerDial: View {
             Spacer(minLength: 0)
             digitColumn(value: mm, label: "min", up: { set(mm + 1, ss) }, down: { set(mm - 1, ss) })
             Text(":").font(.system(size: 34, weight: .light, design: .rounded)).foregroundStyle(.secondary).padding(.bottom, 14)
-            digitColumn(value: ss, label: "sec", up: { set(mm, ss + 15) }, down: { set(mm, ss - 15) })
+            digitColumn(value: ss, label: "sec", up: { set(mm, nextQuarter(ss, up: true)) }, down: { set(mm, nextQuarter(ss, up: false)) })
             Spacer(minLength: 0)
         }
         .padding(.vertical, 14)
