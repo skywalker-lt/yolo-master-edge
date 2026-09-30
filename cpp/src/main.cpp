@@ -24,7 +24,11 @@
 #include "stb_image_write.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
+#include <regex>
+#include <sstream>
+#include <unistd.h>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -52,8 +56,36 @@ static bool imwrite_jpg(const std::string& path, const cv::Mat& bgr) {
     return stbi_write_jpg(path.c_str(), rgb.cols, rgb.rows, 3, rgb.data, 90) != 0;
 }
 
+// Everyday options in cyan when --help goes to a terminal (NO_COLOR honoured). The escapes are
+// added after CLI11 laid the text out, so the columns stay aligned.
+static std::string colorize_help(const std::string &help) {
+    if (!isatty(STDOUT_FILENO) || std::getenv("NO_COLOR")) return help;
+    static const char *common[] = {"--model", "--source", "--backend", "--device", "--precision", "--conf", "--iou",
+                                   "--out", "--no-save", "--quiet", "--bench", "--accuracy", "--track", "--help"};
+    static const std::regex head(R"(^(\s+)(-[A-Za-z],\s+)?(--[a-z-]+)(.*)$)");
+    std::string out; out.reserve(help.size() + 512);
+    std::istringstream in(help); std::string line;
+    while (std::getline(in, line)) {
+        std::smatch m;
+        if (std::regex_match(line, m, head)) {
+            const std::string name = m[3];
+            bool hot = false;
+            for (const char *c : common) if (name == c) { hot = true; break; }
+            if (hot) line = m[1].str() + "\033[36m" + m[2].str() + name + "\033[0m" + m[4].str();
+        } else if (!line.empty() && line.back() == ':' && line.find(' ') == std::string::npos) {
+            line = "\033[1m" + line + "\033[0m";   // section headers (OPTIONS:)
+        }
+        out += line; out += '\n';
+    }
+    return out;
+}
+
 int main(int argc, char** argv) {
     CLI::App app{"yolomaster_edge - universal YOLO-Master edge runner (ONNX / ncnn / MNN)"};
+    // help layout: a wider name column so "--precision TEXT [auto]" and friends keep their
+    // description on the same line with a gap, and a wider paragraph before wrapping
+    app.get_formatter()->column_width(40);
+    app.get_formatter()->right_column_width(72);
     app.set_version_flag("--version", std::string(YM_VERSION) + " (" + YM_GIT_COMMIT + ")");
     std::string model, source, backend = "auto", classes_opt = "auto", outdir = "runs_edge";
     std::string device = "cpu", savetxt;
@@ -117,7 +149,14 @@ int main(int argc, char** argv) {
     app.add_option("--track-buffer", track_buffer, "frames a lost track is kept before its id retires")->capture_default_str();
     app.add_flag("--cpu-preproc", cpu_preproc, "TensorRT / ORT-CUDA: preprocess on the CPU instead of the CUDA kernel (parity runs)");
     app.add_flag("--cuda-graph", cuda_graph, "TensorRT: capture the per-frame stream work into a CUDA graph and replay it");
-    CLI11_PARSE(app, argc, argv);
+    try {
+        app.parse(argc, argv);
+    } catch (const CLI::CallForHelp &) {
+        std::cout << colorize_help(app.help());
+        return 0;
+    } catch (const CLI::ParseError &e) {
+        return app.exit(e);
+    }
     track::TrackerConfig tcfg;
     const bool track_on = track_mode != "off";
     if (track_on && !track::parse_tracker_kind(track_mode, tcfg.kind)) {
