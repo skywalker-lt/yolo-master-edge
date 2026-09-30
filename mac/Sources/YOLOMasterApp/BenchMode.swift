@@ -26,8 +26,8 @@ enum BenchKind: String, CaseIterable, Codable {
     }
     var blurb: String {
         switch self {
-        case .cold: return "10 warm-up predictions, then 100 timed model-only predictions on a gray probe at the input size. The headline latency."
-        case .sustained: return "A timed loop after 10 warm-up predictions; the slowest-quarter median against the cold median (first 100) is the throttle figure. Thermal state is sampled every second."
+        case .cold: return "10 warm-up predictions, then 100 timed model-only predictions on a gray probe at the input size."
+        case .sustained: return "A timed loop after 10 warm-up predictions."
         case .accuracy: return "Val protocol (conf 0.001, IoU 0.7, max_det 300) over a labelled folder, scored in process: mAP50 / mAP50-95 per class."
         }
     }
@@ -763,10 +763,9 @@ struct BenchSidebar: View {
                     row("Preprocess") {
                         SegmentedButtons(options: [(PreprocDevice.gpu, "GPU"), (PreprocDevice.cpu, "CPU")], icons: ["rectangle.stack.fill", "cpu"], selection: $bench.preproc, tint: brand)
                     }.disabled(bench.running)
-                    Text(bench.singleCell
-                         ? "Auto = Core ML splits the graph across ANE, GPU and CPU (the iPhone app's ANE setting), GPU = CPU and GPU, CPU only. Sustained runs one model on one unit; pick one of each."
-                         : "Auto = Core ML splits the graph across ANE, GPU and CPU (the iPhone app's ANE setting), GPU = CPU and GPU, CPU only. Each selected model runs on each selected unit.")
-                        .font(.caption2).foregroundStyle(.secondary)
+                    if bench.singleCell {
+                        Text("Sustained runs one model on one unit; pick one of each.").font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
                 box("Protocol", "list.bullet.clipboard") {
                     MenuButton(options: BenchKind.allCases.map { ($0, $0.rawValue) }, icons: BenchKind.allCases.map(\.icon), selection: $bench.kind, tint: brand)

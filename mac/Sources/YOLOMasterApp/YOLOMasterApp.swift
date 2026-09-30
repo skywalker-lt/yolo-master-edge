@@ -1246,10 +1246,6 @@ struct ContentView: View {
                         segRow("Device") {
                             SegmentedButtons(options: [(PreprocDevice.gpu, "GPU"), (PreprocDevice.cpu, "CPU")], icons: ["rectangle.stack.fill", "cpu"], selection: $preprocDevice, tint: brandColor)
                         }
-                        Text(preprocDevice == .gpu
-                             ? "Letterbox, RGB conversion and the input tensor are built by a Metal kernel; the camera feed is read without a copy."
-                             : "Core Graphics letterbox + vDSP tensor build (the 1.1 path).")
-                            .font(.caption2).foregroundStyle(.secondary)
                     }
                     sectionBox("Slicing", "square.grid.3x3") {
                         segRow("Mode") {
