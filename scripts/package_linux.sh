@@ -219,6 +219,20 @@ if [ "$VARIANT" = gpu ]; then
     real="$(basename "$(readlink -f "$src")")"
     [ "$real" != "$so" ] && ln -sf "$so" "$DIST/lib/$real" && echo "  [cuda] $real -> $so (versioned alias)"
   done
+  # cuDNN also dlopens engine sublibraries that are NOT in the provider's NEEDED list
+  # (9.26 added libcudnn_engines_tensor_ir, 9.27 libcudnn_ext). A set without them fails at
+  # the first Conv on a machine with no system cuDNN ("Failed to initialize CUDNN Frontend")
+  # and, on a machine that has one, loads that foreign version instead (Integer overflow /
+  # CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH: the 1.2.0 bundle on an L40S with cuDNN 9.27
+  # installed). Take every libcudnn*.so.9 that lives beside the libcudnn.so.9 we bundled,
+  # with its versioned alias, so the bundled set is complete and self-consistent.
+  cudnn_dir="$(dirname "$(find_cuda_lib libcudnn.so.9)")"
+  for f in "$cudnn_dir"/libcudnn*.so.9; do
+    so="$(basename "$f")"; [ -e "$DIST/lib/$so" ] && continue
+    cp -L "$f" "$DIST/lib/$so"; echo "  [cuda] $so  <- $f (cuDNN sublibrary)"
+    real="$(basename "$(readlink -f "$f")")"
+    [ "$real" != "$so" ] && ln -sf "$so" "$DIST/lib/$real"
+  done
   # Resolve dependencies introduced by the provider itself (and by CUDA/cuDNN
   # libraries found above), not only those visible from the main executable.
   # Otherwise a missing transitive .so can make ORT silently fall back to CPU.
