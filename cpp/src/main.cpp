@@ -56,24 +56,31 @@ static bool imwrite_jpg(const std::string& path, const cv::Mat& bgr) {
     return stbi_write_jpg(path.c_str(), rgb.cols, rgb.rows, 3, rgb.data, 90) != 0;
 }
 
-// Everyday options in cyan when --help goes to a terminal (NO_COLOR honoured). The escapes are
-// added after CLI11 laid the text out, so the columns stay aligned.
+// --help after CLI11 laid it out: one blank line between options, and on a terminal (NO_COLOR
+// honoured) the everyday options in cyan and the section headers bold. The escapes are added
+// after layout, so the columns stay aligned.
 static std::string colorize_help(const std::string &help) {
-    if (!isatty(STDOUT_FILENO) || std::getenv("NO_COLOR")) return help;
+    const bool color = isatty(STDOUT_FILENO) && !std::getenv("NO_COLOR");
     static const char *common[] = {"--model", "--source", "--backend", "--device", "--precision", "--conf", "--iou",
                                    "--out", "--no-save", "--quiet", "--bench", "--accuracy", "--track", "--help"};
     static const std::regex head(R"(^(\s+)(-[A-Za-z],\s+)?(--[a-z-]+)(.*)$)");
-    std::string out; out.reserve(help.size() + 512);
+    std::string out; out.reserve(help.size() + 1024);
     std::istringstream in(help); std::string line;
+    bool in_options = false, first = true;
     while (std::getline(in, line)) {
         std::smatch m;
         if (std::regex_match(line, m, head)) {
-            const std::string name = m[3];
-            bool hot = false;
-            for (const char *c : common) if (name == c) { hot = true; break; }
-            if (hot) line = m[1].str() + "\033[36m" + m[2].str() + name + "\033[0m" + m[4].str();
+            if (in_options && !first) out += '\n';   // a little air between options
+            first = false;
+            if (color) {
+                const std::string name = m[3];
+                bool hot = false;
+                for (const char *c : common) if (name == c) { hot = true; break; }
+                if (hot) line = m[1].str() + "\033[36m" + m[2].str() + name + "\033[0m" + m[4].str();
+            }
         } else if (!line.empty() && line.back() == ':' && line.find(' ') == std::string::npos) {
-            line = "\033[1m" + line + "\033[0m";   // section headers (OPTIONS:)
+            in_options = true; first = true;
+            if (color) line = "\033[1m" + line + "\033[0m";   // section headers (OPTIONS:)
         }
         out += line; out += '\n';
     }
@@ -84,7 +91,7 @@ int main(int argc, char** argv) {
     CLI::App app{"yolomaster_edge - universal YOLO-Master edge runner (ONNX / ncnn / MNN)"};
     // help layout: a wider name column so "--precision TEXT [auto]" and friends keep their
     // description on the same line with a gap, and a wider paragraph before wrapping
-    app.get_formatter()->column_width(40);
+    app.get_formatter()->column_width(44);
     app.get_formatter()->right_column_width(72);
     app.set_version_flag("--version", std::string(YM_VERSION) + " (" + YM_GIT_COMMIT + ")");
     std::string model, source, backend = "auto", classes_opt = "auto", outdir = "runs_edge";
