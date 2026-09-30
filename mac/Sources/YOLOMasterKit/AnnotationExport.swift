@@ -233,7 +233,7 @@ public enum AnnotationWriter {
             }
         }
         let cats = names.enumerated().map { COCOCategory(id: $0.offset + 1, name: $0.element) }
-        let doc = COCODoc(info: COCOInfo(description: "YOLO-Master CoreML Runner export"),
+        let doc = COCODoc(info: COCOInfo(description: "YOLO-Master macOS export"),
                           images: imgs, annotations: anns, categories: cats)
         let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
         return try enc.encode(doc)
