@@ -1,4 +1,6 @@
-# YOLO-Master CoreML Runner 1.2.0
+# YOLO-Master for macOS 1.2.0
+
+The app is now called simply YOLO-Master (bundle `YOLO-Master.app`, zip `YOLO-Master-macOS-<version>.zip`).
 
 The macOS runner catches up with the v1.2.0 Linux runtime: it now measures itself the same way
 (benchmark mode with the shared `yolomaster-bench/v1` document and an on-device mAP), tracks

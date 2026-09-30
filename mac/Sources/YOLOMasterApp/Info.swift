@@ -71,7 +71,7 @@ struct InfoView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("YOLO-Master CoreML Runner").font(.title2.bold())
+                        Text("YOLO-Master").font(.title2.bold())
                         Text("Version \(version) · on-device YOLO-Master detection & segmentation via Core ML.")
                             .font(.callout).foregroundStyle(.secondary)
                     }
