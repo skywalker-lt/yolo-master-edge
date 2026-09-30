@@ -145,8 +145,11 @@ echo "== 2/6  stage binary + library closure =="
 rm -rf "$DIST"; mkdir -p "$DIST/lib" "$DIST/models"
 cp "$BUILD/yolomaster_edge" "$DIST/yolomaster_edge"
 
-# glibc / dynamic-loader core: MUST come from the target system, never bundle.
-EXCLUDE='libc\.so|libm\.so|libdl\.so|librt\.so|libpthread\.so|ld-linux|libresolv\.so|linux-vdso'
+# glibc / dynamic-loader core: MUST come from the target system, never bundle. Same for the
+# NVIDIA driver's user-space libraries (libcuda, libnvidia-*): they must match the host's kernel
+# driver, and a bundled copy would shadow the host's via $ORIGIN. cuDNN 9.27's
+# libcudnn_engines_runtime_compiled links libcuda.so.1 directly, which is how one slipped in.
+EXCLUDE='libc\.so|libm\.so|libdl\.so|librt\.so|libpthread\.so|ld-linux|libresolv\.so|linux-vdso|libcuda\.so|libnvidia-|libnvcuvid|libnvoptix'
 # Walk the complete ELF dependency closure. A single ldd pass misses libraries
 # needed by a backend or by a codec library several levels below the executable.
 declare -A SEEN_LIBS=()
