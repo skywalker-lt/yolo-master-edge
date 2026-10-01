@@ -13,6 +13,63 @@ This project provides a universal inference runtime for [YOLO-Master](https://gi
 
 ---
 
+## 💡 Major Update (1-10-2026): YOLO-Master Edge v1.2.0 Linux, API Server macOS Preview
+
+**We now have six Linux builds:** [ncnn](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/yolomaster-edge-linux-x64-ncnn-1.2.0.tar.gz) (0.10 GB) / [MNN](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/yolomaster-edge-linux-x64-mnn-1.2.0.tar.gz) (0.09 GB) / [ONNX CPU](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/yolomaster-edge-linux-x64-onnx-cpu-1.2.0.tar.gz) (0.10 GB) / [ONNX CUDA 12](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/yolomaster-edge-linux-x64-onnx-cuda12-1.2.0.tar.gz) (1.9 GB) / TensorRT 10, every GPU family: [part 0](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/yolomaster-edge-linux-x64-trt10-cuda12-1.2.0.tar.gz.part-0) + [part 1](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/yolomaster-edge-linux-x64-trt10-cuda12-1.2.0.tar.gz.part-1) (2.3 GB) / everything in one: [part 0](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/yolomaster-edge-linux-x64-all-cuda12-1.2.0.tar.gz.part-0) + [part 1](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/yolomaster-edge-linux-x64-all-cuda12-1.2.0.tar.gz.part-1) + [part 2](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/yolomaster-edge-linux-x64-all-cuda12-1.2.0.tar.gz.part-2) (4.1 GB). **And macOS:** [YOLO-Master 1.2.0](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/YOLO-Master-macOS-1.2.0.zip) (universal App, macOS 27 Golden Gate compatible, stapled and notarized). Checksums: [bundles](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/SHA256SUMS-linux-1.2.0.txt), [parts](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.2.0/SHA256SUMS-linux-1.2.0-parts.txt). The two large bundles are split for GitHub's 2 GiB asset limit; `cat <name>.tar.gz.part-* > <name>.tar.gz` concats them back together.
+
+In v1.2.0, **we unified the measurements in every runtime**. The C++ core now has a benchmark mode, an in-process mAP scorer and multi-object tracking, the OpenCV-free part of that core now compiles into the Swift package too, and GPU preprocessing moved the letterbox off the CPU on both NVIDIA and Apple silicon.
+
+### Features
+
+- **📊 Bench mode:** `--bench cold` (10 warm-up and 100 timed model-only predictions on a gray probe, floor-rank percentiles) and `--bench sustained` (a timed loop, one median per second, the throttle figure). The Linux CLI, the API server and the macOS app all write the same `yolomaster-bench/v1` JSON。
+- **🎯 On-device accuracy:** `--accuracy` scores a labelled folder with the val protocol (conf 0.001, IoU 0.7, max_det 300, multi-label). The scorer is the core's own C++ and equals `eval_map.py` to four decimals; the macOS app runs the very same code, which gives the **first Core ML mAP numbers** (v0.1-N 0.4306 on coco500 vs 0.4309 on ORT CPU). 
+- **🎥 Tracking:** `--track botsort|bytetrack` on video (Kalman, two-stage IoU association, BoT-SORT camera-motion compensation); ids on the annotated video and as a 7th column of `--save-txt`.
+- **⚡ GPU preprocessing:** one CUDA kernel builds the input tensor straight into TRT or an ORT IoBinding, plus `--cuda-graph` replay. L40S, v0.1-N at 640: TensorRT fp16 **1.45 ms** model time (1.16 ms with the graph), ORT CUDA 3.45 ms, mAP unchanged. On macOS a Metal kernel does the same job.
+
+<img width="5733" height="1879" alt="v1 2 0-mac-screenshot-5" src="https://github.com/user-attachments/assets/8874d4a6-fb68-45f0-bb5c-c6a2e2d38c63" />
+
+<br> 
+
+- **🖥️ macOS app completely rebuilt in two modes:** **Inference** (everything from 1.1 plus tracking, the preprocessing device and a System card with the die temperature and battery power) and **Bench** (up to five models on Auto / GPU / CPU, cold / sustained / accuracy protocols, a live dashboard with the latency trace, per-run histogram, FPS over time coloured by thermal state, per-class AP chart, side-by-side comparison and results table, a thermometer reading the real die temperature from the SMC, a power meter from IOKit, run history with CSV and JSON export). The icon 
+- **🧠 Neural Engine export:** the Core ML exporter writes the MoE top-k mixture with arithmetic only, so v0.1-N runs entirely on the Neural Engine instead of bouncing its routers to the CPU; `compute_plan.py` shows where Core ML places every op and `quantize_w8a16.py` makes int8-weight packages.
+- **🌐 API server 1.2.1:** `track=` on `/v1/video` and `/v1/stream`, `POST /v1/bench`, API keys, rate limiting, request-id and `traceparent` propagation, JSON access log, `GET /openapi.json`, GPU preprocessing on the TensorRT and ORT-CUDA workers; image `skywalker0501/yolomaster-api:1.2.1`.
+
+**Measured numbers:**
+
+| v0.1-seg-N, 640, coco500 | 1x A100 bundle, end-to-end median | mAP50-95 |
+|---|---|---|
+| TensorRT fp16 (engine built on the box) | 2.48 ms | 0.4268 |
+| TensorRT fp32 + CUDA graph | 2.44 ms | 0.4271 |
+| ONNX Runtime CUDA EP | 5.50 ms | 0.4271 |
+| ONNX Runtime CPU | 138 ms | 0.4270 |
+| ncnn CPU | 149 ms | 0.4270 |
+| MNN CPU | 125 ms | 0.4270 |
+
+| v0.1-N, 640, coco500 | 1x L40S source build, model ms | mAP50-95 |
+|---|---|---|
+| TensorRT fp16, CUDA preprocessing | 1.45 (1.16 with graph) | 0.4314 |
+| ONNX Runtime CUDA EP, CUDA preprocessing | 3.45 | 0.4308 |
+| MNN CUDA fp32 | 2.31 (+10 ms host readback) | 0.4309 |
+| ONNX Runtime CPU | 125.8 | 0.4309 |
+| macOS, Core ML GPU, Metal preprocessing (M4 Max) | 4.3 | 0.4306 |
+
+```bash
+# any Linux bundle
+tar xzf yolomaster-edge-linux-x64-trt10-cuda12-1.2.0.tar.gz && cd yolomaster-edge-linux-x64-trt10-cuda12-1.2.0
+./yolomaster_edge -m models/v0.1-seg-n.onnx -s images/ -b trt --precision fp16 --out out          # engine built on first run, cached
+./yolomaster_edge -m models/v0.1-seg-n.onnx -s images/ -b trt --precision fp16 --bench cold --bench-json bench.json --no-save
+./yolomaster_edge -m models/v0.1-seg-n.onnx -s coco500/images -b trt --precision fp16 --accuracy auto --no-save
+./yolomaster_edge -m models/v0.1-seg-n.onnx -s clip.mp4 -b trt --precision fp16 --track botsort --out out
+```
+
+Two findings worth noting here. 1. On Apple silicon with a strong GPU, the NPU (ANE) does not outperform the GPU on these models: a static Core ML graph computes every expert of v0.1-N, and yolov12x's area attention is refused by the ANE compiler. The app's forced-ANE unit was therefore replaced by **Auto**, Core ML's own split, which is also what the iPhone app's "ANE" numbers measure, which will be corrected later as a naming issue. 
+
+Windows, Jetson, iOS and Android stay on v1.1.x in this preview; the same features land there in their own phases. Full notes: [Release Page](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.2.0); macOS details in [`mac/RELEASE_NOTES-1.2.0.md`](mac/RELEASE_NOTES-1.2.0.md); all Linux numbers and logs in [`dist/validation/RESULTS-1.2.0-linux.md`](dist/validation/RESULTS-1.2.0-linux.md).
+
+> Moreover, I'll be using Claude Code and Codex to measure all the CLI and API Server numbers from now on. Hence an `AGENTS.md` and a `CLAUDE.md` will be added later to help contributors better understand the structure and rules of this repo and automate the development.
+
+---
+
 ## 🌐 Update (11-09-2026): YOLO-Master Edge API Server v1.2.0 (REST + WebSocket, four backends)
 
 [Click here](https://hub.docker.com/repository/docker/skywalker0501/yolomaster-api/general) to check the image on DockerHub!
@@ -32,9 +89,9 @@ curl -X POST 'localhost:8080/v1/infer?model=v01n&conf=0.3' --data-binary @image.
 
 ---
 
-## 🤳 Update (11-09-2026): YOLO-Master Edge for Android preliminary build
+## 🤳 Update (11-09-2026): YOLO-Master Edge v1.1.0 Android Alpha build
 
-**The 6th platform of YOLO-Master Edge, and the first with two runtimes side by side.**
+**The 6th platform of YOLO-Master Edge, and the first with two runtimes.**
 
 Native Android app (Kotlin, Jetpack Compose) for on-device YOLO-Master detection and segmentation. It is a function-for-function port of the iOS app on top of the shared C++ core (the same letterbox, decode and NMS code as the Linux, Windows,Jetson and macOS runners) behind a JNI bridge, with the runtime and the compute unit selectable per model:
 
@@ -93,7 +150,7 @@ contribution"); this preliminary build is for research and personal experience o
 
 ---
 
-## 📱 Update (27-08-2026): YOLO-Master for iPhone v1.1.0 Beta Build 1
+## 📱 Major Update (27-08-2026): YOLO-Master Edge for iOS v1.1.0 Beta Build 1
 
 <img width="4812" height="2291" alt="screnshots-framed" src="https://github.com/user-attachments/assets/e858e07b-eeff-40c2-b11a-dcb4dba44577" />
 
@@ -147,7 +204,7 @@ The app is licensed under AGPL-3.0, consistent with YOLO-Master and Ultralytics;
 
 ---
 
-## 🚀 Update (12-08-2026): YOLO-Master Edge v1.1.0 is up!
+## 🚀 Major Update (12-08-2026): YOLO-Master Edge v1.1.0
 
 **One release, every platform: [macOS](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-mac-1.1.0.zip) / Windows [CPU](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-win-x64-1.1.0.zip) + [CUDA](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-win-x64-gpu_cuda12-1.1.0.zip) / Linux [CPU](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-linux-x64-1.1.0.tar.gz) + [CUDA](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-linux-x64-gpu_cuda12-1.1.0.tar.gz) / [Jetson Orin](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-jetson-orin-1.1.0.tar.gz).**
 
