@@ -1,0 +1,34 @@
+host: NVIDIA L40S, 570.124.06 | 1.2.0 (d073487) | TensorRT 10.16.1.11-1+cuda12.9
+== yolo11n fp16: [trt] built fp16 engine in 272.179s -> /root/xfer/yolo11n-be2c019a3160-nvidia_l40s-trt10.16.1-fp16.engine (7 MB) backend=trt  ep=TRT-CUDA-fp16  imgsz=640  nc=80 (model-metadata)  conf=0.25  iou=0.5  max_det=300  (engine step 274 s)
+  yolo11n fp16 plain: pre=0.182698 infer=0.966782 post=2.50018 total=3.64966ms  model-FPS=273.998 | bench median=0.824992ms p90=0.829376
+  yolo11n fp16 --cuda-graph: pre=0.181939 infer=0.687799 post=2.47702 total=3.34676ms  model-FPS=298.797 | bench median=0.699008ms p90=0.704352
+  yolo11n fp16 accuracy coco500: mAP50=0.5525  mAP50-95=0.3979
+== yolo11n fp32: [trt] built fp32 engine in 99.217s -> /root/xfer/yolo11n-be2c019a3160-nvidia_l40s-trt10.16.1-fp32.engine (12 MB) backend=trt  ep=TRT-CUDA-fp32  imgsz=640  nc=80 (model-metadata)  conf=0.25  iou=0.5  max_det=300  (engine step 101 s)
+  yolo11n fp32 plain: pre=0.19217 infer=1.19057 post=2.49111 total=3.87385ms  model-FPS=258.141 | bench median=1.18346ms p90=1.18685
+  yolo11n fp32 --cuda-graph: pre=0.150941 infer=0.972525 post=2.58886 total=3.71232ms  model-FPS=269.373 | bench median=0.93184ms p90=0.945312
+  yolo11n fp32 accuracy coco500: mAP50=0.5521  mAP50-95=0.3980
+== yolo26n fp16: [trt] built fp16 engine in 290.052s -> /root/xfer/yolo26n-393042831944-nvidia_l40s-trt10.16.1-fp16.engine (6 MB) backend=trt  ep=TRT-CUDA-fp16  imgsz=640  nc=80 (model-metadata)  conf=0.25  iou=0.5  max_det=300  (engine step 291 s)
+  yolo26n fp16 plain: pre=0.1685 infer=0.826477 post=0.00322092 total=0.998198ms  model-FPS=1001.8 | bench median=0.688896ms p90=0.69328
+  yolo26n fp16 --cuda-graph: pre=0.188755 infer=0.555229 post=0.00368315 total=0.747667ms  model-FPS=1337.49 | bench median=0.553152ms p90=0.556576
+  yolo26n fp16 accuracy coco500: mAP50=0.5775  mAP50-95=0.4137
+== yolo26n fp32: [trt] built fp32 engine in 98.9711s -> /root/xfer/yolo26n-393042831944-nvidia_l40s-trt10.16.1-fp32.engine (11 MB) backend=trt  ep=TRT-CUDA-fp32  imgsz=640  nc=80 (model-metadata)  conf=0.25  iou=0.5  max_det=300  (engine step 101 s)
+  yolo26n fp32 plain: pre=0.1628 infer=1.12646 post=0.00405843 total=1.29332ms  model-FPS=773.202 | bench median=1.03203ms p90=1.03472
+  yolo26n fp32 --cuda-graph: pre=0.107763 infer=0.864215 post=0.00372737 total=0.975705ms  model-FPS=1024.9 | bench median=0.865696ms p90=0.866816
+  yolo26n fp32 accuracy coco500: mAP50=0.5772  mAP50-95=0.4138
+== yolov12n fp16: [trt] built fp16 engine in 294.595s -> /root/xfer/yolov12n-dc28c06488a4-nvidia_l40s-trt10.16.1-fp16.engine (7 MB) backend=trt  ep=TRT-CUDA-fp16  imgsz=640  nc=80 (model-metadata)  conf=0.25  iou=0.5  max_det=300  (engine step 296 s)
+  yolov12n fp16 plain: pre=0.196855 infer=1.30002 post=2.50891 total=4.00578ms  model-FPS=249.639 | bench median=1.12198ms p90=1.14202
+  yolov12n fp16 --cuda-graph: pre=0.12344 infer=0.825798 post=2.53447 total=3.48371ms  model-FPS=287.051 | bench median=0.828768ms p90=0.92944
+  yolov12n fp16 accuracy coco500: mAP50=0.5567  mAP50-95=0.4105
+== yolov12n fp32: [trt] built fp32 engine in 106.008s -> /root/xfer/yolov12n-dc28c06488a4-nvidia_l40s-trt10.16.1-fp32.engine (13 MB) backend=trt  ep=TRT-CUDA-fp32  imgsz=640  nc=80 (model-metadata)  conf=0.25  iou=0.5  max_det=300  (engine step 107 s)
+  yolov12n fp32 plain: pre=0.116961 infer=1.44151 post=2.49617 total=4.05464ms  model-FPS=246.631 | bench median=1.53165ms p90=1.53664
+  yolov12n fp32 --cuda-graph: pre=0.129715 infer=1.20156 post=2.51248 total=3.84376ms  model-FPS=260.162 | bench median=1.21133ms p90=1.26294
+  yolov12n fp32 accuracy coco500: mAP50=0.5565  mAP50-95=0.4101
+== yolov13n fp16: [trt] built fp16 engine in 450.517s -> /root/xfer/yolov13n-6b36170cab00-nvidia_l40s-trt10.16.1-fp16.engine (7 MB) backend=trt  ep=TRT-CUDA-fp16  imgsz=640  nc=80 (model-metadata)  conf=0.25  iou=0.5  max_det=300  (engine step 453 s)
+  yolov13n fp16 plain: pre=0.108159 infer=1.37725 post=2.50221 total=3.98762ms  model-FPS=250.776 | bench median=1.28717ms p90=1.33507
+  yolov13n fp16 --cuda-graph: pre=0.174607 infer=1.05653 post=2.78405 total=4.01518ms  model-FPS=249.055 | bench median=1.00122ms p90=1.00976
+  yolov13n fp16 accuracy coco500: mAP50=0.5734  mAP50-95=0.4128
+== yolov13n fp32: [trt] built fp32 engine in 162.345s -> /root/xfer/yolov13n-6b36170cab00-nvidia_l40s-trt10.16.1-fp32.engine (13 MB) backend=trt  ep=TRT-CUDA-fp32  imgsz=640  nc=80 (model-metadata)  conf=0.25  iou=0.5  max_det=300  (engine step 164 s)
+  yolov13n fp32 plain: pre=0.152171 infer=1.84703 post=2.54816 total=4.54737ms  model-FPS=219.907 | bench median=1.80656ms p90=1.8192
+  yolov13n fp32 --cuda-graph: pre=0.174433 infer=1.4365 post=2.48547 total=4.0964ms  model-FPS=244.117 | bench median=1.47219ms p90=1.53965
+  yolov13n fp32 accuracy coco500: mAP50=0.5729  mAP50-95=0.4130
+MEASURE DONE 15:45:04
