@@ -94,7 +94,10 @@ if [ "$WANT_MNN" = 1 ]; then
 fi
 NVCC=""
 if [ "$WANT_CUDA" = 1 ]; then
-  NVCC="$(ls -d /usr/local/cuda-12*/bin/nvcc /usr/local/cuda/bin/nvcc 2>/dev/null | sort -V | tail -1 || true)"
+  # the newest CUDA 12.x toolkit on the host (TensorRT 10.16 is built against 12.9; the unversioned
+  # /usr/local/cuda symlink is only a fallback)
+  NVCC="$(ls -d /usr/local/cuda-12*/bin/nvcc 2>/dev/null | sort -V | tail -1 || true)"
+  [ -n "$NVCC" ] || NVCC="$(ls /usr/local/cuda/bin/nvcc 2>/dev/null || true)"
 fi
 if [ "$WANT_TRT" = 1 ]; then
   [ -f "$TENSORRT_LIB_DIR/libnvinfer.so.10" ] || { echo "ERROR: libnvinfer.so.10 not found in $TENSORRT_LIB_DIR (TENSORRT_LIB_DIR=...)"; exit 1; }
@@ -174,9 +177,11 @@ copy_closure "$DIST/yolomaster_edge"
 
 # search order for CUDA / cuDNN / TensorRT runtime files: explicit dirs, CUDA toolkit installs,
 # the distro dir, pip nvidia-*-cu12 wheels (the cu13 subtree is skipped)
+CUDA_DIRS_NEWEST_FIRST="$(ls -d /usr/local/cuda-12* 2>/dev/null | sort -V -r | tr '\n' ' ')"   # 12.9 before 12.4
 find_cuda_lib() {  # $1 = soname -> prints full path or nothing
-  local so="$1" d
-  for d in ${CUDA_LIB_DIRS:-} "$TENSORRT_LIB_DIR" /usr/local/cuda-12*/targets/x86_64-linux/lib /usr/local/cuda-12*/lib64 \
+  local so="$1" d c
+  for d in ${CUDA_LIB_DIRS:-} "$TENSORRT_LIB_DIR" \
+           $(for c in $CUDA_DIRS_NEWEST_FIRST; do echo "$c/targets/x86_64-linux/lib $c/lib64"; done) \
            /usr/local/cuda/lib64 /usr/lib/x86_64-linux-gnu; do
     [ -e "$d/$so" ] && { echo "$d/$so"; return; }
   done
