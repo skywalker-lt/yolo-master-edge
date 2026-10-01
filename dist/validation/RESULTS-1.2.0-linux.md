@@ -131,3 +131,33 @@ Reading section 5: every backend lands on the same mAP for a given model (seg-N 
 so it is a 10 to 13 ms path end to end, far behind TensorRT (2.2 ms) and ORT CUDA (4.2 ms). CPU
 figures swing by up to 1.7x between the two pods for the same backend; they measure the pod's CPU
 share, not the backends.
+
+## 6. Stock nano models through the same TensorRT path (L40S, driver 570.124, TensorRT 10.16, 2026-10-01)
+
+Same protocol as section 2: the v1.2.0 CLI, `-b trt`, CUDA preprocessing, engines compiled on this GPU,
+warm 200 coco500 frames, `--bench cold` median over 100 probes, coco500 val-protocol mAP. YOLOv12n and
+YOLOv13n were re-exported as static 640 ONNX with their own forks; YOLO11n and YOLO26n are the ultralytics
+8.4 exports. COCO class names come from a `<model>.metadata.yaml` sidecar (YOLO26n flagged `end2end`).
+Log: `l40s-stock-yolo-trt-measure.log`, script `measure_stock_yolo.sh`.
+
+| model | precision | model ms plain | model ms + CUDA graph | bench median (graph) | post ms | total ms (graph) | mAP50 | mAP50-95 |
+|---|---|---|---|---|---|---|---|---|
+| YOLO26n | fp16 | 0.83 | **0.56** | 0.55 | 0.00 | 0.75 | 0.5775 | 0.4137 |
+| YOLO26n | fp32 | 1.13 | 0.86 | 0.87 | 0.00 | 0.98 | 0.5772 | 0.4138 |
+| YOLO11n | fp16 | 0.97 | **0.69** | 0.70 | 2.48 | 3.35 | 0.5525 | 0.3979 |
+| YOLO11n | fp32 | 1.19 | 0.97 | 0.93 | 2.59 | 3.71 | 0.5521 | 0.3980 |
+| YOLOv12n | fp16 | 1.30 | **0.83** | 0.83 | 2.53 | 3.48 | 0.5567 | 0.4105 |
+| YOLOv12n | fp32 | 1.44 | 1.20 | 1.21 | 2.51 | 3.84 | 0.5565 | 0.4101 |
+| YOLOv13n | fp16 | 1.38 | **1.06** | 1.00 | 2.78 | 4.02 | 0.5734 | 0.4128 |
+| YOLOv13n | fp32 | 1.85 | 1.44 | 1.47 | 2.49 | 4.10 | 0.5729 | 0.4130 |
+| v0.1-N (section 2, same GPU class) | fp16 | 1.45 | 1.16 | 1.43 | 0.68 | 1.92 | 0.5963 | 0.4314 |
+
+Engine build times on first use: fp16 272 to 451 s, fp32 99 to 106 s.
+
+Reading it: fp16 costs nothing measurable in mAP on any of the four (0.0004 at most) and buys 20 to 25 %
+of model time; the CUDA graph buys another 0.2 to 0.3 ms on every model, the same saving as on v0.1-N,
+which again says these graphs are launch-bound rather than FLOP-bound. YOLO26n is the only one under
+1 ms end to end (0.75 ms) because its NMS-free head leaves no post-processing; the three anchor-based
+models spend 2.5 ms in the CPU decode of 8400 x 84 rows at conf 0.25, more than their forward pass.
+v0.1-N's forward is slower than the stock nanos (its MoE blocks run every expert) but its 0.4314 is the
+highest mAP of the set, and its post stage is a third of theirs.
