@@ -200,7 +200,15 @@ int main(int argc, char** argv) {
     if (backend == "auto") {
         std::error_code ec;
         if (fs::is_directory(model, ec) || ends_with(model, ".param")) backend = "ncnn";
-        else if (ends_with(model, ".onnx")) backend = "onnx";
+        else if (ends_with(model, ".onnx")) {
+#if defined(USE_ORT)
+            backend = "onnx";
+#elif defined(USE_TRT)
+            backend = "trt";     // a TensorRT-only build compiles the .onnx into an engine
+#else
+            backend = "onnx";
+#endif
+        }
         else if (ends_with(model, ".mnn")) backend = "mnn";
         else if (ends_with(model, ".engine") || ends_with(model, ".trt")) backend = "trt";
         else { std::cerr << "cannot infer backend from '" << model << "'; pass --backend\n"; return 2; }
