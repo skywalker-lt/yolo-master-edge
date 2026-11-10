@@ -40,6 +40,7 @@ final class CameraController: NSObject, ObservableObject,
     private var photoDone: ((CGImage?) -> Void)?
     private var focusRevert: DispatchWorkItem?
     private var latestIsFront = false   // which camera the `latest` frame came from
+    private var rotationRetries = 0     // landscape frames seen in a row (queue-confined)
 
     /// Pinch-zoom in DISPLAY units (1 = wide lens, 0.5 = ultra-wide). The
     /// virtual device switches lenses automatically as the factor crosses its
@@ -101,7 +102,8 @@ final class CameraController: NSObject, ObservableObject,
                 // same convention as the video frames - upright and unmirrored -
                 // so the live overlay maps onto the still on either camera
                 CameraController.pinUnmirrored(c)
-                c.videoRotationAngle = 90
+                let angle = CameraController.uprightAngle(front: self.device?.position == .front)
+                if c.isVideoRotationAngleSupported(angle) { c.videoRotationAngle = angle }
             }
             self.photoOutput.capturePhoto(with: st, delegate: self)
         }
@@ -208,27 +210,45 @@ final class CameraController: NSObject, ObservableObject,
     /// the flipping (LiveView) to line up with the mirrored preview.
     private static func pinUnmirrored(_ c: AVCaptureConnection) {
         guard c.isVideoMirroringSupported else { return }
-        c.automaticallyAdjustsVideoMirroring = false
-        c.isVideoMirrored = false
+        if c.automaticallyAdjustsVideoMirroring { c.automaticallyAdjustsVideoMirroring = false }
+        if c.isVideoMirrored { c.isVideoMirrored = false }
     }
 
-    /// Output-side settings. Connections are rebuilt whenever the input
-    /// changes, so these go back on after every switch: the data connection's
-    /// orientation and mirroring, and a still size the new camera supports.
-    /// Call inside a configuration transaction, after the input is attached.
-    private func applyOutputSettings(for dev: AVCaptureDevice) {
-        if let c = videoOutput.connection(with: .video) {
-            CameraController.pinUnmirrored(c)
-            c.videoRotationAngle = 90   // portrait
+    /// Clockwise rotation that turns a camera's native landscape buffer upright
+    /// for this portrait-only UI. The two sensors are mounted opposite ways:
+    /// the back camera needs 90; the UNMIRRORED front camera needs 270 (90 is
+    /// only right for a mirrored front frame - unmirrored it comes out upside
+    /// down). Measured on an iPhone 15 Pro Max: an unrotated front frame had to
+    /// turn 90 degrees counter-clockwise to match the preview.
+    private static func uprightAngle(front: Bool) -> CGFloat { front ? 270 : 90 }
+
+    /// Orientation and mirroring of the frames handed to the detector.
+    /// Connections are rebuilt whenever the input changes, and settings made
+    /// inside that transaction did NOT survive it on device: after a camera
+    /// switch the frames came back unrotated (1280x720) and every box was
+    /// projected with the wrong scale. So this is applied inside the
+    /// transaction, again once it is committed, and once more from
+    /// `captureOutput` if a landscape frame still turns up. Idempotent.
+    private func applyConnectionSettings(front: Bool) {
+        guard let c = videoOutput.connection(with: .video) else { return }
+        CameraController.pinUnmirrored(c)
+        let angle = CameraController.uprightAngle(front: front)
+        if c.videoRotationAngle != angle, c.isVideoRotationAngleSupported(angle) {
+            c.videoRotationAngle = angle
         }
-        if session.outputs.contains(photoOutput) {
-            // stock-camera default output class (<= 24MP): the 48MP mode doubles
-            // per-shot decode/compose cost for no visible gain in an annotated capture
-            let dims = dev.activeFormat.supportedMaxPhotoDimensions
-            if let pick = dims.last(where: { Int($0.width) * Int($0.height) <= 25_000_000 })
-                ?? dims.first {
-                photoOutput.maxPhotoDimensions = pick
-            }
+    }
+
+    /// A still size the attached camera supports (the photo output keeps the
+    /// previous camera's size across an input change otherwise). Call inside a
+    /// configuration transaction, after the input is attached.
+    private func applyPhotoSize(for dev: AVCaptureDevice) {
+        guard session.outputs.contains(photoOutput) else { return }
+        // stock-camera default output class (<= 24MP): the 48MP mode doubles
+        // per-shot decode/compose cost for no visible gain in an annotated capture
+        let dims = dev.activeFormat.supportedMaxPhotoDimensions
+        if let pick = dims.last(where: { Int($0.width) * Int($0.height) <= 25_000_000 })
+            ?? dims.first {
+            photoOutput.maxPhotoDimensions = pick
         }
     }
 
@@ -285,8 +305,10 @@ final class CameraController: NSObject, ObservableObject,
         if !session.outputs.contains(photoOutput), session.canAddOutput(photoOutput) {
             session.addOutput(photoOutput)
         }
-        applyOutputSettings(for: dev)
+        applyConnectionSettings(front: false)
+        applyPhotoSize(for: dev)
         session.commitConfiguration()
+        applyConnectionSettings(front: false)   // no-op when the first one held
         lockFrameRate(dev)
         session.startRunning()
         applyTorch()
@@ -313,16 +335,24 @@ final class CameraController: NSObject, ObservableObject,
                 // roll back to the camera we had; its connections are rebuilt,
                 // so the output settings go back on as well
                 if self.session.canAddInput(old) { self.session.addInput(old) }
-                if let cur = self.device { self.applyOutputSettings(for: cur) }
+                let wasFront = self.device?.position == .front
+                if let cur = self.device { self.applyPhotoSize(for: cur) }
                 self.session.commitConfiguration()
+                self.applyConnectionSettings(front: wasFront)
                 DispatchQueue.main.async { done(false) }
                 return
             }
             self.device = dev
+            let front = target == .front
             let lens = self.prepareDevice(dev)
             self.session.addInput(input)
-            self.applyOutputSettings(for: dev)
+            self.applyConnectionSettings(front: front)
+            self.applyPhotoSize(for: dev)
             self.session.commitConfiguration()
+            // again on the committed connection: the settings made inside the
+            // transaction were lost on device (see applyConnectionSettings)
+            self.applyConnectionSettings(front: front)
+            self.rotationRetries = 0
             self.lockFrameRate(dev)
             // drop the outgoing camera's last frame: the detection loop then
             // waits for the first frame of the new camera instead of re-reading
@@ -332,7 +362,6 @@ final class CameraController: NSObject, ObservableObject,
             self.ageValue = 0
             self.latestLock.unlock()
             self.warmPhotoPipeline()
-            let front = target == .front
             DispatchQueue.main.async {
                 self.focusRevert?.cancel()   // a pending one-shot focus revert was for the old camera
                 self.isFront = front
@@ -361,6 +390,20 @@ final class CameraController: NSObject, ObservableObject,
         // tag the frame with the camera it came from, read off the connection
         // itself so a frame still in flight across a switch keeps its own tag
         let front = connection.inputPorts.first?.sourceDevicePosition == .front
+        // Safety net: the UI is portrait-only, so a LANDSCAPE frame means the
+        // connection's rotation did not take. Never hand it on (the model would
+        // see a sideways image and the overlay would project every box with
+        // the wrong scale); put the settings back on the live connection and
+        // wait for an upright frame. Bounded, so a camera that cannot rotate
+        // ends up showing no boxes rather than wrong ones.
+        if CVPixelBufferGetWidth(pb) > CVPixelBufferGetHeight(pb) {
+            if rotationRetries < 8 {
+                rotationRetries += 1
+                queue.async { self.applyConnectionSettings(front: front) }
+            }
+            return
+        }
+        rotationRetries = 0
         latestLock.lock()
         latest = pb
         latestIsFront = front
