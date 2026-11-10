@@ -33,9 +33,11 @@ struct Ack: Identifiable {
 }
 
 /// The two projects this app is built ON (the base) - kept apart from the
-/// upstream libraries it merely acknowledges.
+/// upstream libraries it merely acknowledges. Row names carry no "@ Company"
+/// suffix (it read as an affiliation); the copyright line under each row
+/// states who holds the rights.
 let baseProjects: [Ack] = [
-    Ack(name: "YOLO-Master @ Tencent",
+    Ack(name: "YOLO-Master",
         blurb: "The MoE YOLO detector family this app packages.",
         copyright: "Copyright 2026 Tencent", license: "AGPL-3.0",
         repo: "https://github.com/Tencent/YOLO-Master"),
@@ -45,8 +47,6 @@ let baseProjects: [Ack] = [
         repo: "https://github.com/skywalker-lt/yolo-master-edge"),
 ]
 
-// "Core ML" on its own: naming the company beside it read as an affiliation.
-// The copyright line below the row still states who holds the rights.
 let acknowledgements: [Ack] = [
     Ack(name: "Ultralytics",
         blurb: "The YOLO training and inference framework YOLO-Master builds on.",
@@ -68,12 +68,12 @@ func ackLogo(_ name: String, _ ext: String) -> UIImage? {
 
 let iosLicenseNotice = """
 ================================================================
-YOLO-Master for iOS
+YOLO-Master iOS App
 Copyright (C) 2026 (Thomas) RUIHENG LI
 (Author affiliated with The Hong Kong University of Science and
 Technology)
 
-YOLO-Master for iOS runs YOLO-Master models on-device using
+YOLO-Master iOS App runs YOLO-Master models on-device using
 Apple's Core ML. It shares the YOLOMasterKit inference path with
 the macOS tools.
 
@@ -228,7 +228,7 @@ struct SettingsView: View {
         HStack(spacing: 14) {
             appMark
             VStack(alignment: .leading, spacing: 3) {
-                Text("YOLO-Master for iOS").font(.title3.bold())
+                Text("YOLO-Master").font(.title3.bold())
                 Text(versionText).font(.caption).foregroundStyle(.secondary)
                 Text("On-device MoE object detection with Core ML.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -338,8 +338,14 @@ struct SettingsView: View {
             }
             if let url = URL(string: a.repo) {
                 Link(destination: url) {
-                    Label(a.repo.replacingOccurrences(of: "https://", with: ""),
-                          systemImage: "link").font(.caption)
+                    // manual glyph + text, not a Label: inside a Form row a
+                    // Label reserves the list's icon column, which left a
+                    // wide gap between the glyph and the link text
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Image(systemName: "link")
+                        Text(a.repo.replacingOccurrences(of: "https://", with: ""))
+                    }
+                    .font(.caption)
                 }
             }
         }
@@ -352,7 +358,7 @@ struct SettingsView: View {
         Section {
             DisclosureGroup(isExpanded: $privacyOpen) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("YOLO-Master for iOS runs entirely on your device.")
+                    Text("YOLO-Master runs entirely on your device.")
                         .font(.footnote.weight(.semibold))
 
                     VStack(alignment: .leading, spacing: 8) {

@@ -48,7 +48,10 @@ Before every upload:
 ## What the app does
 
 - **Live tab** - camera preview with detection overlay; model and compute-unit
-  (ANE / GPU / CPU) pickers; per-frame inference latency + FPS readout.
+  (Auto / GPU / CPU) pickers; per-frame inference latency + FPS readout. Auto is
+  Core ML's own placement (`MLComputeUnits.all`): it decides which parts of the
+  model run on the Neural Engine, GPU and CPU. It was labelled "ANE" up to
+  1.1.0 build 1; saved benchmark history with that label still loads.
 - **Photo tab** - batch detection over up to 100 album images; gallery and
   pager views; conf/IoU sliders retune from cached passes without re-running.
 - **Segmentation** - bundle a seg .mlpackage (e.g. v0.1-seg-N above) and both

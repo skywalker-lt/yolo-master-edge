@@ -2,8 +2,8 @@
 
 Effective date: 2026-08-26
 
-YOLO-Master for iOS ("the app") is an on-device object detection app. This
-policy explains what the app accesses and what happens to that information.
+YOLO-Master ("the app") is an on-device object detection app. This policy
+explains what the app accesses and what happens to that information.
 
 ## Summary
 

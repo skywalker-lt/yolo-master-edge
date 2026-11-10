@@ -83,7 +83,7 @@ final class BenchHistory: ObservableObject {
 /// Thermal-state colour shared by the tach and the history rows.
 func benchUnitIcon(_ c: ComputeChoice) -> String {
     switch c {
-    case .ane: return "bolt.fill"
+    case .auto: return "bolt.fill"
     case .gpu: return "square.stack.3d.up.fill"
     case .cpu: return "cpu"
     }
@@ -384,7 +384,7 @@ struct BenchView: View {
         case .loadingModel(let m, let u):
             HStack(spacing: 8) {
                 ProgressView()
-                Text("Loading \(m) to \(u)").font(.caption)
+                Text("Loading \(m) @ \(u)").font(.caption)
             }
         case .benchmarking(let m, let u, let d, let t):
             VStack(alignment: .leading, spacing: 4) {
@@ -502,7 +502,7 @@ struct BenchView: View {
     }
     private func unitIcon(_ c: ComputeChoice) -> String {
         switch c {
-        case .ane: return "bolt.fill"
+        case .auto: return "bolt.fill"
         case .gpu: return "square.stack.3d.up.fill"
         case .cpu: return "cpu"
         }

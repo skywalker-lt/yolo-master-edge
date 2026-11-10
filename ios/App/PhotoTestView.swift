@@ -245,7 +245,7 @@ struct PhotoTestView: View {
         HStack(spacing: 10) {
             if phase == .loadingModel {
                 ProgressView()
-                Text("Loading the model to \(compute.rawValue)")
+                Text("Loading the model (\(compute.rawValue))")
                     .font(.caption)
                 Spacer(minLength: 0)
             } else {

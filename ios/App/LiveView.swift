@@ -146,7 +146,7 @@ struct LiveView: View {
             if loadingModel {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("Loading the model to \(compute.rawValue)")
+                    Text("Loading the model (\(compute.rawValue))")
                 }
                 .font(.caption)
                 .padding(14)

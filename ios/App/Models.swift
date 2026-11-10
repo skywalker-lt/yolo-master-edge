@@ -101,14 +101,34 @@ struct BundledModel: Identifiable, Hashable {
     }
 }
 
-/// UI wrapper over the Kit's ComputeMode. `.all` routes to the ANE - on A-series
-/// silicon that is the expected winner (near-desktop ANE, small GPU); the
+/// UI wrapper over the Kit's ComputeMode.
+///
+/// `.auto` is Core ML's own placement (`MLComputeUnits.all`): Core ML decides
+/// which parts of the model run on the Neural Engine, the GPU and the CPU. It
+/// is NOT "the Neural Engine" - segments the Neural Engine refuses land on the
+/// GPU or CPU - so the unit is labelled Auto (it was shown as "ANE" up to
+/// 1.1.0 build 1). On A-series silicon Auto is the expected winner; the
 /// per-unit bench exists to verify exactly that on-device.
 enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
-    case ane = "ANE"        // CPU + GPU + Neural Engine (.all)
+    case auto = "Auto"      // Core ML decides: Neural Engine + GPU + CPU (.all)
     case gpu = "GPU"        // CPU + GPU
     case cpu = "CPU"        // CPU only
     var id: String { rawValue }
+
+    /// Benchmark history written before the rename stored this unit as "ANE".
+    /// Read it as `.auto` (those runs WERE Core ML's automatic split) instead
+    /// of failing: BenchHistory treats an undecodable file as empty, so one
+    /// unknown label would drop the user's whole saved history.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if raw == "ANE" { self = .auto; return }
+        guard let unit = ComputeChoice(rawValue: raw) else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "unknown compute unit \(raw)"))
+        }
+        self = unit
+    }
 
     /// Units to expose in a compute picker. CPU-only inference can crash Live/Photo
     /// on some MoE models, so it is hidden unless the user opts in (Settings).
@@ -118,17 +138,18 @@ enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
 
     var mode: ComputeMode {
         switch self {
-        case .ane: return ComputeMode("all")
+        case .auto: return ComputeMode("all")
         case .gpu: return ComputeMode("cpuandgpu")
         case .cpu: return ComputeMode("cpu")
         }
     }
 
-    /// Per-device default. The first-time ANE compile of these fragmented
-    /// MoE+attention models is painfully slow on A17-and-earlier silicon
-    /// (<= iPhone 15 Pro, hardware id "iPhoneN,M" with N <= 16), so those devices
-    /// default to GPU (fast Metal compile); iPhone 16 and newer default to ANE.
-    /// Everything non-iPhone (iPad, simulator) also defaults to ANE.
+    /// Per-device default. The first-time Neural Engine compile that Auto
+    /// triggers for these fragmented MoE+attention models is painfully slow on
+    /// A17-and-earlier silicon (<= iPhone 15 Pro, hardware id "iPhoneN,M" with
+    /// N <= 16), so those devices default to GPU (fast Metal compile); iPhone 16
+    /// and newer default to Auto. Everything non-iPhone (iPad, simulator) also
+    /// defaults to Auto.
     static var deviceDefault: ComputeChoice {
         var sys = utsname(); uname(&sys)
         let id = Mirror(reflecting: sys.machine).children.compactMap { c -> String? in
@@ -137,7 +158,7 @@ enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
         }.joined()                                   // e.g. "iPhone16,1"
         guard id.hasPrefix("iPhone"),
               let major = Int(id.dropFirst(6).prefix { $0.isNumber })
-        else { return .ane }
-        return major <= 16 ? .gpu : .ane
+        else { return .auto }
+        return major <= 16 ? .gpu : .auto
     }
 }
