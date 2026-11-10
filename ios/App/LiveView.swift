@@ -542,8 +542,21 @@ struct LiveView: View {
                 // masks only when wanted this frame: boxes-only mode skips the
                 // whole SGEMM+composite, and the stage bar drops to ~0
                 let segNow = seg && tuningRef.segOverlay != .boxes
+                // The detector and the overlay both work on an UPRIGHT frame.
+                // The back camera delivers one. The front camera's frames
+                // arrive in the sensor's landscape orientation (the capture
+                // pipeline does not rotate them on device), so a sideways
+                // buffer is turned upright here, whichever camera it is from.
+                // Its cost lands in the preprocess bar.
+                let sideways = CVPixelBufferGetWidth(pb) > CVPixelBufferGetHeight(pb)
                 let frame: ([Detection], CGImage?, Double, Double, Double, Double)? = autoreleasepool {
-                    guard let raw = try? det.forward(pb) else { return nil }
+                    let forwarded: Detector.RawOutput?
+                    if sideways {
+                        forwarded = uprightFrame(pb, front: front).flatMap { try? det.forward($0) }
+                    } else {
+                        forwarded = try? det.forward(pb)
+                    }
+                    guard let raw = forwarded else { return nil }
                     let t1 = CFAbsoluteTimeGetCurrent()
                     let d = det.decode(raw, conf: confNow, iou: iouNow)
                     let t2 = CFAbsoluteTimeGetCurrent()
@@ -566,8 +579,12 @@ struct LiveView: View {
                 let camHz = cameraRef.deliveryRate()
                 let ageMs = cameraRef.frameAgeMs()
 
-                let w = CGFloat(CVPixelBufferGetWidth(pb))
-                let h = CGFloat(CVPixelBufferGetHeight(pb))
+                // size of the UPRIGHT frame the detections are in: a sideways
+                // buffer's width and height swap when it is turned
+                let bw = CGFloat(CVPixelBufferGetWidth(pb))
+                let bh = CGFloat(CVPixelBufferGetHeight(pb))
+                let w = sideways ? bh : bw
+                let h = sideways ? bw : bh
                 // fire-and-forget: NEVER block the inference loop on the main
                 // thread - a busy render loop otherwise throttles detection to
                 // its leftover scheduling gaps
@@ -576,6 +593,10 @@ struct LiveView: View {
                 let e2eFPS = 1000.0 / max(preMS + infMS + decMS + maskMS, 0.1)
                 Task { @MainActor in
                     guard running else { return }   // zombie frame after pause: drop
+                    // a result from the camera we have just switched away from
+                    // must not repaint the cleared overlay (it stayed frozen
+                    // on screen when the new camera delivered nothing)
+                    guard front == cameraRef.isFront else { return }
                     detections = dets
                     maskImage = mask
                     frameMirrored = front           // travels WITH its detections
@@ -621,13 +642,20 @@ struct LiveView: View {
         let names = classNames
         let fSize = frameSize
         let kitStyle = style.kitStyle
-        let fallback = camera.grabLatest().flatMap { Detector.cgImage(from: $0.0) }
+        let front = camera.isFront
+        let fallback = camera.grabLatest().flatMap { uprightFrame($0.0, front: $0.2) }
         let t0 = CFAbsoluteTimeGetCurrent()
-        camera.capturePhoto { photo in
+        camera.capturePhoto { shot in
             Task.detached(priority: .userInitiated) {
                 var base: CGImage? = nil
                 var s: CGFloat = 1
-                if let photo {
+                // The detections are in an upright portrait frame. A still that
+                // comes back LANDSCAPE was not rotated by the capture pipeline
+                // (the front camera): turn it the same way as its video frames.
+                let still = shot.flatMap { (img: CGImage) -> CGImage? in
+                    img.width > img.height ? quarterTurned(img, clockwise: !front) : img
+                }
+                if let photo = still {
                     // photo sensor FOV is wider than the 16:9 video FOV the
                     // detections live in - crop to the centered video-aspect
                     // region, then overlay coords map by one scale factor
@@ -735,6 +763,44 @@ struct LiveView: View {
         if wantRun { wantRun = false; stopLoop() }
         else { wantRun = true; startLoop() }
     }
+}
+
+/// `image` turned a quarter-turn, as a new bitmap (width and height swap).
+///
+/// Needed because a camera's sensor is mounted landscape: when the capture
+/// pipeline does not rotate a frame, it arrives lying on its side. Measured on
+/// an iPhone 15 Pro Max against the on-screen preview, a FRONT-camera frame
+/// has to turn counter-clockwise to stand upright; the back sensor is mounted
+/// the other way round and turns clockwise.
+///
+/// Core Graphics is y-up, so a positive angle is counter-clockwise on screen.
+/// The translation moves the turned image back into the positive quadrant:
+///   counter-clockwise: (x, y) -> (h - y, x)   the right edge becomes the top
+///   clockwise:         (x, y) -> (y, w - x)   the left edge becomes the top
+private func quarterTurned(_ image: CGImage, clockwise: Bool) -> CGImage? {
+    let w = image.width, h = image.height
+    guard let ctx = CGContext(data: nil, width: h, height: w, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+                                  | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+    ctx.interpolationQuality = .none      // an exact quarter-turn maps pixel to pixel
+    if clockwise {
+        ctx.translateBy(x: 0, y: CGFloat(w))
+        ctx.rotate(by: -.pi / 2)
+    } else {
+        ctx.translateBy(x: CGFloat(h), y: 0)
+        ctx.rotate(by: .pi / 2)
+    }
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+    return ctx.makeImage()
+}
+
+/// An upright image of a camera frame for the detector. A frame that is
+/// already portrait is wrapped as it is; a landscape one is the sensor's own
+/// orientation and gets a quarter-turn (see `quarterTurned`).
+private func uprightFrame(_ pb: CVPixelBuffer, front: Bool) -> CGImage? {
+    guard let cg = Detector.cgImage(from: pb) else { return nil }
+    return cg.width > cg.height ? quarterTurned(cg, clockwise: !front) : cg
 }
 
 /// Camera-app shutter feel: quick shrink while pressed.

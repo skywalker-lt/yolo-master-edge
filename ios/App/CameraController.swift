@@ -40,7 +40,6 @@ final class CameraController: NSObject, ObservableObject,
     private var photoDone: ((CGImage?) -> Void)?
     private var focusRevert: DispatchWorkItem?
     private var latestIsFront = false   // which camera the `latest` frame came from
-    private var rotationRetries = 0     // landscape frames seen in a row (queue-confined)
 
     /// Pinch-zoom in DISPLAY units (1 = wide lens, 0.5 = ultra-wide). The
     /// virtual device switches lenses automatically as the factor crosses its
@@ -102,7 +101,9 @@ final class CameraController: NSObject, ObservableObject,
                 // same convention as the video frames - upright and unmirrored -
                 // so the live overlay maps onto the still on either camera
                 CameraController.pinUnmirrored(c)
-                let angle = CameraController.uprightAngle(front: self.device?.position == .front)
+                // back: upright from the pipeline; front: the sensor's own
+                // orientation, turned upright by the caller (see pipelineAngle)
+                let angle = CameraController.pipelineAngle(front: self.device?.position == .front)
                 if c.isVideoRotationAngleSupported(angle) { c.videoRotationAngle = angle }
             }
             self.photoOutput.capturePhoto(with: st, delegate: self)
@@ -214,25 +215,26 @@ final class CameraController: NSObject, ObservableObject,
         if c.isVideoMirrored { c.isVideoMirrored = false }
     }
 
-    /// Clockwise rotation that turns a camera's native landscape buffer upright
-    /// for this portrait-only UI. The two sensors are mounted opposite ways:
-    /// the back camera needs 90; the UNMIRRORED front camera needs 270 (90 is
-    /// only right for a mirrored front frame - unmirrored it comes out upside
-    /// down). Measured on an iPhone 15 Pro Max: an unrotated front frame had to
-    /// turn 90 degrees counter-clockwise to match the preview.
-    private static func uprightAngle(front: Bool) -> CGFloat { front ? 270 : 90 }
+    /// Rotation asked of the capture pipeline. Back camera: 90 (portrait), as
+    /// this app has always done. Front camera: 0, the sensor's own landscape
+    /// buffer - ON PURPOSE. On device (iPhone 15 Pro Max, iOS 27.2) the
+    /// pipeline never rotated the front camera's frames, whatever angle was
+    /// set and whenever it was set, so the app does not depend on it there:
+    /// LiveView turns a landscape frame upright itself (a front frame needs a
+    /// quarter-turn counter-clockwise, measured against the preview). Asking
+    /// for 0 keeps that starting point fixed instead of leaving it to
+    /// whatever the pipeline decides to honour.
+    private static func pipelineAngle(front: Bool) -> CGFloat { front ? 0 : 90 }
 
     /// Orientation and mirroring of the frames handed to the detector.
-    /// Connections are rebuilt whenever the input changes, and settings made
-    /// inside that transaction did NOT survive it on device: after a camera
-    /// switch the frames came back unrotated (1280x720) and every box was
-    /// projected with the wrong scale. So this is applied inside the
-    /// transaction, again once it is committed, and once more from
-    /// `captureOutput` if a landscape frame still turns up. Idempotent.
+    /// Connections are rebuilt whenever the input changes, so this goes back
+    /// on inside the swap transaction and again once it is committed.
+    /// Idempotent. Frames are NEVER dropped for being landscape: LiveView
+    /// handles either orientation.
     private func applyConnectionSettings(front: Bool) {
         guard let c = videoOutput.connection(with: .video) else { return }
         CameraController.pinUnmirrored(c)
-        let angle = CameraController.uprightAngle(front: front)
+        let angle = CameraController.pipelineAngle(front: front)
         if c.videoRotationAngle != angle, c.isVideoRotationAngleSupported(angle) {
             c.videoRotationAngle = angle
         }
@@ -349,10 +351,9 @@ final class CameraController: NSObject, ObservableObject,
             self.applyConnectionSettings(front: front)
             self.applyPhotoSize(for: dev)
             self.session.commitConfiguration()
-            // again on the committed connection: the settings made inside the
-            // transaction were lost on device (see applyConnectionSettings)
+            // again on the committed connection, in case the transaction
+            // rebuilt it after the first call
             self.applyConnectionSettings(front: front)
-            self.rotationRetries = 0
             self.lockFrameRate(dev)
             // drop the outgoing camera's last frame: the detection loop then
             // waits for the first frame of the new camera instead of re-reading
@@ -390,20 +391,6 @@ final class CameraController: NSObject, ObservableObject,
         // tag the frame with the camera it came from, read off the connection
         // itself so a frame still in flight across a switch keeps its own tag
         let front = connection.inputPorts.first?.sourceDevicePosition == .front
-        // Safety net: the UI is portrait-only, so a LANDSCAPE frame means the
-        // connection's rotation did not take. Never hand it on (the model would
-        // see a sideways image and the overlay would project every box with
-        // the wrong scale); put the settings back on the live connection and
-        // wait for an upright frame. Bounded, so a camera that cannot rotate
-        // ends up showing no boxes rather than wrong ones.
-        if CVPixelBufferGetWidth(pb) > CVPixelBufferGetHeight(pb) {
-            if rotationRetries < 8 {
-                rotationRetries += 1
-                queue.async { self.applyConnectionSettings(front: front) }
-            }
-            return
-        }
-        rotationRetries = 0
         latestLock.lock()
         latest = pb
         latestIsFront = front
