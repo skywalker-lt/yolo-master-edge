@@ -20,15 +20,12 @@ struct ContentView: View {
 // MARK: - Projects
 
 /// A credited project: name, what it is, copyright line, licence, repo link.
-/// Third-party projects are credited in TEXT only - no company logos are
-/// bundled (trademark artwork does not belong in an App Store build). The
-/// leading tile shows a generic SF Symbol; `logo` is reserved for artwork this
-/// project owns.
+/// Credits are TEXT only - no logos, icons or glyph tiles, for third parties
+/// or for this project (trademark artwork does not belong in an App Store
+/// build, and a row of stand-in icons only added clutter).
 struct Ack: Identifiable {
     var id: String { repo }
     let name: String
-    let symbol: String         // SF Symbol for the leading tile
-    var logo: String? = nil    // own artwork only: PNG base name under Resources/ack
     let blurb: String
     let copyright: String
     let license: String
@@ -38,23 +35,24 @@ struct Ack: Identifiable {
 /// The two projects this app is built ON (the base) - kept apart from the
 /// upstream libraries it merely acknowledges.
 let baseProjects: [Ack] = [
-    Ack(name: "YOLO-Master @ Tencent", symbol: "camera.viewfinder",
+    Ack(name: "YOLO-Master @ Tencent",
         blurb: "The MoE YOLO detector family this app packages.",
         copyright: "Copyright 2026 Tencent", license: "AGPL-3.0",
         repo: "https://github.com/Tencent/YOLO-Master"),
-    Ack(name: "YOLO-Master Edge (this app)", symbol: "chevron.left.forwardslash.chevron.right",
-        logo: "skywalker-lt",
+    Ack(name: "YOLO-Master Edge (this app)",
         blurb: "The iOS app and the Core ML export toolchain.",
         copyright: "Copyright 2026 Thomas (Ruiheng Li), HKUST", license: "AGPL-3.0",
         repo: "https://github.com/skywalker-lt/yolo-master-edge"),
 ]
 
+// "Core ML" on its own: naming the company beside it read as an affiliation.
+// The copyright line below the row still states who holds the rights.
 let acknowledgements: [Ack] = [
-    Ack(name: "Ultralytics", symbol: "gearshape.2",
+    Ack(name: "Ultralytics",
         blurb: "The YOLO training and inference framework YOLO-Master builds on.",
         copyright: "Copyright 2025 Ultralytics", license: "AGPL-3.0",
         repo: "https://github.com/ultralytics/ultralytics"),
-    Ack(name: "Core ML @ Apple", symbol: "cpu",
+    Ack(name: "Core ML",
         blurb: "Model conversion and the on-device inference runtime.",
         copyright: "Copyright 2020 to 2023 Apple Inc.", license: "BSD-3-Clause",
         repo: "https://github.com/apple/coremltools"),
@@ -260,26 +258,28 @@ struct SettingsView: View {
     private var licensesSection: some View {
         Section {
             DisclosureGroup(isExpanded: $licensesOpen) {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("YOLO-Master and Ultralytics are licensed under AGPL-3.0; coremltools under BSD-3-Clause. This app and the Core ML weights it bundles are distributed under AGPL-3.0, and this app complies with those terms.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                // Spacing carries the structure now that the rows have no icons:
+                // wide gaps between blocks (22), close lines inside a block.
+                VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("YOLO-Master and Ultralytics are licensed under AGPL-3.0; coremltools under BSD-3-Clause. This app and the Core ML weights it bundles are distributed under AGPL-3.0, and this app complies with those terms.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
 
-                    Text("The authors release this app for research and personal experience only, and neither intend nor support any commercial use.")
-                        .font(.footnote.bold())
-                        .fixedSize(horizontal: false, vertical: true)
+                        Text("The authors release this app for research and personal experience only, and neither intend nor support any commercial use.")
+                            .font(.footnote.bold())
+                            .fixedSize(horizontal: false, vertical: true)
 
-                    Text("This is a statement of the authors' intent. It does not add restrictions to, or otherwise limit, the rights granted under the AGPL-3.0.")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        Text("This is a statement of the authors' intent. It does not add restrictions to, or otherwise limit, the rights granted under the AGPL-3.0.")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
                     Divider()
-                    groupLabel("Built on")
-                    ForEach(baseProjects) { a in ackRow(a) }
+                    ackGroup("Built on", baseProjects)
 
                     Divider()
-                    groupLabel("Acknowledgements")
-                    ForEach(acknowledgements) { a in ackRow(a) }
+                    ackGroup("Acknowledgements", acknowledgements)
 
                     // tertiary GROUPED background: one step off the form cell in
                     // both appearances (the plain secondary background is the
@@ -292,7 +292,8 @@ struct SettingsView: View {
                         .background(RoundedRectangle(cornerRadius: 8)
                             .fill(Color(.tertiarySystemGroupedBackground)))
                 }
-                .padding(.top, 6)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
             } label: {
                 Label("Licenses & Acknowledgements", systemImage: "doc.text")
             }
@@ -303,56 +304,46 @@ struct SettingsView: View {
         Text(text.uppercased())
             .font(.caption2.weight(.bold))
             .foregroundStyle(.tertiary)
-            .padding(.top, 2)
     }
 
-    /// Text-first credit row: glyph tile, name, what it is, then a licence
-    /// chip beside the copyright line, then the repo link.
+    /// One titled group of credits. The label sits closer to its first row
+    /// (14) than the rows sit to each other (20), so it reads as their heading.
+    private func ackGroup(_ title: String, _ items: [Ack]) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            groupLabel(title)
+            VStack(alignment: .leading, spacing: 20) {
+                ForEach(items) { a in ackRow(a) }
+            }
+        }
+    }
+
+    /// Text-only credit, full width: name and what it is, then the licence
+    /// chip beside the copyright line, then the repo link. No icons or logos.
     private func ackRow(_ a: Ack) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            ackTile(a)
+        VStack(alignment: .leading, spacing: 9) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(a.name).font(.callout.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
-                Text(a.blurb).font(.caption).foregroundStyle(.secondary)
+                Text(a.blurb).font(.footnote).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(a.license)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.accentColor.opacity(0.14), in: Capsule())
-                        .fixedSize()
-                    Text(a.copyright).font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let url = URL(string: a.repo) {
-                    Link(destination: url) {
-                        Label(a.repo.replacingOccurrences(of: "https://", with: ""),
-                              systemImage: "link").font(.caption)
-                    }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(a.license)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Color.accentColor.opacity(0.14), in: Capsule())
+                    .fixedSize()
+                Text(a.copyright).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let url = URL(string: a.repo) {
+                Link(destination: url) {
+                    Label(a.repo.replacingOccurrences(of: "https://", with: ""),
+                          systemImage: "link").font(.caption)
                 }
             }
-            Spacer(minLength: 0)
         }
-    }
-
-    /// Leading 36pt tile: this project's own artwork when it is bundled,
-    /// otherwise a generic glyph on an accent-tinted tile. Never a third-party
-    /// logo - those projects are credited by name in the row text.
-    private func ackTile(_ a: Ack) -> some View {
-        Group {
-            if let logo = a.logo, let img = ackLogo(logo, "png") {
-                Image(uiImage: img).resizable().scaledToFit()
-            } else {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.14))
-                    .overlay(Image(systemName: a.symbol)
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(Color.accentColor))
-            }
-        }
-        .frame(width: 36, height: 36)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Privacy & Security
