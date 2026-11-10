@@ -19,33 +19,44 @@ struct ContentView: View {
 
 // MARK: - Projects
 
-/// A credited project (logo + blurb + repo link).
+/// A credited project: name, what it is, copyright line, licence, repo link.
+/// Third-party projects are credited in TEXT only - no company logos are
+/// bundled (trademark artwork does not belong in an App Store build). The
+/// leading tile shows a generic SF Symbol; `logo` is reserved for artwork this
+/// project owns.
 struct Ack: Identifiable {
     var id: String { repo }
     let name: String
-    let logo: String     // resource base name under Resources/ack
-    let ext: String
+    let symbol: String         // SF Symbol for the leading tile
+    var logo: String? = nil    // own artwork only: PNG base name under Resources/ack
     let blurb: String
+    let copyright: String
+    let license: String
     let repo: String
 }
 
 /// The two projects this app is built ON (the base) - kept apart from the
 /// upstream libraries it merely acknowledges.
 let baseProjects: [Ack] = [
-    Ack(name: "YOLO-Master @ Tencent", logo: "tencent", ext: "png",
-        blurb: "The MoE YOLO detector family this app packages. Copyright 2026 Tencent, AGPL-3.0.",
+    Ack(name: "YOLO-Master @ Tencent", symbol: "camera.viewfinder",
+        blurb: "The MoE YOLO detector family this app packages.",
+        copyright: "Copyright 2026 Tencent", license: "AGPL-3.0",
         repo: "https://github.com/Tencent/YOLO-Master"),
-    Ack(name: "YOLO-Master Edge (this app)", logo: "skywalker-lt", ext: "png",
-        blurb: "The iOS app and the Core ML export toolchain. Copyright 2026 Thomas (Ruiheng Li), HKUST, AGPL-3.0.",
+    Ack(name: "YOLO-Master Edge (this app)", symbol: "chevron.left.forwardslash.chevron.right",
+        logo: "skywalker-lt",
+        blurb: "The iOS app and the Core ML export toolchain.",
+        copyright: "Copyright 2026 Thomas (Ruiheng Li), HKUST", license: "AGPL-3.0",
         repo: "https://github.com/skywalker-lt/yolo-master-edge"),
 ]
 
 let acknowledgements: [Ack] = [
-    Ack(name: "Ultralytics", logo: "ultralytics", ext: "png",
-        blurb: "The YOLO training and inference framework YOLO-Master builds on. Copyright 2025 Ultralytics, AGPL-3.0.",
+    Ack(name: "Ultralytics", symbol: "gearshape.2",
+        blurb: "The YOLO training and inference framework YOLO-Master builds on.",
+        copyright: "Copyright 2025 Ultralytics", license: "AGPL-3.0",
         repo: "https://github.com/ultralytics/ultralytics"),
-    Ack(name: "Core ML @ Apple", logo: "apple", ext: "jpeg",
-        blurb: "Model conversion and the on-device inference runtime. Copyright 2020 to 2023 Apple Inc., BSD-3-Clause.",
+    Ack(name: "Core ML @ Apple", symbol: "cpu",
+        blurb: "Model conversion and the on-device inference runtime.",
+        copyright: "Copyright 2020 to 2023 Apple Inc.", license: "BSD-3-Clause",
         repo: "https://github.com/apple/coremltools"),
 ]
 
@@ -249,18 +260,24 @@ struct SettingsView: View {
                         .font(.caption2).foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
 
+                    Divider()
                     groupLabel("Built on")
                     ForEach(baseProjects) { a in ackRow(a) }
 
+                    Divider()
                     groupLabel("Acknowledgements")
                     ForEach(acknowledgements) { a in ackRow(a) }
 
+                    // tertiary GROUPED background: one step off the form cell in
+                    // both appearances (the plain secondary background is the
+                    // cell's own color in dark mode, so the box vanished there)
                     Text(iosLicenseNotice)
                         .font(.system(size: 11, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(.secondarySystemBackground)))
+                        .background(RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(.tertiarySystemGroupedBackground)))
                 }
                 .padding(.top, 6)
             } label: {
@@ -276,22 +293,25 @@ struct SettingsView: View {
             .padding(.top, 2)
     }
 
+    /// Text-first credit row: glyph tile, name, what it is, then a licence
+    /// chip beside the copyright line, then the repo link.
     private func ackRow(_ a: Ack) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Group {
-                if let img = ackLogo(a.logo, a.ext) {
-                    Image(uiImage: img).resizable().scaledToFit()
-                } else {
-                    RoundedRectangle(cornerRadius: 8).fill(.quaternary)
-                        .overlay(Text(String(a.name.prefix(1))).font(.headline).foregroundStyle(.secondary))
-                }
-            }
-            .frame(width: 40, height: 40)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
+            ackTile(a)
+            VStack(alignment: .leading, spacing: 4) {
                 Text(a.name).font(.callout.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(a.blurb).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(a.license)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.14), in: Capsule())
+                        .fixedSize()
+                    Text(a.copyright).font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let url = URL(string: a.repo) {
                     Link(destination: url) {
                         Label(a.repo.replacingOccurrences(of: "https://", with: ""),
@@ -301,6 +321,25 @@ struct SettingsView: View {
             }
             Spacer(minLength: 0)
         }
+    }
+
+    /// Leading 36pt tile: this project's own artwork when it is bundled,
+    /// otherwise a generic glyph on an accent-tinted tile. Never a third-party
+    /// logo - those projects are credited by name in the row text.
+    private func ackTile(_ a: Ack) -> some View {
+        Group {
+            if let logo = a.logo, let img = ackLogo(logo, "png") {
+                Image(uiImage: img).resizable().scaledToFit()
+            } else {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.14))
+                    .overlay(Image(systemName: a.symbol)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(Color.accentColor))
+            }
+        }
+        .frame(width: 36, height: 36)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     // MARK: Privacy & Security
