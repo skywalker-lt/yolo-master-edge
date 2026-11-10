@@ -31,9 +31,15 @@ final class CameraController: NSObject, ObservableObject,
     /// Native lens factors in display units (e.g. [0.5, 1, 4]) for the lens picker.
     @Published var lensFactors: [CGFloat] = [1]
     @Published var torchOn = false
+    /// True while the FRONT camera feeds the session (published for the UI).
+    /// The preview layer mirrors the front camera like a selfie view; the frames
+    /// handed to the detector are NOT mirrored (see `pinUnmirrored`).
+    @Published var isFront = false
+    private let videoOutput = AVCaptureVideoDataOutput()
     private let photoOutput = AVCapturePhotoOutput()
     private var photoDone: ((CGImage?) -> Void)?
     private var focusRevert: DispatchWorkItem?
+    private var latestIsFront = false   // which camera the `latest` frame came from
 
     /// Pinch-zoom in DISPLAY units (1 = wide lens, 0.5 = ultra-wide). The
     /// virtual device switches lenses automatically as the factor crosses its
@@ -91,7 +97,12 @@ final class CameraController: NSObject, ObservableObject,
             self.photoDone = done
             let st = AVCapturePhotoSettings()
             st.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
-            if let c = self.photoOutput.connection(with: .video) { c.videoRotationAngle = 90 }
+            if let c = self.photoOutput.connection(with: .video) {
+                // same convention as the video frames - upright and unmirrored -
+                // so the live overlay maps onto the still on either camera
+                CameraController.pinUnmirrored(c)
+                c.videoRotationAngle = 90
+            }
             self.photoOutput.capturePhoto(with: st, delegate: self)
         }
     }
@@ -142,28 +153,26 @@ final class CameraController: NSObject, ObservableObject,
         }
     }
 
-    private func configure() {
-        guard session.inputs.isEmpty else {
-            session.startRunning()
-            applyTorch()
-            return
-        }
-        session.beginConfiguration()
-        session.sessionPreset = .hd1280x720
-        // best virtual multi-cam first: the device auto-switches lenses as the
-        // zoom factor crosses its switch-over points (ultra-wide/wide/tele)
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInTripleCamera, .builtInDualWideCamera,
-                          .builtInDualCamera, .builtInWideAngleCamera],
-            mediaType: .video, position: .back)
-        guard let dev = discovery.devices.first,
-              let input = try? AVCaptureDeviceInput(device: dev),
-              session.canAddInput(input) else {
-            session.commitConfiguration(); return
-        }
-        device = dev
+    /// The camera at `position`. Back: the best virtual multi-cam first (the
+    /// device auto-switches lenses as the zoom factor crosses its switch-over
+    /// points: ultra-wide / wide / tele). Front: the plain wide-angle camera
+    /// (the TrueDepth device adds a depth pipeline this app has no use for).
+    private func findCamera(_ position: AVCaptureDevice.Position) -> AVCaptureDevice? {
+        let types: [AVCaptureDevice.DeviceType] = position == .front
+            ? [.builtInWideAngleCamera]
+            : [.builtInTripleCamera, .builtInDualWideCamera,
+               .builtInDualCamera, .builtInWideAngleCamera]
+        return AVCaptureDevice.DiscoverySession(deviceTypes: types, mediaType: .video,
+                                                position: position).devices.first
+    }
+
+    /// Device-side setup shared by first configuration and camera switches:
+    /// zoom bias and lens stops, unrestricted lens hand-off, SDR, start at 1x.
+    /// Returns the native lens stops in display units (e.g. [0.5, 1, 4]).
+    private func prepareDevice(_ dev: AVCaptureDevice) -> [CGFloat] {
         let switchOvers = dev.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat(truncating: $0) }
         let hasUW = dev.constituentDevices.contains { $0.deviceType == .builtInUltraWideCamera }
+        zoomBias = 1    // single-lens devices (the front camera): factor 1 IS 1x
         if dev.isVirtualDevice, hasUW, let so = switchOvers.first {
             zoomBias = so
         }
@@ -173,7 +182,6 @@ final class CameraController: NSObject, ObservableObject,
         if hasUW { stops.append(1 / zoomBias) }
         stops.append(contentsOf: (hasUW ? Array(switchOvers.dropFirst()) : switchOvers)
             .map { $0 / zoomBias })
-        let lens = stops.sorted()
         if (try? dev.lockForConfiguration()) != nil {
             if dev.isVirtualDevice {
                 // no focus/exposure restrictions on lens hand-off: without this
@@ -191,21 +199,29 @@ final class CameraController: NSObject, ObservableObject,
             dev.videoZoomFactor = zoomBias    // start on the wide lens = 1x
             dev.unlockForConfiguration()
         }
-        DispatchQueue.main.async {
-            self.displayZoom = 1
-            self.lensFactors = lens
+        return stops.sorted()
+    }
+
+    /// Deliver frames exactly as the camera sees them. The system mirrors the
+    /// front camera's PREVIEW; the data and photo connections must not follow
+    /// it, because the detector runs on the true image and the overlay does
+    /// the flipping (LiveView) to line up with the mirrored preview.
+    private static func pinUnmirrored(_ c: AVCaptureConnection) {
+        guard c.isVideoMirroringSupported else { return }
+        c.automaticallyAdjustsVideoMirroring = false
+        c.isVideoMirrored = false
+    }
+
+    /// Output-side settings. Connections are rebuilt whenever the input
+    /// changes, so these go back on after every switch: the data connection's
+    /// orientation and mirroring, and a still size the new camera supports.
+    /// Call inside a configuration transaction, after the input is attached.
+    private func applyOutputSettings(for dev: AVCaptureDevice) {
+        if let c = videoOutput.connection(with: .video) {
+            CameraController.pinUnmirrored(c)
+            c.videoRotationAngle = 90   // portrait
         }
-        session.addInput(input)
-        let out = AVCaptureVideoDataOutput()
-        out.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String:
-                             kCVPixelFormatType_32BGRA]
-        out.alwaysDiscardsLateVideoFrames = true
-        out.setSampleBufferDelegate(self, queue: queue)
-        guard session.canAddOutput(out) else { session.commitConfiguration(); return }
-        session.addOutput(out)
-        out.connection(with: .video)?.videoRotationAngle = 90   // portrait
-        if session.canAddOutput(photoOutput) {
-            session.addOutput(photoOutput)
+        if session.outputs.contains(photoOutput) {
             // stock-camera default output class (<= 24MP): the 48MP mode doubles
             // per-shot decode/compose cost for no visible gain in an annotated capture
             let dims = dev.activeFormat.supportedMaxPhotoDimensions
@@ -214,19 +230,118 @@ final class CameraController: NSObject, ObservableObject,
                 photoOutput.maxPhotoDimensions = pick
             }
         }
-        session.commitConfiguration()
-        if (try? dev.lockForConfiguration()) != nil {
-            dev.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
-            dev.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
-            dev.unlockForConfiguration()
+    }
+
+    /// Lock capture to 30 fps when the active format allows it (setting a
+    /// duration outside the format's ranges raises an exception).
+    private func lockFrameRate(_ dev: AVCaptureDevice) {
+        let ok = dev.activeFormat.videoSupportedFrameRateRanges.contains {
+            $0.minFrameRate <= 30 && $0.maxFrameRate >= 30
         }
-        session.startRunning()
-        applyTorch()
-        // pre-warm the photo pipeline: without prepared settings the FIRST
-        // capture pays ~0.5-1s of one-time buffer/settings negotiation
+        guard ok, (try? dev.lockForConfiguration()) != nil else { return }
+        dev.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
+        dev.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
+        dev.unlockForConfiguration()
+    }
+
+    /// Pre-warm the photo pipeline: without prepared settings the FIRST capture
+    /// on a camera pays ~0.5-1s of one-time buffer/settings negotiation.
+    private func warmPhotoPipeline() {
+        guard session.outputs.contains(photoOutput) else { return }
         let warm = AVCapturePhotoSettings()
         warm.maxPhotoDimensions = photoOutput.maxPhotoDimensions
         photoOutput.setPreparedPhotoSettingsArray([warm], completionHandler: nil)
+    }
+
+    private func configure() {
+        guard session.inputs.isEmpty else {
+            session.startRunning()
+            applyTorch()
+            return
+        }
+        session.beginConfiguration()
+        session.sessionPreset = .hd1280x720
+        guard let dev = findCamera(.back),
+              let input = try? AVCaptureDeviceInput(device: dev),
+              session.canAddInput(input) else {
+            session.commitConfiguration(); return
+        }
+        device = dev
+        let lens = prepareDevice(dev)
+        DispatchQueue.main.async {
+            self.isFront = false
+            self.displayZoom = 1
+            self.lensFactors = lens
+        }
+        session.addInput(input)
+        if !session.outputs.contains(videoOutput) {
+            videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String:
+                                         kCVPixelFormatType_32BGRA]
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+            videoOutput.setSampleBufferDelegate(self, queue: queue)
+            guard session.canAddOutput(videoOutput) else { session.commitConfiguration(); return }
+            session.addOutput(videoOutput)
+        }
+        if !session.outputs.contains(photoOutput), session.canAddOutput(photoOutput) {
+            session.addOutput(photoOutput)
+        }
+        applyOutputSettings(for: dev)
+        session.commitConfiguration()
+        lockFrameRate(dev)
+        session.startRunning()
+        applyTorch()
+        warmPhotoPipeline()
+    }
+
+    /// Swap between the back and the front camera without restarting the
+    /// session: the input is replaced inside one configuration transaction, so
+    /// the preview cuts straight over. `done(switched)` fires on the main queue
+    /// once the session has the new camera; `false` means the other camera
+    /// could not be attached and nothing changed.
+    func switchCamera(_ done: @escaping (Bool) -> Void) {
+        queue.async {
+            let target: AVCaptureDevice.Position = self.device?.position == .front ? .back : .front
+            guard let old = self.session.inputs.first,
+                  let dev = self.findCamera(target),
+                  let input = try? AVCaptureDeviceInput(device: dev) else {
+                DispatchQueue.main.async { done(false) }
+                return
+            }
+            self.session.beginConfiguration()
+            self.session.removeInput(old)
+            guard self.session.canAddInput(input) else {
+                // roll back to the camera we had; its connections are rebuilt,
+                // so the output settings go back on as well
+                if self.session.canAddInput(old) { self.session.addInput(old) }
+                if let cur = self.device { self.applyOutputSettings(for: cur) }
+                self.session.commitConfiguration()
+                DispatchQueue.main.async { done(false) }
+                return
+            }
+            self.device = dev
+            let lens = self.prepareDevice(dev)
+            self.session.addInput(input)
+            self.applyOutputSettings(for: dev)
+            self.session.commitConfiguration()
+            self.lockFrameRate(dev)
+            // drop the outgoing camera's last frame: the detection loop then
+            // waits for the first frame of the new camera instead of re-reading
+            // a stale one
+            self.latestLock.lock()
+            self.latest = nil
+            self.ageValue = 0
+            self.latestLock.unlock()
+            self.warmPhotoPipeline()
+            let front = target == .front
+            DispatchQueue.main.async {
+                self.focusRevert?.cancel()   // a pending one-shot focus revert was for the old camera
+                self.isFront = front
+                if front { self.torchOn = false }   // the front camera has no torch
+                self.displayZoom = 1
+                self.lensFactors = lens
+                done(true)
+            }
+        }
     }
 
     func stop() { queue.async { self.session.stopRunning() } }
@@ -243,8 +358,12 @@ final class CameraController: NSObject, ObservableObject,
             let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             ageMs = max(0, CMTimeGetSeconds(CMTimeSubtract(CMClockGetTime(clock), pts)) * 1000)
         }
+        // tag the frame with the camera it came from, read off the connection
+        // itself so a frame still in flight across a switch keeps its own tag
+        let front = connection.inputPorts.first?.sourceDevicePosition == .front
         latestLock.lock()
         latest = pb
+        latestIsFront = front
         frameID &+= 1
         ageValue = ageValue == 0 ? ageMs : ageValue * 0.9 + ageMs * 0.1
         rateCount += 1
@@ -272,10 +391,11 @@ final class CameraController: NSObject, ObservableObject,
     }
 
     /// Freshest frame + a monotonically increasing id so consumers can skip
-    /// buffers they have already processed.
-    func grabLatest() -> (CVPixelBuffer, UInt64)? {
+    /// buffers they have already processed, + whether it came from the front
+    /// camera (its overlay must be flipped to match the mirrored preview).
+    func grabLatest() -> (CVPixelBuffer, UInt64, Bool)? {
         latestLock.lock(); defer { latestLock.unlock() }
         guard let pb = latest else { return nil }
-        return (pb, frameID)
+        return (pb, frameID, latestIsFront)
     }
 }

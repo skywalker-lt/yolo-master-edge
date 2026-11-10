@@ -46,12 +46,17 @@ extension BoxStyle {
 enum DetOverlay {
     /// `boxes: false` (segmentation masks-only mode) keeps the per-style labels but
     /// skips the box geometry - the mask carries the shape.
+    /// `mirrorWidth`: when set (the frame's width in frame pixels), every box is
+    /// flipped left-to-right inside the frame. The front camera's preview is a
+    /// mirror image while its frames are not, so its boxes must flip to land on
+    /// what the user sees. Only positions flip - label text stays readable.
     static func draw(_ ctx: GraphicsContext, _ dets: [Detection],
                      scale: CGFloat, ox: CGFloat, oy: CGFloat,
                      style: BoxStyle = .chip, names: [String] = cocoNames,
-                     boxes: Bool = true) {
+                     boxes: Bool = true, mirrorWidth: CGFloat? = nil) {
         for d in dets {
-            let r = CGRect(x: d.rect.minX * scale + ox, y: d.rect.minY * scale + oy,
+            let left = mirrorWidth.map { $0 - d.rect.maxX } ?? d.rect.minX
+            let r = CGRect(x: left * scale + ox, y: d.rect.minY * scale + oy,
                            width: d.rect.width * scale, height: d.rect.height * scale)
             let ci = ((d.cls % palette.count) + palette.count) % palette.count
             let col = palette[ci]

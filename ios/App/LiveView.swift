@@ -74,9 +74,16 @@ struct LiveView: View {
     @State private var lensExpanded = false   // zoom chip expanded to lens buttons
     @State private var lensCollapse: Task<Void, Never>?
     @State private var lensRect: CGRect = .zero   // global frame of the lens picker
+    @State private var frameMirrored = false      // `detections` came from a front-camera frame
+    @State private var switchingCamera = false    // a back/front flip is in flight
+    @State private var flipAngle: Double = 0      // preview turn about its vertical axis during a flip
+    @State private var flipCover: Double = 0      // black cover that hides the camera cut mid-flip
+    @State private var flipTurns: Double = 0      // half-turns of the flip button's arrows
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let haptic = UIImpactFeedbackGenerator(style: .medium)
     private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
     private let heavyHaptic = UIImpactFeedbackGenerator(style: .heavy)
+    private let firmHaptic = UIImpactFeedbackGenerator(style: .rigid)   // camera flip
     @State private var longPressFired = false  // swallow the tap that follows a long press
     @State private var loadingModel = false   // Detector init in flight (compile + unit load)
     @State private var running = false        // loop actually alive
@@ -129,6 +136,11 @@ struct LiveView: View {
                             .transition(.opacity)
                     }
                 }
+                // camera flip: preview and overlay turn together about the
+                // vertical axis; black behind them so the turning edges never
+                // show the system background
+                .rotation3DEffect(.degrees(flipAngle), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+                .background(Color.black)
                 .ignoresSafeArea()
                 .gesture(
                     MagnifyGesture()
@@ -141,6 +153,12 @@ struct LiveView: View {
             }
             Color.black
                 .opacity(shutterFlash ? 1 : 0)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+            // camera flip cover: fully black at the flip's midpoint, which is
+            // when the camera is swapped underneath
+            Color.black
+                .opacity(flipCover)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
             if loadingModel {
@@ -157,22 +175,30 @@ struct LiveView: View {
                 if camera.authorized, !models.isEmpty {
                     lensControl
                         .padding(.bottom, 6)
-                    Button { captureFrame() } label: {
-                        ZStack {
-                            Circle().stroke(.white.opacity(0.9), lineWidth: 3)
-                                .frame(width: 58, height: 58)
-                            if capturing {
-                                ProgressView()
-                                    .tint(.white)
-                                    .scaleEffect(1.4)
-                            } else {
-                                Circle().fill(.white)
-                                    .frame(width: 46, height: 46)
+                    // shutter centred, camera flip to its right (camera-app layout)
+                    ZStack {
+                        Button { captureFrame() } label: {
+                            ZStack {
+                                Circle().stroke(.white.opacity(0.9), lineWidth: 3)
+                                    .frame(width: 58, height: 58)
+                                if capturing {
+                                    ProgressView()
+                                        .tint(.white)
+                                        .scaleEffect(1.4)
+                                } else {
+                                    Circle().fill(.white)
+                                        .frame(width: 46, height: 46)
+                                }
                             }
                         }
+                        .buttonStyle(ShutterStyle())
+                        .disabled(capturing || switchingCamera)
+                        HStack {
+                            Spacer()
+                            flipButton
+                        }
+                        .padding(.trailing, 44)
                     }
-                    .buttonStyle(ShutterStyle())
-                    .disabled(capturing)
                     .padding(.bottom, 8)
                 }
                 if showHUD {
@@ -208,6 +234,7 @@ struct LiveView: View {
             haptic.prepare()
             lightHaptic.prepare()
             heavyHaptic.prepare()
+            firmHaptic.prepare()
             // first performChanges spins up the photo-library connection (seconds
             // on a cold start) - warm it here instead of on the first shutter tap
             if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .authorized {
@@ -307,6 +334,69 @@ struct LiveView: View {
         }
     }
 
+    /// Back/front camera toggle, to the right of the shutter. The two arrows
+    /// make a half-turn on every flip (the glyph looks the same after 180
+    /// degrees, so it always comes to rest upright).
+    private var flipButton: some View {
+        Button { flipCamera() } label: {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.primary)
+                .rotationEffect(.degrees(flipTurns * 180))
+                .frame(width: 46, height: 46)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(ShutterStyle())
+        .disabled(switchingCamera || capturing)
+        .accessibilityLabel(camera.isFront ? "Switch to the back camera"
+                                           : "Switch to the front camera")
+    }
+
+    /// Flip between the back and the front camera.
+    /// Feel: a firm (rigid, full-strength) haptic on the tap; the preview turns
+    /// away about its vertical axis while a black cover fades in; the camera is
+    /// swapped behind the cover; the new preview turns in from the opposite
+    /// side and a second firm haptic lands with it. With Reduce Motion on, the
+    /// turn is skipped and only the fade remains.
+    private func flipCamera() {
+        guard !switchingCamera, !capturing else { return }
+        switchingCamera = true
+        firmHaptic.impactOccurred(intensity: 1.0)
+        firmHaptic.prepare()
+        lensCollapse?.cancel()
+        let turnOut = reduceMotion ? 0.12 : 0.2
+        withAnimation(.easeIn(duration: turnOut)) {
+            if !reduceMotion { flipAngle = 90 }
+            flipCover = 1
+            lensExpanded = false
+            focusVisible = false
+        }
+        withAnimation(.spring(duration: 0.55, bounce: 0.3)) { flipTurns += 1 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + turnOut) {
+            // hidden now: wipe the outgoing camera's overlay and swap underneath
+            detections = []
+            maskImage = nil
+            camera.switchCamera { switched in
+                if switched { zoomBase = 1 }
+                // jump to the far side with animations off (invisible: edge-on
+                // and covered), then turn in on the next runloop pass so the
+                // jump is committed before the animated change starts
+                var jump = Transaction()
+                jump.disablesAnimations = true
+                withTransaction(jump) { if !reduceMotion { flipAngle = -90 } }
+                DispatchQueue.main.async {
+                    withAnimation(.spring(duration: 0.42, bounce: 0.2)) { flipAngle = 0 }
+                    withAnimation(.easeOut(duration: 0.3)) { flipCover = 0 }
+                    if switched {
+                        firmHaptic.impactOccurred(intensity: 0.8)
+                        firmHaptic.prepare()
+                    }
+                    switchingCamera = false
+                }
+            }
+        }
+    }
+
     private var controls: some View {
         HStack {
             Menu {
@@ -344,6 +434,7 @@ struct LiveView: View {
             }
             .buttonStyle(.bordered)
             .tint(camera.torchOn ? .yellow : nil)
+            .disabled(camera.isFront)   // the front camera has no torch
             Button {
                 withAnimation { showTuning.toggle() }
             } label: {
@@ -391,13 +482,24 @@ struct LiveView: View {
                 // mask composite is camera-frame-sized: same rect as the frame
                 // itself under aspect-fill, drawn beneath the boxes/labels
                 if let mask = maskImage {
-                    ctx.draw(Image(decorative: mask, scale: 1),
-                             in: CGRect(x: ox, y: oy, width: frameSize.width * scale,
-                                        height: frameSize.height * scale))
+                    let frameRect = CGRect(x: ox, y: oy, width: frameSize.width * scale,
+                                           height: frameSize.height * scale)
+                    if frameMirrored {
+                        // front camera: the preview is a mirror image, the frame
+                        // (and so the mask) is not - flip the mask about the
+                        // frame's vertical centre line: x -> minX + maxX - x
+                        var flipped = ctx
+                        flipped.translateBy(x: frameRect.minX + frameRect.maxX, y: 0)
+                        flipped.scaleBy(x: -1, y: 1)
+                        flipped.draw(Image(decorative: mask, scale: 1), in: frameRect)
+                    } else {
+                        ctx.draw(Image(decorative: mask, scale: 1), in: frameRect)
+                    }
                 }
                 DetOverlay.draw(ctx, detections, scale: scale, ox: ox, oy: oy, style: style,
                                 names: classNames,
-                                boxes: !(isSegModel && tuning.segOverlay == .masks))
+                                boxes: !(isSegModel && tuning.segOverlay == .masks),
+                                mirrorWidth: frameMirrored ? frameSize.width : nil)
             }
         }
         .allowsHitTesting(false)
@@ -424,7 +526,7 @@ struct LiveView: View {
             var uiHz = 0.0
             var lastFrameID: UInt64 = 0
             while !Task.isCancelled {
-                guard let (pb, fid) = cameraRef.grabLatest() else {
+                guard let (pb, fid, front) = cameraRef.grabLatest() else {
                     try? await Task.sleep(nanoseconds: 20_000_000); continue
                 }
                 if fid == lastFrameID {                    // stale frame - don't reprocess
@@ -476,6 +578,7 @@ struct LiveView: View {
                     guard running else { return }   // zombie frame after pause: drop
                     detections = dets
                     maskImage = mask
+                    frameMirrored = front           // travels WITH its detections
                     statPre = preMS
                     statInf = infMS
                     statDec = decMS

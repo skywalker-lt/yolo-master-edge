@@ -47,7 +47,9 @@ Before every upload:
 
 ## What the app does
 
-- **Live tab** - camera preview with detection overlay; model and compute-unit
+- **Live tab** - camera preview with detection overlay; back/front camera
+  toggle beside the shutter (the front preview is mirrored like a selfie view,
+  the frames the model sees and the saved photos are not); model and compute-unit
   (Auto / GPU / CPU) pickers; per-frame inference latency + FPS readout. Auto is
   Core ML's own placement (`MLComputeUnits.all`): it decides which parts of the
   model run on the Neural Engine, GPU and CPU. It was labelled "ANE" up to
