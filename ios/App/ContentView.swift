@@ -113,11 +113,13 @@ warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
 /// App info, compute safety, history reset, and custom model import.
 struct SettingsView: View {
-    // Links surfaced in the About card. Paper is a placeholder until the real
-    // publication URL is set.
+    // Links surfaced in the About card and the Privacy section.
     static let paperURL = "https://arxiv.org/pdf/2512.23273"
     static let modelRepoURL = "https://github.com/Tencent/YOLO-Master"
     static let appRepoURL = "https://github.com/skywalker-lt/yolo-master-edge"
+    /// The hosted privacy policy (PRIVACY.md at the repo root, default branch).
+    /// App Review wants this same URL in App Store Connect AND a link in the app.
+    static let privacyURL = "https://github.com/skywalker-lt/yolo-master-edge/blob/main/PRIVACY.md"
 
     @AppStorage("allowCPU") private var allowCPU = false
     @ObservedObject private var history = BenchHistory.shared
@@ -213,12 +215,23 @@ struct SettingsView: View {
         }
     }
 
+    /// "Version 1.1.0 (2)" read from the bundle, so the About card always shows
+    /// what was actually built (project.yml is the single source of truth).
+    private var versionText: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "-"
+        guard let build = info?["CFBundleVersion"] as? String, !build.isEmpty else {
+            return "Version \(short)"
+        }
+        return "Version \(short) (\(build))"
+    }
+
     private var header: some View {
         HStack(spacing: 14) {
             appMark
             VStack(alignment: .leading, spacing: 3) {
                 Text("YOLO-Master for iOS").font(.title3.bold())
-                Text("Version 1.1.0 Beta").font(.caption).foregroundStyle(.secondary)
+                Text(versionText).font(.caption).foregroundStyle(.secondary)
                 Text("On-device MoE object detection with Core ML.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -252,7 +265,7 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text("This is a research beta. The authors release it for research and personal experience only, and neither intend nor support any commercial use.")
+                    Text("The authors release this app for research and personal experience only, and neither intend nor support any commercial use.")
                         .font(.footnote.bold())
                         .fixedSize(horizontal: false, vertical: true)
 
@@ -366,6 +379,18 @@ struct SettingsView: View {
             } label: {
                 Label("Privacy & Security", systemImage: "lock.shield")
             }
+            // always visible (not inside the disclosure): App Review wants the
+            // policy reachable from within the app, not only on the store page
+            if let url = URL(string: Self.privacyURL) {
+                Link(destination: url) {
+                    HStack {
+                        Label("Privacy Policy", systemImage: "hand.raised")
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            }
         }
     }
 
@@ -388,7 +413,7 @@ struct SettingsView: View {
         } header: {
             Text("Compute")
         } footer: {
-            Text("CPU-only inference can crash Live and Photo on some models, so it is off by default. Enable to expose the CPU option in the Live and Photo compute pickers. The Bench tab always measures CPU.")
+            Text("CPU-only inference is the slowest and hottest path, and some models do not run reliably on it in Live and Photo, so it is off by default. Turn this on to add CPU to the Live and Photo compute pickers. The Bench tab always measures CPU.")
         }
     }
 
@@ -414,13 +439,7 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            HStack(spacing: 6) {
-                Text("Custom models")
-                Text("BETA").font(.caption2.bold())
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Color.orange.opacity(0.25), in: Capsule())
-                    .foregroundStyle(.orange)
-            }
+            Text("Custom models")
         } footer: {
             Text("Import a .mlpackage, .mlmodelc, or .mlmodel. Imported models appear in the Live, Photo, and Bench pickers the next time you open that tab. Compilation happens on first load and may take a moment.")
         }

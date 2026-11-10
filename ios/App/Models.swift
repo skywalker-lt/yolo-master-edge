@@ -27,7 +27,7 @@ struct BundledModel: Identifiable, Hashable {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     }
 
-    /// User-imported Core ML models (Settings > Custom models, Beta). Kept out of
+    /// User-imported Core ML models (Settings > Custom models). Kept out of
     /// the bundle so they survive app updates and can be deleted individually.
     static var customModelsDir: URL {
         cacheDir.appendingPathComponent("CustomModels", isDirectory: true)

@@ -2,11 +2,30 @@
 // macOS-style phase progress (Loading/iCloud -> Inference), per-image stage
 // averages + img/s dial. Slider retunes re-decode cached passes - no re-runs.
 import CoreML
+import CoreTransferable
 import Photos
 import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import YOLOMasterKit
+
+/// A picked photo: its encoded bytes plus the file name the picker hands over.
+/// Loading through a FILE representation is what exposes the original name
+/// (IMG_4231.HEIC) with no photo-library permission: the system picker runs
+/// out of process and the app only ever receives the items the user chose.
+private struct PickedPhoto: Transferable {
+    let data: Data
+    let fileName: String
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            // the received file is temporary - read it before returning
+            let data = try Data(contentsOf: received.file)
+            return PickedPhoto(data: data, fileName: received.file.lastPathComponent)
+        }
+    }
+}
 
 struct PhotoTestView: View {
     enum ViewMode { case gallery, pager }
@@ -301,8 +320,9 @@ struct PhotoTestView: View {
                 Image(systemName: "slider.horizontal.3")
             }
             .buttonStyle(.bordered)
-            PhotosPicker(selection: $picks, maxSelectionCount: 100, matching: .images,
-                         photoLibrary: .shared()) {
+            // no photoLibrary: argument - the picker runs out of process and the
+            // app needs no photo-library permission to receive the chosen items
+            PhotosPicker(selection: $picks, maxSelectionCount: 100, matching: .images) {
                 Image(systemName: "photo.badge.plus")
             }
             .buttonStyle(.borderedProminent)
@@ -351,26 +371,25 @@ struct PhotoTestView: View {
             var loaded: [CGImage] = []
             var names: [String] = []
             var types: [String] = []
-            // album-style names (IMG_xxxx) come from PHAssetResource via the
-            // picker's itemIdentifier (photoLibrary: .shared() enables it)
-            if PHPhotoLibrary.authorizationStatus(for: .readWrite) == .notDetermined {
-                _ = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
-            }
             for (idx, item) in items.enumerated() {
                 var name = "IMG_\(idx + 1)"
                 var type = item.supportedContentTypes.first?
                     .preferredFilenameExtension?.uppercased() ?? "-"
-                if let id = item.itemIdentifier {
-                    let assets = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil)
-                    if let asset = assets.firstObject,
-                       let res = PHAssetResource.assetResources(for: asset).first {
-                        let full = res.originalFilename          // e.g. IMG_4231.HEIC
-                        name = (full as NSString).deletingPathExtension
-                        let ext = (full as NSString).pathExtension
-                        if !ext.isEmpty { type = ext.uppercased() }
-                    }
+                // File representation first: it carries the picked file's own
+                // name (IMG_4231.HEIC) and needs NO photo-library permission.
+                // If the picker cannot hand an item over as a file, fall back
+                // to its plain bytes and keep the positional name.
+                let data: Data?
+                if let picked = try? await item.loadTransferable(type: PickedPhoto.self) {
+                    data = picked.data
+                    let full = picked.fileName
+                    let stem = (full as NSString).deletingPathExtension
+                    if !stem.isEmpty { name = stem }
+                    let ext = (full as NSString).pathExtension
+                    if !ext.isEmpty { type = ext.uppercased() }
+                } else {
+                    data = try? await item.loadTransferable(type: Data.self)
                 }
-                let data = try? await item.loadTransferable(type: Data.self)
                 if let data,
                    let src = CGImageSourceCreateWithData(data as CFData, nil),
                    let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [

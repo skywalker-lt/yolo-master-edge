@@ -31,20 +31,48 @@ targets:
         type: folder
         buildPhase: resources
         optional: true
+      # Privacy manifest: declares the one required-reason API the app uses
+      # (UserDefaults, through @AppStorage). NOT optional - App Store Connect
+      # rejects an upload without it, so xcodegen must fail if it goes missing.
+      - path: PrivacyInfo.xcprivacy
+        buildPhase: resources
     dependencies:
       - package: YOLOMaster
         product: YOLOMasterKit
+    # Debug builds stay lenient (AppIcon.icon and Models are optional above, so
+    # a fresh clone still generates and runs). A Release build is what gets
+    # archived and uploaded: it must carry the inputs that are NOT in git, and
+    # a silent build without them is how an icon-less app reaches App Store
+    # Connect. Fail loudly instead.
+    preBuildScripts:
+      - name: Release inputs guard
+        basedOnDependencyAnalysis: false
+        script: |
+          [ "${CONFIGURATION}" = "Release" ] || exit 0
+          fail=0
+          if [ ! -d "${SRCROOT}/AppIcon.icon" ]; then
+            echo "error: ios/AppIcon.icon is missing. A Release build needs the app icon (Icon Composer package); it is not in git."
+            fail=1
+          fi
+          if [ -z "$(find "${SRCROOT}/Models" -maxdepth 1 \( -name '*.mlpackage' -o -name '*.mlmodelc' \) -print 2>/dev/null | head -n 1)" ]; then
+            echo "error: ios/Models/ holds no Core ML model. See ios/README.md for where the models come from."
+            fail=1
+          fi
+          exit "${fail}"
     info:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: YOLO-Master
         CFBundleName: YOLO-Master
-        CFBundleShortVersionString: "1.1.0"   # marketing version (matches the About card)
-        CFBundleVersion: "1"                    # build number - MUST increment every upload
+        CFBundleShortVersionString: "1.1.0"   # marketing version (the About card reads it from the bundle)
+        CFBundleVersion: "2"                    # build number - MUST increment every upload (1 = the TestFlight build of 2026-08-26)
         ITSAppUsesNonExemptEncryption: false    # only HTTPS/system crypto -> skips the export-compliance prompt
         UILaunchScreen: {}
         NSCameraUsageDescription: "Live object detection uses the camera."
-        NSPhotoLibraryUsageDescription: "Reads photo names for the batch detection gallery."
+        # No NSPhotoLibraryUsageDescription on purpose: photos arrive through the
+        # system picker, which needs no library permission. Only saving needs one
+        # (add-only). Do not call PHPhotoLibrary with .readWrite without restoring
+        # that key - iOS kills the app on a permission request with no usage string.
         NSPhotoLibraryAddUsageDescription: "Saves captured detection frames to your photo library."
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
     settings:
@@ -53,4 +81,7 @@ targets:
         SWIFT_VERSION: "5.9"
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # the Release inputs guard above reads paths under SRCROOT that are not
+        # declared script inputs; a sandboxed script would see them as missing
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
         # set your team for device deploys:  DEVELOPMENT_TEAM: XXXXXXXXXX

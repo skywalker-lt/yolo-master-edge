@@ -44,4 +44,3 @@ We may update this policy. Any changes will be posted at this URL.
 
 - Project repository: https://github.com/skywalker-lt/yolo-master-edge
 - Report an issue: https://github.com/skywalker-lt/yolo-master-edge/issues
-- Contact email: <add your preferred contact email here>
