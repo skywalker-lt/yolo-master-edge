@@ -67,6 +67,7 @@ struct PhotoTestView: View {
     @State private var maskImages: [CGImage?] = []   // seg composites, per image
     @State private var segOverlay: SegOverlay = .both
     @State private var isSeg = false
+    @State private var nmsFree = false               // end2end model: IoU lever hidden
     @State private var classNames: [String] = cocoNames
     @State private var retuneGen = 0                 // drops stale async mask renders
     @State private var exporting = false
@@ -87,7 +88,7 @@ struct PhotoTestView: View {
                 content
                 if phase != .idle { progressBar }
                 if showTuning {
-                    TuningPanel(conf: $conf, iou: $iou, style: $style,
+                    TuningPanel(conf: $conf, iou: nmsFree ? nil : $iou, style: $style,
                                 hudVisible: $showHUD,
                                 segOverlay: isSeg ? $segOverlay : nil)
                         .padding(.horizontal, 8)
@@ -435,7 +436,10 @@ struct PhotoTestView: View {
         Task.detached {
             do {
                 let det = try Detector(modelURL: m.compiledURL(), compute: mode)
-                await MainActor.run { phase = .inferring }
+                // known as soon as the model is loaded: the IoU lever leaves (or returns)
+                // before the first result of this run is on screen
+                let free = det.end2end
+                await MainActor.run { phase = .inferring; nmsFree = free }
                 var raws: [Detector.RawOutput] = []
                 var allDets: [[Detection]] = []
                 var sumPre = 0.0, sumInf = 0.0, sumDec = 0.0, sumMask = 0.0
@@ -451,7 +455,7 @@ struct PhotoTestView: View {
                             let a = CFAbsoluteTimeGetCurrent()
                             let raw = try det.forward(img)
                             let b = CFAbsoluteTimeGetCurrent()
-                            let d = det.decode(raw, conf: confNow, iou: iouNow)
+                            let d = det.decode(raw, conf: confNow, iou: det.nmsThreshold(lever: iouNow))
                             let c = CFAbsoluteTimeGetCurrent()
                             // masks render for EVERY image, cached raw or not -
                             // beyond the cache cap they just stay at run-time
@@ -575,7 +579,7 @@ struct PhotoTestView: View {
     private func retune() {
         guard let det = lastDet, !lastRaws.isEmpty else { return }
         let confNow = Float(conf), iouNow = CGFloat(iou)
-        let newDets = lastRaws.map { det.decode($0, conf: confNow, iou: iouNow) }
+        let newDets = lastRaws.map { det.decode($0, conf: confNow, iou: det.nmsThreshold(lever: iouNow)) }
         results = newDets
         guard det.isSegment else { return }
         retuneGen += 1

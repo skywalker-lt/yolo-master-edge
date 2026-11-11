@@ -105,6 +105,15 @@ struct BundledModel: Identifiable, Hashable {
     }
 }
 
+extension Detector {
+    /// The IoU threshold to decode with, given the IoU lever's value. An NMS-free (end2end)
+    /// model already emits one row per object, so its lever is hidden (`TuningPanel`) - and a
+    /// hidden lever must not act either: the value left over from the previous model would
+    /// silently suppress boxes. Infinity lets every row through `Detector.nms` (no overlap
+    /// exceeds it), leaving only the confidence cut.
+    func nmsThreshold(lever: CGFloat) -> CGFloat { end2end ? .infinity : lever }
+}
+
 /// UI wrapper over the Kit's ComputeMode.
 ///
 /// `.auto` is Core ML's own placement (`MLComputeUnits.all`): Core ML decides

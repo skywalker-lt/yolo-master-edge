@@ -61,6 +61,7 @@ struct LiveView: View {
     @State private var statAgeMs: Double = 0    // frame age at delivery (pipeline latency)
     @State private var maskImage: CGImage?          // seg: per-frame composite overlay
     @State private var isSegModel = false           // set once the running Detector loads
+    @State private var isNMSFree = false            // ditto: end2end model, IoU lever hidden
     @State private var classNames: [String] = cocoNames
     @State private var showTuning = false
     @State private var showHUD = true
@@ -220,7 +221,7 @@ struct LiveView: View {
             VStack(spacing: 8) {
                 controls
                 if showTuning {
-                    TuningPanel(conf: $tuning.conf, iou: $tuning.iou, style: $style,
+                    TuningPanel(conf: $tuning.conf, iou: isNMSFree ? nil : $tuning.iou, style: $style,
                                 hudVisible: $showHUD,
                                 segOverlay: isSegModel ? $tuning.segOverlay : nil)
                         .padding(.horizontal)
@@ -519,8 +520,11 @@ struct LiveView: View {
                 return
             }
             let seg = det.isSegment
+            let nmsFree = det.end2end
             let names = det.classNames
-            await MainActor.run { isSegModel = seg; classNames = names; loadingModel = false }
+            await MainActor.run {
+                isSegModel = seg; isNMSFree = nmsFree; classNames = names; loadingModel = false
+            }
             var uiTicks = 0
             var uiWindowStart = CFAbsoluteTimeGetCurrent()
             var uiHz = 0.0
@@ -534,7 +538,8 @@ struct LiveView: View {
                 }
                 lastFrameID = fid
                 let confNow = Float(tuningRef.conf)
-                let iouNow = CGFloat(tuningRef.iou)
+                // an NMS-free model ignores the (hidden) IoU lever
+                let iouNow = det.nmsThreshold(lever: CGFloat(tuningRef.iou))
                 let t0 = CFAbsoluteTimeGetCurrent()
                 // autoreleasepool per frame: without it, autoreleased CoreML/CG
                 // transients accumulate on the cooperative thread until jetsam

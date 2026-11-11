@@ -406,9 +406,10 @@ struct CrossShape: Shape {
 }
 
 /// conf / IoU tuning sliders + box style - the detection knobs, one panel.
+/// `iou` is nil for an NMS-free model: no NMS runs on its output, so there is no lever to show.
 struct TuningPanel: View {
     @Binding var conf: Double
-    @Binding var iou: Double
+    var iou: Binding<Double>? = nil
     var style: Binding<BoxStyle>? = nil
     var hudVisible: Binding<Bool>? = nil
     var segOverlay: Binding<SegOverlay>? = nil   // non-nil only for seg models
@@ -439,10 +440,12 @@ struct TuningPanel: View {
                 Slider(value: $conf, in: 0.05...0.9)
                 Text(String(format: "%.2f", conf)).font(.caption.monospacedDigit()).frame(width: 34)
             }
-            HStack {
-                Text("IoU").font(.caption).frame(width: 34, alignment: .leading)
-                Slider(value: $iou, in: 0.1...0.9)
-                Text(String(format: "%.2f", iou)).font(.caption.monospacedDigit()).frame(width: 34)
+            if let iou {
+                HStack {
+                    Text("IoU").font(.caption).frame(width: 34, alignment: .leading)
+                    Slider(value: iou, in: 0.1...0.9)
+                    Text(String(format: "%.2f", iou.wrappedValue)).font(.caption.monospacedDigit()).frame(width: 34)
+                }
             }
         }
         .padding(10)

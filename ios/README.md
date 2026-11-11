@@ -65,6 +65,11 @@ Before every upload:
   COCO keypoints, limbs coloured by body part, joints the model is less than
   50% sure it can see left out. Saved photos carry the skeleton too. Decoding
   and the skeleton rules live in the Kit (`Detection.keypoints`, `PoseSkeleton`).
+- **NMS-free models** - a model in the end-to-end layout (`end2end=true` in its
+  metadata: YOLO26 / YOLOv10 exported without `--anchors`) emits one row per
+  object. The app runs no NMS on it and hides the IoU slider in both tabs; only
+  conf applies. A model exported with `--anchors` does go through NMS and keeps
+  the slider.
 - **Stock models** - a bundled model whose file name starts with `yolo`
   (yolo11n, yolo12n, yolo26n-pose) is listed under its own name, not as
   YOLO-Master-...
