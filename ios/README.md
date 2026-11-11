@@ -60,6 +60,14 @@ Before every upload:
   tabs render instance masks tinted by class, with a Masks / Boxes / Both
   switch in the tuning panel and a mask-compose stage bar in the HUD. Same
   decode + SGEMM mask math as macOS, shared through the Kit.
+- **Pose** - bundle a pose .mlpackage (e.g. `yolo26n-pose`, exported with
+  `--anchors`) and both tabs draw each person's skeleton over the box: the 17
+  COCO keypoints, limbs coloured by body part, joints the model is less than
+  50% sure it can see left out. Saved photos carry the skeleton too. Decoding
+  and the skeleton rules live in the Kit (`Detection.keypoints`, `PoseSkeleton`).
+- **Stock models** - a bundled model whose file name starts with `yolo`
+  (yolo11n, yolo12n, yolo26n-pose) is listed under its own name, not as
+  YOLO-Master-...
 - **Bench tab** - the criterion harness:
   - *cold run*: every bundled model x every compute unit, 50-iter median +
     p90 after warmup;

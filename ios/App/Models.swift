@@ -16,9 +16,13 @@ struct BundledModel: Identifiable, Hashable {
         }
         return id
     }
-    /// Canonical display name: every model is presented as YOLO-Master-<stem>
-    /// (existing YOLO-Master prefixes are normalized, never doubled).
-    var fullName: String { "YOLO-Master-" + stem }
+    /// A stock model from another family: its file name already says what it is (yolo11n,
+    /// yolo12n, yolo26n-pose, yolov8n ...) and had no YOLO-Master prefix to strip. Showing it
+    /// as "YOLO-Master-yolo11n" would put this project's name on someone else's model.
+    private var isStock: Bool { id.lowercased().hasPrefix("yolo") && stem == id }
+    /// Display name: YOLO-Master models are presented as YOLO-Master-<stem> (existing
+    /// YOLO-Master prefixes are normalized, never doubled); stock models keep their own name.
+    var fullName: String { isStock ? id : "YOLO-Master-" + stem }
     /// Collapsed menu-bar label: the first 6 characters of the model's own name
     /// (the stem - the shared YOLO-Master prefix carries no information there).
     var shortID: String { stem.count > 6 ? String(stem.prefix(6)) + "..." : stem }

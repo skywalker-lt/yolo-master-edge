@@ -11,8 +11,12 @@ Conversion runs on **Linux** (coremltools; only *prediction* needs macOS).
 
 ```bash
 conda create -n cmlexport python=3.11 -y
-pip install torch==2.5.1 torchvision==0.20.1 coremltools==9.0
+pip install torch==2.5.1 torchvision==0.20.1 coremltools==9.0 "numpy<2.3"
 ```
+
+`numpy 2.4` breaks coremltools 9.0's torch frontend the same way a newer torch does
+(`TypeError: only 0-dimensional arrays can be converted to Python scalars` on `aten::Int`): it
+no longer converts a one-element array to a scalar. Pin **numpy below 2.3**.
 
 Then install the `ultralytics` build that **matches the checkpoint** — mixing them fails at trace time:
 
@@ -35,6 +39,10 @@ python export_coreml.py --weights yolov12x.pt --imgsz 640 --out yolov12x.mlpacka
 
 # a LoRA-fine-tuned model: merge the trained adapters, then export
 python export_coreml.py --weights base.pt --merge-lora-dir lora_adapter/ --imgsz 640 --out ft.mlpackage
+
+# stock ultralytics models for the iOS app (iOS 17 target); a pose model is detected from its head
+python export_coreml.py --weights yolo11n.pt --imgsz 640 --target ios17 --out yolo11n.mlpackage
+python export_coreml.py --weights yolo26n-pose.pt --imgsz 640 --target ios17 --anchors --out yolo26n-pose.mlpackage
 ```
 
 ## What the script handles (and why)
@@ -43,6 +51,16 @@ python export_coreml.py --weights base.pt --merge-lora-dir lora_adapter/ --imgsz
   (`jit.freeze` + `run_frozen_optimizations`, fixing the dynamic `aten::Int`), and no-ops EsMoE's
   in-place aux-loss telemetry (fixing `aten::copy_` "No matching select or slice"). All no-ops for plain models.
 - **Segmentation** — detects the 2-output signature and writes `task=segment` + `proto`/`nm`.
+- **Pose** — a head with a `kpt_shape` writes `task=pose` + `kpt_shape` (`17,3` for COCO). The
+  keypoints ride in the detection tensor after the class scores, `[1, 4+nc+17*3, anchors]`,
+  already decoded by the head to input pixels (x, y) and a 0..1 visibility. Checked on
+  yolo26n-pose: decoding that tensor the way the app does reproduces `predict()` on COCO images
+  (same people, box IoU 0.95+, joints within 1-2 px).
+- **End-to-end heads (YOLO26, YOLOv10)** — `end2end` is always stamped (`true` / `false`), so the
+  app does not have to guess the layout from the shape. `--anchors` exports such a checkpoint
+  through its one-to-many head in the classic layout with NMS in the app: the app runs the
+  end-to-end layout on the CPU only (its in-graph top-k tail does not compile for the GPU), the
+  anchors layout on the GPU and the Neural Engine.
 - **Area attention (YOLOv12)** — an eager warmup bakes each layer's concrete spatial dims so the
   area reshapes fold to static shapes; `--yolov12-aattn` swaps in the qk+v AAttn the authors' weights expect.
 - **LoRA** — `--merge-lora-dir` merges trained adapters before export (a merged LoRA is a static graph;

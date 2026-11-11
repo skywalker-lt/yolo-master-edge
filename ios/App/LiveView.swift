@@ -679,12 +679,8 @@ struct LiveView: View {
                     await rearmShutter(t0)
                     return
                 }
-                let scaled = s == 1 ? dets : dets.map {
-                    Detection(cls: $0.cls, score: $0.score,
-                              rect: CGRect(x: $0.rect.minX * s, y: $0.rect.minY * s,
-                                           width: $0.rect.width * s, height: $0.rect.height * s),
-                              maskCoeffs: $0.maskCoeffs)
-                }
+                // boxes AND pose keypoints scale onto the larger still
+                let scaled = s == 1 ? dets : dets.map { $0.scaled(by: s) }
                 if drawMask, let mask,
                    let ctx = CGContext(data: nil, width: img.width, height: img.height,
                                        bitsPerComponent: 8, bytesPerRow: 0,

@@ -86,8 +86,11 @@ public final class Tracker {
         return (0..<Int(n)).map { i in
             let t = o[i]
             let rect = CGRect(x: CGFloat(t.box.x), y: CGFloat(t.box.y), width: CGFloat(t.box.width), height: CGFloat(t.box.height))
-            let coeffs = t.det_index >= 0 && Int(t.det_index) < dets.count ? dets[Int(t.det_index)].maskCoeffs : []
-            return Detection(cls: Int(t.class_id), score: t.conf, rect: rect, maskCoeffs: coeffs, trackId: Int(t.id))
+            // a track matched to an input detection keeps that detection's mask coefficients and
+            // pose keypoints; a coasting one has neither
+            let src = t.det_index >= 0 && Int(t.det_index) < dets.count ? dets[Int(t.det_index)] : nil
+            return Detection(cls: Int(t.class_id), score: t.conf, rect: rect, maskCoeffs: src?.maskCoeffs ?? [],
+                             trackId: Int(t.id), keypoints: src?.keypoints ?? [])
         }
     }
 }

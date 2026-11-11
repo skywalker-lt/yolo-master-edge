@@ -24,6 +24,76 @@ private func labelTextColor(on bg: CGColor) -> CGColor {
     return lum > 0.62 ? CGColor(gray: 0.05, alpha: 1) : CGColor(gray: 1, alpha: 1)
 }
 
+/// Pose rendering rules shared by every frontend (the baked `annotate` output below and the
+/// SwiftUI overlays in the apps): which keypoints form a limb, how each body part is coloured,
+/// and the visibility below which a keypoint is not drawn.
+public enum PoseSkeleton {
+    /// A keypoint the model is less than this sure it can see is not drawn, nor are its limbs.
+    public static let minConfidence: Float = 0.5
+
+    /// The COCO-17 skeleton (the ultralytics pose topology). `part`: 0 head, 1 arms, 2 torso, 3 legs.
+    /// Keypoint order: 0 nose, 1-2 eyes, 3-4 ears, 5-6 shoulders, 7-8 elbows, 9-10 wrists,
+    /// 11-12 hips, 13-14 knees, 15-16 ankles.
+    public static let coco17Limbs: [(a: Int, b: Int, part: Int)] = [
+        (15, 13, 3), (13, 11, 3), (16, 14, 3), (14, 12, 3),                              // legs
+        (11, 12, 2), (5, 11, 2), (6, 12, 2), (5, 6, 2),                                  // torso
+        (5, 7, 1), (6, 8, 1), (7, 9, 1), (8, 10, 1),                                     // arms
+        (1, 2, 0), (0, 1, 0), (0, 2, 0), (1, 3, 0), (2, 4, 0), (3, 5, 0), (4, 6, 0),     // head
+    ]
+
+    /// Limbs to draw for a pose of `count` keypoints: the COCO skeleton for 17, none otherwise
+    /// (a custom keypoint set has no known topology here, so only its joints are drawn).
+    public static func limbs(forKeypointCount count: Int) -> [(a: Int, b: Int, part: Int)] {
+        count == 17 ? coco17Limbs : []
+    }
+
+    /// Body part of keypoint `index` in a pose of `count` keypoints (0 when the layout is unknown).
+    public static func part(ofKeypoint index: Int, count: Int) -> Int {
+        guard count == 17 else { return 0 }
+        switch index {
+        case 0...4: return 0
+        case 5...10: return 1
+        default: return 3
+        }
+    }
+
+    /// Colour of a body part, from the class palette: head green, arms blue, torso purple, legs orange.
+    public static func color(part: Int) -> CGColor {
+        switch part {
+        case 0: return palette[2]
+        case 1: return palette[1]
+        case 2: return palette[4]
+        default: return palette[5]
+        }
+    }
+}
+
+/// One pose skeleton into a bottom-left-origin context of height `h` (keypoints are top-left origin).
+private func drawPose(_ ctx: CGContext, _ kpts: [Keypoint], imageHeight h: CGFloat, lineWidth lw: CGFloat) {
+    func pt(_ k: Keypoint) -> CGPoint { CGPoint(x: k.x, y: h - k.y) }
+    let minConf = PoseSkeleton.minConfidence
+    ctx.saveGState()
+    ctx.setLineCap(.round)
+    for limb in PoseSkeleton.limbs(forKeypointCount: kpts.count) {
+        let a = kpts[limb.a], b = kpts[limb.b]
+        guard a.conf >= minConf, b.conf >= minConf else { continue }
+        ctx.setStrokeColor(PoseSkeleton.color(part: limb.part))
+        ctx.setLineWidth(lw * 1.3)
+        ctx.move(to: pt(a)); ctx.addLine(to: pt(b)); ctx.strokePath()
+    }
+    let r = lw * 2
+    for (i, k) in kpts.enumerated() where k.conf >= minConf {
+        let c = pt(k)
+        let dot = CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
+        ctx.setFillColor(PoseSkeleton.color(part: PoseSkeleton.part(ofKeypoint: i, count: kpts.count)))
+        ctx.fillEllipse(in: dot)
+        ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.9))
+        ctx.setLineWidth(lw * 0.5)
+        ctx.strokeEllipse(in: dot)
+    }
+    ctx.restoreGState()
+}
+
 /// Per-track colour: the same (k*37, k*91, k*173) mod 255 rule as the C++ draw_tracks.
 func trackColor(_ id: Int) -> CGColor {
     CGColor(red: CGFloat((id * 37) % 255) / 255, green: CGFloat((id * 91) % 255) / 255,
@@ -52,9 +122,15 @@ public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
         ctx.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))  // proto crop stretched to full image, upright
         ctx.restoreGState()
     }
-    if !drawBoxes && label == .off { return ctx.makeImage() }   // masks-only, no labels
-    ctx.setLineJoin(.round); ctx.setLineCap(.round)
     let lw = max(CGFloat(2), CGFloat(w) / 640)
+    // pose skeletons go on last, over the boxes and labels (no-op for detections without keypoints)
+    func drawPoses() {
+        for d in dets where !d.keypoints.isEmpty {
+            drawPose(ctx, d.keypoints, imageHeight: CGFloat(h), lineWidth: lw)
+        }
+    }
+    if !drawBoxes && label == .off { drawPoses(); return ctx.makeImage() }   // masks-only, no labels
+    ctx.setLineJoin(.round); ctx.setLineCap(.round)
     let baseFont = max(CGFloat(12), CGFloat(w) / 95)
     for d in dets {
         // tracked detections are coloured by id (the C++ draw_tracks palette rule), so one object
@@ -110,5 +186,6 @@ public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
         ctx.textPosition = CGPoint(x: chip.minX + padX, y: chipY + (chipH - fontSize) / 2 + fontSize * 0.2)
         CTLineDraw(line, ctx)
     }
+    drawPoses()
     return ctx.makeImage()
 }

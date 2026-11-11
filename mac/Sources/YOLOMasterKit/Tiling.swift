@@ -199,15 +199,17 @@ extension Detector {
         // coeffs are kept only when the caller asked for masks (keepGlobalMasks).
         var pool: [Detection] = config.keepGlobalMasks && isSegment
             ? globalCands
-            : globalCands.map { Detection(cls: $0.cls, score: $0.score, rect: $0.rect) }
+            : globalCands.map { Detection(cls: $0.cls, score: $0.score, rect: $0.rect, keypoints: $0.keypoints) }
         for t in selected {
             guard let crop = image.cropping(to: CGRect(x: t.x, y: t.y, width: t.w, height: t.h))
             else { continue }
             let raw = try forwardPadded(crop, tileSize: tile)
             totalMs += raw.inferMs
             for d in candidates(raw, confFloor: confFloor) {
-                pool.append(Detection(cls: d.cls, score: d.score,
-                                      rect: d.rect.offsetBy(dx: CGFloat(t.x), dy: CGFloat(t.y))))
+                // mask coefficients stripped; pose keypoints are plain coordinates and move
+                // into the full image with the box
+                pool.append(Detection(cls: d.cls, score: d.score, rect: d.rect, keypoints: d.keypoints)
+                    .offsetBy(dx: CGFloat(t.x), dy: CGFloat(t.y)))
             }
         }
         pool.sort { $0.score > $1.score }   // nms() requires score-desc input; concat isn't sorted

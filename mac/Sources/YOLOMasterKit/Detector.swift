@@ -33,8 +33,18 @@ import Accelerate   // batched mask math: SGEMM (AMX) + vectorized sigmoid
     return Float32(bitPattern: bits)
 }
 
+/// One body keypoint of a pose detection, in ORIGINAL-image pixel coordinates (top-left origin).
+/// `conf` is the model's visibility confidence (1 when the model carries x, y only).
+public struct Keypoint: Sendable {
+    public let x: CGFloat
+    public let y: CGFloat
+    public let conf: Float
+    public init(x: CGFloat, y: CGFloat, conf: Float) { self.x = x; self.y = y; self.conf = conf }
+}
+
 /// A single detection in ORIGINAL-image pixel coordinates (top-left origin).
 /// `maskCoeffs` is non-empty only for segmentation models (nm mask-prototype coefficients).
+/// `keypoints` is non-empty only for pose models (kpt_shape[0] points, in the model's order).
 public struct Detection: Sendable {
     public let cls: Int
     public let score: Float
@@ -42,11 +52,30 @@ public struct Detection: Sendable {
     public let maskCoeffs: [Float]
     /// Track id when the detection came out of a `Tracker` (video / camera with tracking on); nil otherwise.
     public let trackId: Int?
-    public init(cls: Int, score: Float, rect: CGRect, maskCoeffs: [Float] = [], trackId: Int? = nil) {
+    public let keypoints: [Keypoint]
+    public init(cls: Int, score: Float, rect: CGRect, maskCoeffs: [Float] = [], trackId: Int? = nil,
+                keypoints: [Keypoint] = []) {
         self.cls = cls; self.score = score; self.rect = rect; self.maskCoeffs = maskCoeffs; self.trackId = trackId
+        self.keypoints = keypoints
     }
     /// The same detection tagged with a track id.
-    public func withTrackId(_ id: Int?) -> Detection { Detection(cls: cls, score: score, rect: rect, maskCoeffs: maskCoeffs, trackId: id) }
+    public func withTrackId(_ id: Int?) -> Detection {
+        Detection(cls: cls, score: score, rect: rect, maskCoeffs: maskCoeffs, trackId: id, keypoints: keypoints)
+    }
+    /// The same detection with its box and keypoints multiplied by `s` (a frame's detections
+    /// laid over a larger or smaller copy of that frame). Mask coefficients are unchanged.
+    public func scaled(by s: CGFloat) -> Detection {
+        Detection(cls: cls, score: score,
+                  rect: CGRect(x: rect.minX * s, y: rect.minY * s, width: rect.width * s, height: rect.height * s),
+                  maskCoeffs: maskCoeffs, trackId: trackId,
+                  keypoints: keypoints.map { Keypoint(x: $0.x * s, y: $0.y * s, conf: $0.conf) })
+    }
+    /// The same detection moved by (dx, dy): a tile's detections placed in the full image.
+    public func offsetBy(dx: CGFloat, dy: CGFloat) -> Detection {
+        Detection(cls: cls, score: score, rect: rect.offsetBy(dx: dx, dy: dy),
+                  maskCoeffs: maskCoeffs, trackId: trackId,
+                  keypoints: keypoints.map { Keypoint(x: $0.x + dx, y: $0.y + dy, conf: $0.conf) })
+    }
 }
 
 /// A rendered instance mask (segmentation): a proto-resolution tinted RGBA image, the unit
@@ -123,6 +152,13 @@ public final class Detector {
 
     public let isSegment: Bool
     public let nm: Int   // mask-coeff count (segmentation); 0 for detection
+    /// Pose model: every detection carries `keypointCount` keypoints of `keypointDims` values each
+    /// (2 = x, y; 3 = x, y, visibility). The detection tensor is [1, 4+nc+count*dims, anchors]
+    /// (or [1, max_det, 6+count*dims] end2end), keypoints already decoded to letterboxed pixels.
+    public let isPose: Bool
+    public let keypointCount: Int
+    public let keypointDims: Int
+    private var nk: Int { keypointCount * keypointDims }   // keypoint channels after the classes
     public let end2end: Bool   // NMS-free head: output [1, max_det, 6] instead of [1, 4+nc, anchors]
     public let modelURL: URL
     /// The exporter's creator-defined metadata (names, imgsz, task, precision when stamped, ...).
@@ -151,13 +187,25 @@ public final class Detector {
         let metaNames = meta["names"]?.split(separator: ",").map(String.init)
             ?? ["pedestrian", "people", "bicycle", "car", "van", "truck", "tricycle", "awning-tricycle", "bus", "motor"]
         let outName = meta["output"] ?? md.outputDescriptionsByName.keys.sorted().first ?? "output0"
+        // pose: the exporter stamps task=pose and kpt_shape="count,dims" (COCO: 17,3). The
+        // keypoint values follow the class scores in the detection tensor, already decoded to
+        // letterboxed-input pixels (x, y) and a sigmoid visibility.
+        let poseTask = (meta["task"] ?? "detect") == "pose"
+        let kptShape: (count: Int, dims: Int) = {
+            guard poseTask else { return (0, 0) }
+            let parts = (meta["kpt_shape"] ?? "").split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            if parts.count == 2, parts[0] > 0, parts[1] == 2 || parts[1] == 3 { return (parts[0], parts[1]) }
+            return (17, 3)   // COCO keypoints, the ultralytics pose default
+        }()
+        let nkResolved = kptShape.count * kptShape.dims
         // end2end (NMS-free) detect head: output is [1, max_det, 6] rows of
-        // [x1,y1,x2,y2,score,cls] in letterboxed-input pixels. The exporter stamps an
-        // `end2end` metadata key (authoritative); the shape heuristic mirrors the C++
-        // runtime's looks_end2end (dim2 == 6 && dim1 >= 32) for models without it.
+        // [x1,y1,x2,y2,score,cls] in letterboxed-input pixels (a pose head appends its
+        // keypoint values to every row). The exporter stamps an `end2end` metadata key
+        // (authoritative); the shape heuristic mirrors the C++ runtime's looks_end2end
+        // (dim2 == 6 && dim1 >= 32) for models without it.
         let e2eFromShape: Bool = {
             if let sh = md.outputDescriptionsByName[outName]?.multiArrayConstraint?.shape,
-               sh.count == 3, sh[2].intValue == 6, sh[1].intValue >= 32 { return true }
+               sh.count == 3, sh[2].intValue == 6 + nkResolved, sh[1].intValue >= 32 { return true }
             return false
         }()
         let e2eResolved = meta["end2end"].map { $0 == "true" } ?? e2eFromShape
@@ -178,9 +226,11 @@ public final class Detector {
             return 640
         }()
 
-        // segmentation: detection tensor is [1, 4+nc+nm, anchors] -> nc from names, plus a proto output
+        // segmentation: detection tensor is [1, 4+nc+nm, anchors] -> nc from names, plus a proto output.
+        // pose: [1, 4+nc+keypoint values, anchors] -> nc from names as well (dim1 - 4 would count
+        // the keypoint channels as classes).
         let segTask = (meta["task"] ?? "detect") == "segment"
-        let ncFinal = segTask ? metaNames.count : ncResolved
+        let ncFinal = (segTask || poseTask) ? metaNames.count : ncResolved
 
         // MPSGraph aborts compiling end2end mixture graphs on GPU (a hard assertion at
         // the first predict, not catchable in-process), and CPU is orders of magnitude
@@ -222,6 +272,9 @@ public final class Detector {
         self.protoName = protoResolved
         self.isSegment = segTask
         self.nm = nmResolved
+        self.isPose = poseTask
+        self.keypointCount = kptShape.count
+        self.keypointDims = kptShape.dims
         self.nc = ncFinal
         self.classNames = metaNames.count == ncFinal ? metaNames : (0..<ncFinal).map { "class\($0)" }
         self.imgsz = szResolved
@@ -232,6 +285,7 @@ public final class Detector {
     public var summary: String {
         "input=\(inputName) [\(imgsz)x\(imgsz)] output=\(outputName) classes=\(nc) compute=\(computeMode.rawValue)"
             + (end2end ? " layout=end2end" : "")
+            + (isPose ? " task=pose keypoints=\(keypointCount)x\(keypointDims)" : "")
     }
 
     // ---------- preprocess ----------
@@ -298,12 +352,13 @@ public final class Detector {
 
     // ---------- decode + NMS (split so forward is cached once, tuning stays cheap) ----------
     /// Rows the decoder will read down dim 1 (anchor layout) or across dim 2 (end2end rows).
-    /// `nc` and `nm` come from the package's own metadata, so a package whose names list or `nm`
-    /// stamp exceeds its head would otherwise send the raw-pointer scan past the tensor.
+    /// `nc`, `nm` and the keypoint shape come from the package's own metadata, so a package whose
+    /// names list, `nm` or `kpt_shape` stamp exceeds its head would otherwise send the raw-pointer
+    /// scan past the tensor.
     private func outputFits(_ y: MLMultiArray) -> Bool {
         guard y.shape.count == 3 else { return false }
-        if end2end { return y.shape[2].intValue >= 6 }
-        return y.shape[1].intValue >= 4 + nc + nm
+        if end2end { return y.shape[2].intValue >= 6 + nk }
+        return y.shape[1].intValue >= 4 + nc + nm + nk
     }
     private func validatedOutput(_ out: MLFeatureProvider) throws -> MLMultiArray {
         guard let y = out.featureValue(for: outputName)?.multiArrayValue, outputFits(y) else { throw DetectorError.badOutput }
@@ -320,8 +375,25 @@ public final class Detector {
         let scaleX = raw.scaleX, scaleY = raw.scaleY, padX = raw.padX, padY = raw.padY
         let origW = raw.origW, origH = raw.origH
         var dets: [Detection] = []
+        // pose: `value(i)` reads one detection's i-th keypoint channel (x, y[, visibility] per
+        // point, letterboxed-input pixels, already decoded by the head); map the points back to
+        // original-image pixels like the box. NOT clamped to the image: a joint estimated just
+        // outside the frame is still the model's answer, and clamping would bend the limb.
+        let kCount = keypointCount, kDims = keypointDims
+        func decodeKeypoints(_ value: (Int) -> Float32) -> [Keypoint] {
+            guard kCount > 0 else { return [] }
+            var pts: [Keypoint] = []
+            pts.reserveCapacity(kCount)
+            for k in 0..<kCount {
+                let px = (CGFloat(value(k * kDims)) - padX) / scaleX
+                let py = (CGFloat(value(k * kDims + 1)) - padY) / scaleY
+                pts.append(Keypoint(x: px, y: py, conf: kDims == 3 ? value(k * kDims + 2) : 1))
+            }
+            return pts
+        }
         // end2end layout [1, max_det, 6]: rows [x1,y1,x2,y2,score,cls] in letterboxed px,
-        // already one-to-one (no NMS needed downstream, though it stays harmless).
+        // already one-to-one (no NMS needed downstream, though it stays harmless). A pose head
+        // appends its keypoint values after the class column.
         // Same accessor convention as decodeAnchors: at(dim1Index, dim2Index).
         func decodeEndToEnd(_ at: (Int, Int) -> Float32) {
             let n = y.shape[1].intValue
@@ -337,7 +409,8 @@ public final class Detector {
                 if x2 > x1 && y2 > y1 {
                     dets.append(Detection(cls: c, score: s,
                                           rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1),
-                                          maskCoeffs: []))
+                                          maskCoeffs: [],
+                                          keypoints: decodeKeypoints { at(r, 6 + $0) }))
                 }
             }
         }
@@ -384,9 +457,13 @@ public final class Detector {
                                 let base = yp + (4 + nc) * s1 + a
                                 for k in 0..<nm { coeffs.append(base[k * s1]) }
                             }
+                            // pose: the keypoint channels follow the classes (and any mask
+                            // coefficients) down the same anchor column
+                            let kbase = yp + (4 + nc + nm) * s1 + a
                             dets.append(Detection(cls: c, score: s,
                                                   rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1),
-                                                  maskCoeffs: coeffs))
+                                                  maskCoeffs: coeffs,
+                                                  keypoints: decodeKeypoints { kbase[$0 * s1] }))
                         }
                     }
                 }
@@ -432,7 +509,8 @@ public final class Detector {
                         }
                         dets.append(Detection(cls: c, score: s,
                                               rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1),
-                                              maskCoeffs: coeffs))
+                                              maskCoeffs: coeffs,
+                                              keypoints: decodeKeypoints { at(4 + nc + nm + $0, a) }))
                     }
                 }
             }
@@ -496,7 +574,7 @@ public final class Detector {
             let x2 = CGFloat(ax2 * inv), y2 = CGFloat(ay2 * inv)
             return Detection(cls: k.cls, score: k.score,
                              rect: CGRect(x: x1, y: y1, width: max(0, x2 - x1), height: max(0, y2 - y1)),
-                             maskCoeffs: k.maskCoeffs)
+                             maskCoeffs: k.maskCoeffs, keypoints: k.keypoints)
         }
     }
 

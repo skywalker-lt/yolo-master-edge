@@ -123,6 +123,38 @@ enum DetOverlay {
                 ctx.draw(txt, at: CGPoint(x: r.minX + 2, y: max(r.minY - 8, 5)), anchor: .leading)
             }
         }
+        // pose skeletons last, over every box and label (no-op without keypoints)
+        for d in dets where !d.keypoints.isEmpty {
+            drawPose(ctx, d.keypoints, scale: scale, ox: ox, oy: oy, mirrorWidth: mirrorWidth)
+        }
+    }
+
+    /// One pose skeleton: limbs coloured by body part, then the joints on top. The topology,
+    /// colours and visibility threshold are the Kit's (`PoseSkeleton`), so the live overlay and
+    /// a saved photo draw the same thing. `mirrorWidth` flips x like the boxes (front camera).
+    private static func drawPose(_ ctx: GraphicsContext, _ kpts: [Keypoint],
+                                 scale: CGFloat, ox: CGFloat, oy: CGFloat, mirrorWidth: CGFloat?) {
+        func pt(_ k: Keypoint) -> CGPoint {
+            let x = mirrorWidth.map { $0 - k.x } ?? k.x
+            return CGPoint(x: x * scale + ox, y: k.y * scale + oy)
+        }
+        let minConf = PoseSkeleton.minConfidence
+        for limb in PoseSkeleton.limbs(forKeypointCount: kpts.count) {
+            let a = kpts[limb.a], b = kpts[limb.b]
+            guard a.conf >= minConf, b.conf >= minConf else { continue }
+            var line = Path()
+            line.move(to: pt(a))
+            line.addLine(to: pt(b))
+            ctx.stroke(line, with: .color(Color(cgColor: PoseSkeleton.color(part: limb.part))),
+                       style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+        }
+        for (i, k) in kpts.enumerated() where k.conf >= minConf {
+            let c = pt(k)
+            let dot = Path(ellipseIn: CGRect(x: c.x - 3.5, y: c.y - 3.5, width: 7, height: 7))
+            let part = PoseSkeleton.part(ofKeypoint: i, count: kpts.count)
+            ctx.fill(dot, with: .color(Color(cgColor: PoseSkeleton.color(part: part))))
+            ctx.stroke(dot, with: .color(.white.opacity(0.9)), lineWidth: 1)
+        }
     }
 
     private static func chipLabel(_ ctx: GraphicsContext, _ title: String,
