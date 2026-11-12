@@ -413,30 +413,44 @@ struct CrossShape: Shape {
 /// menu the pose icon came out visibly smaller than the others - and a menu ignores the size
 /// modifiers of an `Image(systemName:)`, it only shows a bitmap at the size it has. So each
 /// symbol is rendered once, the box its ink occupies is measured, and that ink is scaled to
-/// the same extent (the longer of its width and height) and centred in the same square.
+/// a set extent (the longer of its width and height) and centred in the same square.
 /// The result is a template image: it takes the text colour like a symbol does.
+///
+/// Equal extents do not look equal: the viewfinder is four corners around an empty square and
+/// reads large, the figure is mostly thin limbs and reads small. So the extents are tuned by
+/// eye per kind (`extent`): the figure fills the square, the viewfinder is drawn smaller.
 enum ModelIcon {
-    /// The square every icon is drawn into, and the extent its ink is scaled to, in points.
+    /// The square every icon is drawn into, in points.
     private static let side: CGFloat = 24
-    private static let ink: CGFloat = 21
     private static var cache: [String: UIImage] = [:]   // by symbol name; main thread only
 
-    /// The icon of `kind` at the common size (the plain symbol if it cannot be drawn).
+    /// The extent, in points, the ink of `kind`'s icon is scaled to. Seen on device at one
+    /// common extent (21): the pose figure looked too small and the detection viewfinder too
+    /// large beside the other two.
+    private static func extent(_ kind: ModelKind) -> CGFloat {
+        switch kind {
+        case .detection: return 17
+        case .pose: return 24
+        case .segmentation, .wholeBody: return 21
+        }
+    }
+
+    /// The icon of `kind` at its tuned size (the plain symbol if it cannot be drawn).
     static func image(_ kind: ModelKind) -> Image {
-        if let drawn = normalized(kind.icon) {
+        if let drawn = normalized(kind.icon, ink: extent(kind)) {
             return Image(uiImage: drawn).renderingMode(.template)
         }
         return Image(systemName: kind.icon)
     }
 
-    private static func normalized(_ symbol: String) -> UIImage? {
+    private static func normalized(_ symbol: String, ink: CGFloat) -> UIImage? {
         if let hit = cache[symbol] { return hit }
-        guard let drawn = draw(symbol) else { return nil }
+        guard let drawn = draw(symbol, ink: ink) else { return nil }
         cache[symbol] = drawn
         return drawn
     }
 
-    private static func draw(_ symbol: String) -> UIImage? {
+    private static func draw(_ symbol: String, ink: CGFloat) -> UIImage? {
         // 1. the symbol, large and black, into a bitmap that can be read back
         let config = UIImage.SymbolConfiguration(pointSize: 96, weight: .regular)
         guard let glyph = UIImage(systemName: symbol, withConfiguration: config)?
@@ -499,15 +513,58 @@ struct ModelChip: View {
     }
 }
 
+/// Side margin of the bars that float over the camera in Live - the top controls, the tuning
+/// panel, the stats HUD - so that all three are exactly as wide as the tab bar under them.
+/// 21 pt is the margin of the system's floating tab bar, measured on an iPhone Air (iOS 26).
+let barSideInset: CGFloat = 21
+
+/// A row that looks like the segmented pickers around it but lets any number of its segments
+/// be on at once (a `Picker` selects exactly one). Each segment is a switch: a white capsule
+/// behind the ones that are on, plain text for the rest, all the same width.
+struct MultiSegmented: View {
+    let items: [(String, Binding<Bool>)]   // title, on/off
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(items.indices, id: \.self) { i in
+                segment(items[i].0, items[i].1)
+            }
+        }
+        .padding(2)
+        .background(Color(.tertiarySystemFill), in: Capsule())
+    }
+
+    private func segment(_ title: String, _ isOn: Binding<Bool>) -> some View {
+        let on = isOn.wrappedValue
+        return Button {
+            withAnimation(.easeOut(duration: 0.15)) { isOn.wrappedValue.toggle() }
+        } label: {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+                .foregroundStyle(on ? Color.black : Color.primary)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .background(on ? Color.white : Color.clear, in: Capsule())
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
 /// conf / IoU tuning sliders + box style - the detection knobs, one panel.
 /// `iou` is nil for an NMS-free model: no NMS runs on its output, so there is no lever to show.
 ///
 /// A pose model adds its own overlay controls (`pose` non-nil): skeleton / boxes / both, the
 /// keypoint visibility to draw from ("kpt") and the joint and limb size. A whole-body model
-/// (`wholeBody`, the 133-keypoint layout) also gets one switch per group - body, feet, face,
-/// hands - because 68 face points and 42 hand points are often more than the picture needs,
-/// and a "Hand skeleton" switch that takes the finger bones away and leaves the hand points.
-/// The skeleton controls are hidden in boxes mode, where no skeleton is drawn.
+/// (`wholeBody`, the 133-keypoint layout) also gets a Body / Feet / Face / Hands row - it
+/// looks like the pickers above it but any number of groups can be on (`MultiSegmented`),
+/// because 68 face points and 42 hand points are often more than the picture needs - and a
+/// "Hand skeleton" switch that takes the finger bones away and leaves the hand points.
+/// The skeleton controls are hidden in boxes mode, where no skeleton is drawn, and the box
+/// styles are hidden in skeleton mode, where no box is drawn.
+/// Order: the pickers, then the switches together on one line (hand skeleton, stats HUD),
+/// then the sliders.
 struct TuningPanel: View {
     @Binding var conf: Double
     var iou: Binding<Double>? = nil
@@ -517,20 +574,18 @@ struct TuningPanel: View {
     var pose: Binding<PoseDisplay>? = nil        // non-nil only for pose models
     var wholeBody = false                        // the pose model reports 133 keypoints
 
-    private func partToggle(_ name: String, _ on: Binding<Bool>) -> some View {
-        Toggle(name, isOn: on)
-            .toggleStyle(.button)
-            .font(.caption)
-            .frame(maxWidth: .infinity)
+    /// A pose model showing skeletons only: nothing the box styles would change is drawn.
+    private var skeletonOnly: Bool { pose?.wrappedValue.overlay == .skeleton }
+
+    /// The finger-bones switch: offered for a whole-body model while its hands are drawn.
+    private var handLines: Binding<Bool>? {
+        guard let pose, wholeBody, pose.wrappedValue.drawsSkeleton, pose.wrappedValue.hands else { return nil }
+        return pose.handLines
     }
 
     var body: some View {
-        VStack(spacing: 6) {
-            if let hudVisible {
-                Toggle("Show stats HUD", isOn: hudVisible)
-                    .font(.caption)
-            }
-            if let style {
+        VStack(spacing: 8) {
+            if let style, !skeletonOnly {
                 Picker("Style", selection: style) {
                     ForEach(BoxStyle.allCases) { s in
                         Text(s.label).lineLimit(1).fixedSize().tag(s)
@@ -554,18 +609,25 @@ struct TuningPanel: View {
                 }
                 .pickerStyle(.segmented)
                 if wholeBody && pose.wrappedValue.drawsSkeleton {
-                    HStack(spacing: 6) {
-                        partToggle("Body", pose.body)
-                        partToggle("Feet", pose.feet)
-                        partToggle("Face", pose.face)
-                        partToggle("Hands", pose.hands)
+                    MultiSegmented(items: [("Body", pose.body), ("Feet", pose.feet),
+                                           ("Face", pose.face), ("Hands", pose.hands)])
+                }
+            }
+            // the switches together, one line: hand skeleton (off: the finger bones go, the
+            // 21 points of each hand stay) on the left when it applies, the stats HUD on the
+            // right - its switch stays at the panel's edge whether or not the other is shown
+            if handLines != nil || hudVisible != nil {
+                HStack(spacing: 18) {
+                    if let handLines {
+                        Toggle("Hand skeleton", isOn: handLines)
                     }
-                    if pose.wrappedValue.hands {
-                        // off: the finger bones go, the 21 points of each hand stay
-                        Toggle("Hand skeleton", isOn: pose.handLines)
-                            .font(.caption)
+                    if let hudVisible {
+                        Toggle("Show stats HUD", isOn: hudVisible)
                     }
                 }
+                .font(.caption)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
             }
             HStack {
                 Text("conf").font(.caption).frame(width: 34, alignment: .leading)

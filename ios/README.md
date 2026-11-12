@@ -69,12 +69,16 @@ Before every upload:
   bones and the 68 face points (those at half size).
   With a pose model running, the tuning panel adds pose controls in both tabs:
   a Skeleton / Boxes / Both switch (Skeleton drops the person boxes and their
-  labels), a `kpt` slider for the keypoint visibility to draw from (0.50 is
-  the model's own cut-off) and a `size` slider for joints and limbs. A
-  whole-body model also gets Body / Feet / Face / Hands switches, one per
-  keypoint group, and a Hand skeleton switch that removes the finger bones and
-  keeps the hand points. Saved photos and exported images follow the same settings
-  (the Kit's `PoseDisplay`).
+  labels, and hides the box-style row, which has nothing to style then), a
+  `kpt` slider for the keypoint visibility to draw from (0.50 is the model's
+  own cut-off) and a `size` slider for joints and limbs. A whole-body model
+  also gets a Body / Feet / Face / Hands row - it looks like the segmented
+  pickers above it, but any number of groups can be on - and a Hand skeleton
+  switch that removes the finger bones and keeps the hand points; that switch
+  shares a line with Show stats HUD. Saved photos and exported images follow
+  the same settings (the Kit's `PoseDisplay`).
+  In Live the top controls, the tuning panel and the stats HUD are all as
+  wide as the tab bar (`barSideInset`).
 - **Top-down pose (DWPose)** - `dwpose-t-wholebody` (exported with
   `coreml_export/export_dwpose.py`) does not find people itself. The Kit runs a
   detection model on the frame first and the pose model once per person (up to
@@ -101,8 +105,9 @@ Before every upload:
   the model's type as an icon beside its name: a viewfinder for detection, a
   filled shape in a dashed box for segmentation, a figure with its arms out
   for pose, a hand for whole-body pose. SF Symbols are not drawn to a common
-  size (a figure is a narrow glyph, a square fills its box), so the app scales
-  the four to one size itself (`ModelIcon`). The
+  size (a figure is a narrow glyph, a square fills its box), so the app draws
+  the four itself at sizes tuned by eye (`ModelIcon`): the figure fills the
+  icon square, the viewfinder is drawn smaller. The
   type is read from the `metadata.json` Core ML's compiler stores in the
   compiled model (the exporter's `task` and `kpt_shape`), so no model is
   loaded for it; a package that has not been compiled yet is judged by its

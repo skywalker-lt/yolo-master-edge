@@ -203,7 +203,9 @@ struct LiveView: View {
                         }
                         .padding(.trailing, 44)
                     }
-                    .padding(.bottom, 8)
+                    // with the stats HUD hidden nothing stands between the shutter and the
+                    // tab bar: give it the room the HUD's own margin otherwise provides
+                    .padding(.bottom, showHUD ? 8 : 30)
                 }
                 if showHUD {
                     StatsHUD(fps: statHz, pre: statPre, inf: statInf,
@@ -214,7 +216,9 @@ struct LiveView: View {
                                     ("loop", String(format: "%.1f fps", statLoopHz)),
                                     ("frame age", String(format: "%.0f ms", statAgeMs))]
                                  : [],
+                             fullWidth: true,
                              mask: isSegModel ? statMask : nil)
+                        .padding(.horizontal, barSideInset)   // as wide as the tab bar
                         .padding(.bottom, 20)
                 }
             }
@@ -231,7 +235,7 @@ struct LiveView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                        .padding(.horizontal)
+                        .padding(.horizontal, barSideInset)
                 }
                 if showTuning {
                     TuningPanel(conf: $tuning.conf, iou: isNMSFree ? nil : $tuning.iou, style: $style,
@@ -239,7 +243,7 @@ struct LiveView: View {
                                 segOverlay: isSegModel ? $tuning.segOverlay : nil,
                                 pose: poseKeypoints > 0 ? $tuning.pose : nil,
                                 wholeBody: poseKeypoints == 133)
-                        .padding(.horizontal)
+                        .padding(.horizontal, barSideInset)
                 }
             }
         }
@@ -444,6 +448,7 @@ struct LiveView: View {
             }
             .fixedSize()
             .disabled(wantRun)
+            Spacer(minLength: 0)        // pickers left, buttons right: the bar spans the full width
             Button {
                 lightHaptic.impactOccurred()
                 lightHaptic.prepare()
@@ -489,7 +494,9 @@ struct LiveView: View {
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal)   // no top padding: aligns with the photo tab's bar
+        // as wide as the tab bar, like the tuning panel and the stats HUD (`barSideInset`);
+        // no top padding: aligns with the photo tab's bar
+        .padding(.horizontal, barSideInset)
     }
 
     private var overlay: some View {
