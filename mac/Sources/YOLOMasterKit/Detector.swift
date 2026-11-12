@@ -122,7 +122,19 @@ public enum ComputeMode: String, CaseIterable, Sendable {
     }
 }
 
-public enum DetectorError: Error { case inputBuildFailed, badOutput }
+public enum DetectorError: Error, LocalizedError {
+    case inputBuildFailed, badOutput
+    /// The package loads in Core ML but is not something this decoder can run; the text says why.
+    case unsupportedModel(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .inputBuildFailed: return "The image could not be turned into the model's input."
+        case .badOutput: return "The model did not return a detection tensor this app can read."
+        case .unsupportedModel(let why): return why
+        }
+    }
+}
 
 /// Which NMS variant post-processing uses. `.standard` is the classic greedy suppression.
 /// `.clusterWeighted` (CW-NMS, from upstream YOLO-Master) runs the same greedy selection and
@@ -160,6 +172,9 @@ public final class Detector {
     public let keypointDims: Int
     private var nk: Int { keypointCount * keypointDims }   // keypoint channels after the classes
     public let end2end: Bool   // NMS-free head: output [1, max_det, 6] instead of [1, 4+nc, anchors]
+    /// The original YOLOv5 head (ultralytics/yolov5): output [1, anchors, 5 + nc], one ROW per
+    /// anchor holding cx, cy, w, h, objectness and the class scores (score = objectness x class).
+    public let anchorRows: Bool
     public let modelURL: URL
     /// The exporter's creator-defined metadata (names, imgsz, task, precision when stamped, ...).
     public let metadata: [String: String]
@@ -209,6 +224,34 @@ public final class Detector {
             return false
         }()
         let e2eResolved = meta["end2end"].map { $0 == "true" } ?? e2eFromShape
+        let taskName = meta["task"] ?? "detect"
+        // What the package DECLARES, checked before anything is decoded. A model that loads in
+        // Core ML but is not a detector this decoder knows used to fail quietly on every frame
+        // (no boxes, no message), or - worse - be read sideways. Only declared, known shapes are
+        // judged: a package that leaves its output shape open is still checked at run time.
+        if let inType = md.inputDescriptionsByName[inName]?.type, inType != .multiArray {
+            throw DetectorError.unsupportedModel(
+                "Its input \"\(inName)\" is not a [1, 3, H, W] tensor (an image-type input, as the YOLOv5 repository's own Core ML export makes, is not supported).")
+        }
+        let outShape = md.outputDescriptionsByName[outName]?.multiArrayConstraint?.shape.map { $0.intValue } ?? []
+        if !outShape.isEmpty, outShape.count != 3 {
+            throw DetectorError.unsupportedModel(
+                "Its output \"\(outName)\" has shape \(outShape); a detector's output is [1, 4 + classes, anchors].")
+        }
+        // Original YOLOv5 head: [1, anchors, 5 + names] - anchors along dim 1, and one column
+        // more than the 4 + names of every later head (the objectness). Recognised only when the
+        // package's own names say so; [1, anchors, 4 + names] is a transposed export of the later
+        // head, which is refused rather than read sideways.
+        var v5Rows = false
+        if taskName == "detect", !e2eResolved, outShape.count == 3, meta["names"] != nil,
+           outShape[1] != 4 + metaNames.count {
+            if outShape[2] == 5 + metaNames.count {
+                v5Rows = true
+            } else if outShape[2] == 4 + metaNames.count {
+                throw DetectorError.unsupportedModel(
+                    "Its output \"\(outName)\" has shape \(outShape): the anchors come first. Export it as [1, 4 + classes, anchors].")
+            }
+        }
         // class count from the output shape [1, 4+nc, anchors] (authoritative for ANY model);
         // fall back to the metadata names count. An end2end tensor's dim1 is max_det, not
         // 4+nc, so it must use the names count.
@@ -230,7 +273,8 @@ public final class Detector {
         // pose: [1, 4+nc+keypoint values, anchors] -> nc from names as well (dim1 - 4 would count
         // the keypoint channels as classes).
         let segTask = (meta["task"] ?? "detect") == "segment"
-        let ncFinal = (segTask || poseTask) ? metaNames.count : ncResolved
+        // original YOLOv5 rows: dim 1 is the anchor count, so the class count is the names' too
+        let ncFinal = (segTask || poseTask || v5Rows) ? metaNames.count : ncResolved
 
         // MPSGraph aborts compiling end2end mixture graphs on GPU (a hard assertion at
         // the first predict, not catchable in-process), and CPU is orders of magnitude
@@ -279,6 +323,7 @@ public final class Detector {
         self.classNames = metaNames.count == ncFinal ? metaNames : (0..<ncFinal).map { "class\($0)" }
         self.imgsz = szResolved
         self.end2end = e2eResolved && !segTask
+        self.anchorRows = v5Rows
     }
 
     /// Human-readable one-line model summary (parity with the CLI `[model]` banner).
@@ -358,6 +403,7 @@ public final class Detector {
     private func outputFits(_ y: MLMultiArray) -> Bool {
         guard y.shape.count == 3 else { return false }
         if end2end { return y.shape[2].intValue >= 6 + nk }
+        if anchorRows { return y.shape[2].intValue >= 5 + nc }
         return y.shape[1].intValue >= 4 + nc + nm + nk
     }
     private func validatedOutput(_ out: MLFeatureProvider) throws -> MLMultiArray {
@@ -422,6 +468,50 @@ public final class Detector {
                 y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
                     guard let yp = buf.baseAddress else { return }
                     decodeEndToEnd { r, f in yp[r * s1 + f * s2] }
+                }
+            }
+            dets.sort { $0.score > $1.score }
+            return dets
+        }
+        // original YOLOv5 layout [1, anchors, 5 + nc]: one ROW per anchor - cx, cy, w, h,
+        // objectness, class scores - in letterboxed-input pixels. Score = objectness x the best
+        // class score (the single-label rule of YOLOv5's own detect.py and its NMS). A row whose
+        // objectness alone is at or below the floor is skipped before its classes are read, so
+        // the scan costs little more than one pass over the objectness column.
+        // Same accessor convention as decodeEndToEnd: at(dim1Index, dim2Index).
+        func decodeAnchorRows(_ at: (Int, Int) -> Float32) {
+            let n = y.shape[1].intValue
+            for r in 0..<n {
+                let obj = at(r, 4)
+                if obj <= confFloor { continue }
+                var best: Float32 = 0
+                var c = 0
+                for k in 0..<nc {
+                    let v = at(r, 5 + k)
+                    if v > best { best = v; c = k }
+                }
+                let s = obj * best
+                if s <= confFloor { continue }
+                let cx = CGFloat(at(r, 0)), cy = CGFloat(at(r, 1)), bw = CGFloat(at(r, 2)), bh = CGFloat(at(r, 3))
+                var x1 = (cx - bw / 2 - padX) / scaleX, y1 = (cy - bh / 2 - padY) / scaleY
+                var x2 = (cx + bw / 2 - padX) / scaleX, y2 = (cy + bh / 2 - padY) / scaleY
+                x1 = max(0, min(CGFloat(origW), x1)); x2 = max(0, min(CGFloat(origW), x2))
+                y1 = max(0, min(CGFloat(origH), y1)); y2 = max(0, min(CGFloat(origH), y2))
+                if x2 > x1 && y2 > y1 {
+                    dets.append(Detection(cls: c, score: s,
+                                          rect: CGRect(x: x1, y: y1, width: x2 - x1, height: y2 - y1),
+                                          maskCoeffs: [], keypoints: []))
+                }
+            }
+        }
+        if anchorRows {
+            if y.dataType == .float16 {
+                let rawPtr = y.dataPointer
+                decodeAnchorRows { r, f in halfToFloat(rawPtr.load(fromByteOffset: (r * s1 + f * s2) * 2, as: UInt16.self)) }
+            } else {
+                y.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+                    guard let yp = buf.baseAddress else { return }
+                    decodeAnchorRows { r, f in yp[r * s1 + f * s2] }
                 }
             }
             dets.sort { $0.score > $1.score }

@@ -503,7 +503,7 @@ struct PhotoTestView: View {
                 }
             } catch {
                 await MainActor.run {
-                    errorText = "ERROR: \(error)"
+                    errorText = "ERROR: \(error.localizedDescription)"
                     phase = .idle
                     isRunning = false
                 }

@@ -87,6 +87,7 @@ struct LiveView: View {
     private let firmHaptic = UIImpactFeedbackGenerator(style: .rigid)   // camera flip
     @State private var longPressFired = false  // swallow the tap that follows a long press
     @State private var loadingModel = false   // Detector init in flight (compile + unit load)
+    @State private var loadError: String?     // why the selected model could not be loaded
     @State private var running = false        // loop actually alive
     @State private var wantRun = true         // the user's intent - survives tab
                                               // switches and app backgrounding;
@@ -220,6 +221,16 @@ struct LiveView: View {
             // same vertical anchor as the photo tab's top bar
             VStack(spacing: 8) {
                 controls
+                if let loadError {
+                    Text(loadError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal)
+                }
                 if showTuning {
                     TuningPanel(conf: $tuning.conf, iou: isNMSFree ? nil : $tuning.iou, style: $style,
                                 hudVisible: $showHUD,
@@ -229,6 +240,7 @@ struct LiveView: View {
             }
         }
         .onChange(of: allowCPU) { _, on in if !on && compute == .cpu { compute = ComputeChoice.deviceDefault } }
+        .onChange(of: selectedModel) { _, _ in loadError = nil }   // the message was about the previous model
         .onAppear {
             if !allowCPU && compute == .cpu { compute = ComputeChoice.deviceDefault }
             camera.start()
@@ -511,10 +523,23 @@ struct LiveView: View {
         let mode = compute.mode
         let tuningRef = tuning      // plain class ref: detached-safe, no wrapper
         let cameraRef = camera
+        loadError = nil
         loopTask = Task.detached(priority: .userInitiated) {
-            guard let url = try? model.compiledURL(),
-                  let det = try? Detector(modelURL: url, compute: mode) else {
-                await MainActor.run { running = false; loadingModel = false }
+            let det: Detector
+            do {
+                det = try Detector(modelURL: try model.compiledURL(), compute: mode)
+            } catch {
+                // A model that cannot be loaded (a damaged package, or one that is not a
+                // detector the Kit can decode): say why and go back to the paused state.
+                // It used to look like a hung run - pause glyph, pickers greyed out,
+                // nothing drawn, no message.
+                let why = error.localizedDescription
+                await MainActor.run {
+                    running = false
+                    loadingModel = false
+                    wantRun = false
+                    loadError = "\(model.fullName) could not be loaded. \(why)"
+                }
                 return
             }
             let seg = det.isSegment

@@ -130,6 +130,7 @@ struct SettingsView: View {
     @State private var privacyOpen = false
 
     @State private var importingFolder = false   // the importer is open in folder mode
+    @State private var checkingImport = false    // picked models are being copied and checked
 
     static let modelExtensions = ["mlpackage", "mlmodelc", "mlmodel"]
 
@@ -442,11 +443,20 @@ struct SettingsView: View {
             } label: {
                 Label("Load custom Core ML model", systemImage: "plus.circle")
             }
+            .disabled(checkingImport)
             Button {
                 importingFolder = true
                 importing = true
             } label: {
                 Label("Load models from a folder", systemImage: "folder.badge.plus")
+            }
+            .disabled(checkingImport)
+            if checkingImport {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Checking the model...")
+                }
+                .font(.callout).foregroundStyle(.secondary)
             }
             ForEach(customModels) { m in
                 HStack {
@@ -489,29 +499,56 @@ struct SettingsView: View {
         case .failure(let e):
             importError = e.localizedDescription
         case .success(let urls):
-            let dir = BundledModel.customModelsDir
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            var problems: [String] = []
-            for picked in urls {
-                let scoped = picked.startAccessingSecurityScopedResource()
-                defer { if scoped { picked.stopAccessingSecurityScopedResource() } }
-                let items = modelItems(at: picked)
-                if items.isEmpty {
-                    problems.append("\(picked.lastPathComponent) is not a Core ML model and contains none (.mlpackage, .mlmodelc, .mlmodel).")
-                    continue
-                }
-                for src in items {
-                    if let problem = copyModel(src, into: dir) { problems.append(problem) }
+            // copying, compiling and loading each model takes seconds: off the main thread,
+            // behind the "Checking the model" row
+            checkingImport = true
+            Task.detached(priority: .userInitiated) {
+                let problems = SettingsView.importAll(urls)
+                await MainActor.run {
+                    checkingImport = false
+                    if !problems.isEmpty { importError = problems.joined(separator: "\n\n") }
+                    customModels = BundledModel.customModels()
                 }
             }
-            if !problems.isEmpty { importError = problems.joined(separator: "\n") }
-            customModels = BundledModel.customModels()
         }
+    }
+
+    /// Copy every picked model into the app and keep only those the app can run.
+    /// Returns one message per item that was not imported.
+    private static func importAll(_ urls: [URL]) -> [String] {
+        let dir = BundledModel.customModelsDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var problems: [String] = []
+        for picked in urls {
+            let scoped = picked.startAccessingSecurityScopedResource()
+            defer { if scoped { picked.stopAccessingSecurityScopedResource() } }
+            let items = modelItems(at: picked)
+            if items.isEmpty {
+                problems.append("\(picked.lastPathComponent) is not a Core ML model and contains none (.mlpackage, .mlmodelc, .mlmodel).")
+                continue
+            }
+            for src in items {
+                if let problem = copyModel(src, into: dir) {
+                    problems.append(problem)
+                    continue
+                }
+                // A model Core ML cannot compile, or one that is not a detector this app can
+                // decode, is refused HERE with the reason. It used to import without a word
+                // and then simply never produce a detection.
+                let model = BundledModel(id: src.deletingPathExtension().lastPathComponent,
+                                         url: dir.appendingPathComponent(src.lastPathComponent))
+                if let why = model.loadProblem() {
+                    BundledModel.deleteCustom(model)
+                    problems.append("\(src.lastPathComponent) was not imported. \(why)")
+                }
+            }
+        }
+        return problems
     }
 
     /// The models a picked URL stands for: itself when it is a model; otherwise, for a plain
     /// folder chosen in folder mode, the models directly inside it.
-    private func modelItems(at url: URL) -> [URL] {
+    private static func modelItems(at url: URL) -> [URL] {
         if Self.modelExtensions.contains(url.pathExtension.lowercased()) { return [url] }
         let inside = (try? FileManager.default.contentsOfDirectory(
             at: url, includingPropertiesForKeys: nil)) ?? []
@@ -521,7 +558,7 @@ struct SettingsView: View {
     /// Copy one model into the app's CustomModels folder. Returns a message on failure.
     /// The read is coordinated, so an item kept in iCloud Drive is downloaded first and a
     /// package is copied as one consistent directory.
-    private func copyModel(_ src: URL, into dir: URL) -> String? {
+    private static func copyModel(_ src: URL, into dir: URL) -> String? {
         let dest = dir.appendingPathComponent(src.lastPathComponent)
         var coordinationError: NSError?
         var copyError: Error?

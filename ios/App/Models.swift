@@ -112,6 +112,20 @@ struct BundledModel: Identifiable, Hashable {
         if let current, let same = models.first(where: { $0.id == current.id }) { return same }
         return preferred(in: models)
     }
+
+    /// Why this model cannot be used, or nil when it can. Core ML compiles the package (a
+    /// damaged one fails there) and the Kit reads its declared input and output (a model that
+    /// is not a detector it can decode fails there, with the reason). Loaded on the CPU only:
+    /// nothing is compiled for the GPU or the Neural Engine just to check. Takes seconds for
+    /// a package that still has to be compiled - keep it off the main thread.
+    func loadProblem() -> String? {
+        do {
+            _ = try Detector(modelURL: try compiledURL(), compute: ComputeMode("cpu"))
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
 }
 
 extension Detector {
