@@ -72,7 +72,8 @@ Before every upload:
   labels), a `kpt` slider for the keypoint visibility to draw from (0.50 is
   the model's own cut-off) and a `size` slider for joints and limbs. A
   whole-body model also gets Body / Feet / Face / Hands switches, one per
-  keypoint group. Saved photos and exported images follow the same settings
+  keypoint group, and a Hand skeleton switch that removes the finger bones and
+  keeps the hand points. Saved photos and exported images follow the same settings
   (the Kit's `PoseDisplay`).
 - **Top-down pose (DWPose)** - `dwpose-t-wholebody` (exported with
   `coreml_export/export_dwpose.py`) does not find people itself. The Kit runs a

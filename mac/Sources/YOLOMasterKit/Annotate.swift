@@ -26,14 +26,18 @@ public struct PoseDisplay: Sendable, Equatable {
     public var feet: Bool
     public var face: Bool
     public var hands: Bool
+    /// Whole-body layout: the finger bones, i.e. the lines between the hand keypoints. Off
+    /// leaves each hand as its 21 points only (no effect while `hands` is off).
+    public var handLines: Bool
     /// Multiplies the joint radius and the limb width.
     public var size: CGFloat
 
     public init(overlay: PoseOverlay = .both, minConfidence: Float = PoseSkeleton.minConfidence,
                 body: Bool = true, feet: Bool = true, face: Bool = true, hands: Bool = true,
-                size: CGFloat = 1) {
+                handLines: Bool = true, size: CGFloat = 1) {
         self.overlay = overlay; self.minConfidence = minConfidence
         self.body = body; self.feet = feet; self.face = face; self.hands = hands
+        self.handLines = handLines
         self.size = size
     }
 
@@ -42,8 +46,17 @@ public struct PoseDisplay: Sendable, Equatable {
     /// Person boxes and their labels are drawn in every mode but `skeleton`.
     public var drawsBoxes: Bool { overlay != .skeleton }
 
+    /// Whether the limb between keypoints `a` and `b` of a pose of `count` keypoints may be
+    /// drawn at all (its two ends must be shown as well, see `shows`). Only the finger bones
+    /// of the whole-body layout can be switched off: both of their ends are hand keypoints
+    /// (91 and up), while an arm limb ends in a body joint.
+    public func showsLimb(from a: Int, to b: Int, count: Int) -> Bool {
+        guard count == 133, !handLines else { return true }
+        return min(a, b) < 91
+    }
+
     /// Whether keypoint `index` of a pose of `count` keypoints is drawn at visibility `conf`.
-    /// A limb is drawn when both of its ends are.
+    /// A limb is drawn when both of its ends are and `showsLimb` allows it.
     public func shows(keypoint index: Int, count: Int, conf: Float) -> Bool {
         guard drawsSkeleton, conf >= minConfidence else { return false }
         guard count == 133 else { return true }
@@ -162,7 +175,8 @@ private func drawPose(_ ctx: CGContext, _ kpts: [Keypoint], imageHeight h: CGFlo
     ctx.setLineCap(.round)
     for limb in PoseSkeleton.limbs(forKeypointCount: n) {
         let a = kpts[limb.a], b = kpts[limb.b]
-        guard display.shows(keypoint: limb.a, count: n, conf: a.conf),
+        guard display.showsLimb(from: limb.a, to: limb.b, count: n),
+              display.shows(keypoint: limb.a, count: n, conf: a.conf),
               display.shows(keypoint: limb.b, count: n, conf: b.conf) else { continue }
         let fine = PoseSkeleton.isFine(keypoint: max(limb.a, limb.b), count: kpts.count)
         ctx.setStrokeColor(PoseSkeleton.color(part: limb.part))

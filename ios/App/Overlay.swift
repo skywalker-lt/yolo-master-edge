@@ -157,7 +157,8 @@ enum DetOverlay {
         let size = display.size
         for limb in PoseSkeleton.limbs(forKeypointCount: n) {
             let a = kpts[limb.a], b = kpts[limb.b]
-            guard display.shows(keypoint: limb.a, count: n, conf: a.conf),
+            guard display.showsLimb(from: limb.a, to: limb.b, count: n),
+                  display.shows(keypoint: limb.a, count: n, conf: a.conf),
                   display.shows(keypoint: limb.b, count: n, conf: b.conf) else { continue }
             // feet, face and hands of the whole-body layout are drawn at about half size
             let fine = PoseSkeleton.isFine(keypoint: max(limb.a, limb.b), count: kpts.count)

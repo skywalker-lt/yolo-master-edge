@@ -411,7 +411,8 @@ struct CrossShape: Shape {
 /// A pose model adds its own overlay controls (`pose` non-nil): skeleton / boxes / both, the
 /// keypoint visibility to draw from ("kpt") and the joint and limb size. A whole-body model
 /// (`wholeBody`, the 133-keypoint layout) also gets one switch per group - body, feet, face,
-/// hands - because 68 face points and 42 hand points are often more than the picture needs.
+/// hands - because 68 face points and 42 hand points are often more than the picture needs,
+/// and a "Hand skeleton" switch that takes the finger bones away and leaves the hand points.
 /// The skeleton controls are hidden in boxes mode, where no skeleton is drawn.
 struct TuningPanel: View {
     @Binding var conf: Double
@@ -464,6 +465,11 @@ struct TuningPanel: View {
                         partToggle("Feet", pose.feet)
                         partToggle("Face", pose.face)
                         partToggle("Hands", pose.hands)
+                    }
+                    if pose.wrappedValue.hands {
+                        // off: the finger bones go, the 21 points of each hand stay
+                        Toggle("Hand skeleton", isOn: pose.handLines)
+                            .font(.caption)
                     }
                 }
             }
