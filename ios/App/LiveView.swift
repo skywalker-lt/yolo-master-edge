@@ -62,6 +62,7 @@ struct LiveView: View {
     @State private var maskImage: CGImage?          // seg: per-frame composite overlay
     @State private var isSegModel = false           // set once the running Detector loads
     @State private var isNMSFree = false            // ditto: end2end model, IoU lever hidden
+    @State private var poseKeypoints = 0            // ditto: keypoints per person of a pose model (17, 133), 0 for any other
     @State private var classNames: [String] = cocoNames
     @State private var showTuning = false
     @State private var showHUD = true
@@ -235,7 +236,9 @@ struct LiveView: View {
                 if showTuning {
                     TuningPanel(conf: $tuning.conf, iou: isNMSFree ? nil : $tuning.iou, style: $style,
                                 hudVisible: $showHUD,
-                                segOverlay: isSegModel ? $tuning.segOverlay : nil)
+                                segOverlay: isSegModel ? $tuning.segOverlay : nil,
+                                pose: poseKeypoints > 0 ? $tuning.pose : nil,
+                                wholeBody: poseKeypoints == 133)
                         .padding(.horizontal)
                 }
             }
@@ -520,12 +523,18 @@ struct LiveView: View {
                 }
                 DetOverlay.draw(ctx, detections, scale: scale, ox: ox, oy: oy, style: style,
                                 names: classNames,
-                                boxes: !(isSegModel && tuning.segOverlay == .masks),
-                                mirrorWidth: frameMirrored ? frameSize.width : nil)
+                                boxes: !(isSegModel && tuning.segOverlay == .masks) && !skeletonOnly,
+                                labels: !skeletonOnly,
+                                mirrorWidth: frameMirrored ? frameSize.width : nil,
+                                pose: tuning.pose)
             }
         }
         .allowsHitTesting(false)
     }
+
+    /// A pose model set to show the skeleton only: no person boxes, no labels - on screen and
+    /// in a saved photo alike.
+    private var skeletonOnly: Bool { poseKeypoints > 0 && tuning.pose.overlay == .skeleton }
 
     /// Hold the screen awake while the camera is detecting: a viewfinder that dims and locks
     /// after 30 seconds without a touch is no use for watching detections. Released whenever
@@ -566,8 +575,10 @@ struct LiveView: View {
             let seg = det.isSegment
             let nmsFree = det.end2end
             let names = det.classNames
+            let kpts = det.isPose ? det.keypointCount : 0
             await MainActor.run {
                 isSegModel = seg; isNMSFree = nmsFree; classNames = names; loadingModel = false
+                poseKeypoints = kpts
             }
             var uiTicks = 0
             var uiWindowStart = CFAbsoluteTimeGetCurrent()
@@ -687,7 +698,11 @@ struct LiveView: View {
         let dets = detections
         let mask = maskImage
         let drawMask = isSegModel && tuning.segOverlay != .boxes
-        let drawBoxes = !(isSegModel && tuning.segOverlay == .masks)
+        let drawBoxes = !(isSegModel && tuning.segOverlay == .masks) && !skeletonOnly
+        // the saved photo shows what the screen shows: same pose settings, and in
+        // skeleton-only mode neither person boxes nor labels
+        let labelMode: LabelMode = skeletonOnly ? .off : .full
+        let poseNow = tuning.pose
         let names = classNames
         let fSize = frameSize
         let kitStyle = style.kitStyle
@@ -745,7 +760,7 @@ struct LiveView: View {
                 }
                 if !scaled.isEmpty {
                     img = annotate(img, scaled, names: names, style: kitStyle,
-                                   label: .full, drawBoxes: drawBoxes) ?? img
+                                   label: labelMode, drawBoxes: drawBoxes, pose: poseNow) ?? img
                 }
                 let ui = UIImage(cgImage: img)
                 if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {

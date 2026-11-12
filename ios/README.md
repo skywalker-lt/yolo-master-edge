@@ -67,6 +67,13 @@ Before every upload:
   and the skeleton rules live in the Kit (`Detection.keypoints`, `PoseSkeleton`).
   A 133-keypoint COCO-WholeBody model draws the body skeleton plus feet, finger
   bones and the 68 face points (those at half size).
+  With a pose model running, the tuning panel adds pose controls in both tabs:
+  a Skeleton / Boxes / Both switch (Skeleton drops the person boxes and their
+  labels), a `kpt` slider for the keypoint visibility to draw from (0.50 is
+  the model's own cut-off) and a `size` slider for joints and limbs. A
+  whole-body model also gets Body / Feet / Face / Hands switches, one per
+  keypoint group. Saved photos and exported images follow the same settings
+  (the Kit's `PoseDisplay`).
 - **Top-down pose (DWPose)** - `dwpose-t-wholebody` (exported with
   `coreml_export/export_dwpose.py`) does not find people itself. The Kit runs a
   detection model on the frame first and the pose model once per person (up to

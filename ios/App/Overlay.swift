@@ -50,11 +50,16 @@ enum DetOverlay {
     /// flipped left-to-right inside the frame. The front camera's preview is a
     /// mirror image while its frames are not, so its boxes must flip to land on
     /// what the user sees. Only positions flip - label text stays readable.
+    /// `labels: false` drops the label too (a pose model in skeleton-only mode: with
+    /// `boxes: false` nothing but the skeleton is left).
+    /// `pose`: how the skeletons of a pose model are drawn - which keypoints, from what
+    /// visibility, at what size (the Kit's `PoseDisplay`, also used for saved photos).
     static func draw(_ ctx: GraphicsContext, _ dets: [Detection],
                      scale: CGFloat, ox: CGFloat, oy: CGFloat,
                      style: BoxStyle = .chip, names: [String] = cocoNames,
-                     boxes: Bool = true, mirrorWidth: CGFloat? = nil) {
-        for d in dets {
+                     boxes: Bool = true, labels: Bool = true, mirrorWidth: CGFloat? = nil,
+                     pose: PoseDisplay = PoseDisplay()) {
+        for d in dets where boxes || labels {
             let left = mirrorWidth.map { $0 - d.rect.maxX } ?? d.rect.minX
             let r = CGRect(x: left * scale + ox, y: d.rect.minY * scale + oy,
                            width: d.rect.width * scale, height: d.rect.height * scale)
@@ -70,7 +75,7 @@ enum DetOverlay {
                     ctx.stroke(Path(roundedRect: r, cornerRadius: corner),
                                with: .color(col), lineWidth: 2.4)
                 }
-                chipLabel(ctx, title, at: r, color: col, dark: darkText.contains(ci))
+                if labels { chipLabel(ctx, title, at: r, color: col, dark: darkText.contains(ci)) }
 
             case .neon:
                 if boxes {
@@ -81,10 +86,12 @@ enum DetOverlay {
                     ctx.stroke(Path(roundedRect: r, cornerRadius: corner),
                                with: .color(col), lineWidth: 1.2)
                 }
-                var t = ctx
-                t.addFilter(.shadow(color: col.opacity(0.9), radius: 5))
-                let txt = t.resolve(Text(title).font(.caption2.bold()).foregroundStyle(col))
-                t.draw(txt, at: CGPoint(x: r.minX + 2, y: max(r.minY - 9, 6)), anchor: .leading)
+                if labels {
+                    var t = ctx
+                    t.addFilter(.shadow(color: col.opacity(0.9), radius: 5))
+                    let txt = t.resolve(Text(title).font(.caption2.bold()).foregroundStyle(col))
+                    t.draw(txt, at: CGPoint(x: r.minX + 2, y: max(r.minY - 9, 6)), anchor: .leading)
+                }
 
             case .hud:
                 if boxes {
@@ -101,63 +108,73 @@ enum DetOverlay {
                     }
                     ctx.stroke(p, with: .color(col), lineWidth: 2.8)
                 }
-                let txt = ctx.resolve(Text(title.uppercased())
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundStyle(col))
-                ctx.draw(txt, at: CGPoint(x: r.minX + 3, y: max(r.minY - 9, 6)), anchor: .leading)
+                if labels {
+                    let txt = ctx.resolve(Text(title.uppercased())
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(col))
+                    ctx.draw(txt, at: CGPoint(x: r.minX + 3, y: max(r.minY - 9, 6)), anchor: .leading)
+                }
 
             case .chip:
                 if boxes {
                     ctx.stroke(Path(roundedRect: r, cornerRadius: 3),
                                with: .color(col), lineWidth: 2)
                 }
-                chipLabel(ctx, title, at: r, color: col, dark: darkText.contains(ci))
+                if labels { chipLabel(ctx, title, at: r, color: col, dark: darkText.contains(ci)) }
 
             case .minimal:
                 if boxes {
                     ctx.stroke(Path(r), with: .color(.white.opacity(0.9)), lineWidth: 1)
                 }
-                let txt = ctx.resolve(Text(title)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.9)))
-                ctx.draw(txt, at: CGPoint(x: r.minX + 2, y: max(r.minY - 8, 5)), anchor: .leading)
+                if labels {
+                    let txt = ctx.resolve(Text(title)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.9)))
+                    ctx.draw(txt, at: CGPoint(x: r.minX + 2, y: max(r.minY - 8, 5)), anchor: .leading)
+                }
             }
         }
         // pose skeletons last, over every box and label (no-op without keypoints)
+        guard pose.drawsSkeleton else { return }
         for d in dets where !d.keypoints.isEmpty {
-            drawPose(ctx, d.keypoints, scale: scale, ox: ox, oy: oy, mirrorWidth: mirrorWidth)
+            drawPose(ctx, d.keypoints, scale: scale, ox: ox, oy: oy, mirrorWidth: mirrorWidth,
+                     display: pose)
         }
     }
 
-    /// One pose skeleton: limbs coloured by body part, then the joints on top. The topology,
-    /// colours and visibility threshold are the Kit's (`PoseSkeleton`), so the live overlay and
-    /// a saved photo draw the same thing. `mirrorWidth` flips x like the boxes (front camera).
+    /// One pose skeleton: limbs coloured by body part, then the joints on top. The topology and
+    /// colours are the Kit's (`PoseSkeleton`), and which keypoints are drawn and how large is
+    /// the Kit's too (`PoseDisplay`), so the live overlay and a saved photo draw the same thing.
+    /// `mirrorWidth` flips x like the boxes (front camera).
     private static func drawPose(_ ctx: GraphicsContext, _ kpts: [Keypoint],
-                                 scale: CGFloat, ox: CGFloat, oy: CGFloat, mirrorWidth: CGFloat?) {
+                                 scale: CGFloat, ox: CGFloat, oy: CGFloat, mirrorWidth: CGFloat?,
+                                 display: PoseDisplay) {
         func pt(_ k: Keypoint) -> CGPoint {
             let x = mirrorWidth.map { $0 - k.x } ?? k.x
             return CGPoint(x: x * scale + ox, y: k.y * scale + oy)
         }
-        let minConf = PoseSkeleton.minConfidence
-        for limb in PoseSkeleton.limbs(forKeypointCount: kpts.count) {
+        let n = kpts.count
+        let size = display.size
+        for limb in PoseSkeleton.limbs(forKeypointCount: n) {
             let a = kpts[limb.a], b = kpts[limb.b]
-            guard a.conf >= minConf, b.conf >= minConf else { continue }
+            guard display.shows(keypoint: limb.a, count: n, conf: a.conf),
+                  display.shows(keypoint: limb.b, count: n, conf: b.conf) else { continue }
             // feet, face and hands of the whole-body layout are drawn at about half size
             let fine = PoseSkeleton.isFine(keypoint: max(limb.a, limb.b), count: kpts.count)
             var line = Path()
             line.move(to: pt(a))
             line.addLine(to: pt(b))
             ctx.stroke(line, with: .color(Color(cgColor: PoseSkeleton.color(part: limb.part))),
-                       style: StrokeStyle(lineWidth: fine ? 1.5 : 2.5, lineCap: .round))
+                       style: StrokeStyle(lineWidth: (fine ? 1.5 : 2.5) * size, lineCap: .round))
         }
-        for (i, k) in kpts.enumerated() where k.conf >= minConf {
+        for (i, k) in kpts.enumerated() where display.shows(keypoint: i, count: n, conf: k.conf) {
             let fine = PoseSkeleton.isFine(keypoint: i, count: kpts.count)
-            let r: CGFloat = fine ? 2 : 3.5
+            let r: CGFloat = (fine ? 2 : 3.5) * size
             let c = pt(k)
             let dot = Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
             let part = PoseSkeleton.part(ofKeypoint: i, count: kpts.count)
             ctx.fill(dot, with: .color(Color(cgColor: PoseSkeleton.color(part: part))))
-            ctx.stroke(dot, with: .color(.white.opacity(0.9)), lineWidth: fine ? 0.5 : 1)
+            ctx.stroke(dot, with: .color(.white.opacity(0.9)), lineWidth: (fine ? 0.5 : 1) * size)
         }
     }
 

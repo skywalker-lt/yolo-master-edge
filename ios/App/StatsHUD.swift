@@ -407,12 +407,28 @@ struct CrossShape: Shape {
 
 /// conf / IoU tuning sliders + box style - the detection knobs, one panel.
 /// `iou` is nil for an NMS-free model: no NMS runs on its output, so there is no lever to show.
+///
+/// A pose model adds its own overlay controls (`pose` non-nil): skeleton / boxes / both, the
+/// keypoint visibility to draw from ("kpt") and the joint and limb size. A whole-body model
+/// (`wholeBody`, the 133-keypoint layout) also gets one switch per group - body, feet, face,
+/// hands - because 68 face points and 42 hand points are often more than the picture needs.
+/// The skeleton controls are hidden in boxes mode, where no skeleton is drawn.
 struct TuningPanel: View {
     @Binding var conf: Double
     var iou: Binding<Double>? = nil
     var style: Binding<BoxStyle>? = nil
     var hudVisible: Binding<Bool>? = nil
     var segOverlay: Binding<SegOverlay>? = nil   // non-nil only for seg models
+    var pose: Binding<PoseDisplay>? = nil        // non-nil only for pose models
+    var wholeBody = false                        // the pose model reports 133 keypoints
+
+    private func partToggle(_ name: String, _ on: Binding<Bool>) -> some View {
+        Toggle(name, isOn: on)
+            .toggleStyle(.button)
+            .font(.caption)
+            .frame(maxWidth: .infinity)
+    }
+
     var body: some View {
         VStack(spacing: 6) {
             if let hudVisible {
@@ -435,6 +451,22 @@ struct TuningPanel: View {
                 }
                 .pickerStyle(.segmented)
             }
+            if let pose {
+                Picker("Pose overlay", selection: pose.overlay) {
+                    ForEach(PoseOverlay.allCases, id: \.self) { o in
+                        Text(o.rawValue.capitalized).lineLimit(1).fixedSize().tag(o)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if wholeBody && pose.wrappedValue.drawsSkeleton {
+                    HStack(spacing: 6) {
+                        partToggle("Body", pose.body)
+                        partToggle("Feet", pose.feet)
+                        partToggle("Face", pose.face)
+                        partToggle("Hands", pose.hands)
+                    }
+                }
+            }
             HStack {
                 Text("conf").font(.caption).frame(width: 34, alignment: .leading)
                 Slider(value: $conf, in: 0.05...0.9)
@@ -445,6 +477,20 @@ struct TuningPanel: View {
                     Text("IoU").font(.caption).frame(width: 34, alignment: .leading)
                     Slider(value: iou, in: 0.1...0.9)
                     Text(String(format: "%.2f", iou.wrappedValue)).font(.caption.monospacedDigit()).frame(width: 34)
+                }
+            }
+            if let pose, pose.wrappedValue.drawsSkeleton {
+                HStack {
+                    Text("kpt").font(.caption).frame(width: 34, alignment: .leading)
+                    Slider(value: pose.minConfidence, in: 0.05...0.95)
+                    Text(String(format: "%.2f", pose.wrappedValue.minConfidence))
+                        .font(.caption.monospacedDigit()).frame(width: 34)
+                }
+                HStack {
+                    Text("size").font(.caption).frame(width: 34, alignment: .leading)
+                    Slider(value: pose.size, in: 0.5...2.5)
+                    Text(String(format: "%.1fx", Double(pose.wrappedValue.size)))
+                        .font(.caption.monospacedDigit()).frame(width: 34)
                 }
             }
         }
@@ -459,4 +505,5 @@ final class Tuning: ObservableObject {
     @Published var conf: Double = 0.25
     @Published var iou: Double = 0.5
     @Published var segOverlay: SegOverlay = .both   // masks / boxes / both (mac default)
+    @Published var pose = PoseDisplay()             // pose models: what of the skeleton is drawn
 }

@@ -67,6 +67,8 @@ struct PhotoTestView: View {
     @State private var maskImages: [CGImage?] = []   // seg composites, per image
     @State private var segOverlay: SegOverlay = .both
     @State private var isSeg = false
+    @State private var pose = PoseDisplay()          // pose models: what of the skeleton is drawn
+    @State private var poseKeypoints = 0             // keypoints per person of a pose model (17, 133), 0 for any other
     @State private var nmsFree = false               // end2end model: IoU lever hidden
     @State private var classNames: [String] = cocoNames
     @State private var retuneGen = 0                 // drops stale async mask renders
@@ -90,7 +92,9 @@ struct PhotoTestView: View {
                 if showTuning {
                     TuningPanel(conf: $conf, iou: nmsFree ? nil : $iou, style: $style,
                                 hudVisible: $showHUD,
-                                segOverlay: isSeg ? $segOverlay : nil)
+                                segOverlay: isSeg ? $segOverlay : nil,
+                                pose: poseKeypoints > 0 ? $pose : nil,
+                                wholeBody: poseKeypoints == 133)
                         .padding(.horizontal, 8)
                 }
                 if showHUD { hud.padding(.bottom, 20) }
@@ -228,7 +232,8 @@ struct PhotoTestView: View {
                     if results.indices.contains(i) {
                         DetOverlay.draw(ctx, results[i], scale: scale, ox: 0, oy: 0,
                                         style: style, names: classNames,
-                                        boxes: !(isSeg && segOverlay == .masks))
+                                        boxes: !(isSeg && segOverlay == .masks) && !skeletonOnly,
+                                        labels: !skeletonOnly, pose: pose)
                     }
                 }
             }
@@ -350,7 +355,8 @@ struct PhotoTestView: View {
                 Canvas { ctx, _ in
                     DetOverlay.draw(ctx, dets, scale: scale, ox: 0, oy: 0, style: style,
                                     names: classNames,
-                                    boxes: !(isSeg && segOverlay == .masks))
+                                    boxes: !(isSeg && segOverlay == .masks) && !skeletonOnly,
+                                    labels: !skeletonOnly, pose: pose)
                 }
                 .frame(width: w, height: h)
             }
@@ -491,6 +497,7 @@ struct PhotoTestView: View {
                     lastDet = det
                     lastRaws = rawsF
                     isSeg = det.isSegment
+                    poseKeypoints = det.isPose ? det.keypointCount : 0
                     classNames = det.classNames
                     statPre = sumPre / n
                     statInf = sumInf / n
@@ -511,6 +518,10 @@ struct PhotoTestView: View {
         }
     }
 
+    /// A pose model set to show the skeleton only: no person boxes, no labels - in the
+    /// gallery, the pager and the exported images alike.
+    private var skeletonOnly: Bool { poseKeypoints > 0 && pose.overlay == .skeleton }
+
     /// Export annotated images (as rendered: mask layer + boxes per the current
     /// overlay mode and style) to the photo library, then pop the result.
     private func exportImages(_ idxs: [Int]) {
@@ -518,7 +529,9 @@ struct PhotoTestView: View {
         exporting = true
         let imgs = images, dets = results, masks = maskImages
         let drawMask = isSeg && segOverlay != .boxes
-        let drawBoxes = !(isSeg && segOverlay == .masks)
+        let drawBoxes = !(isSeg && segOverlay == .masks) && !skeletonOnly
+        let labelMode: LabelMode = skeletonOnly ? .off : .full
+        let poseNow = pose
         let names = classNames
         let kitStyle = style.kitStyle
         Task.detached(priority: .userInitiated) {
@@ -529,7 +542,8 @@ struct PhotoTestView: View {
                                            dets: dets.indices.contains(i) ? dets[i] : [],
                                            mask: masks.indices.contains(i) ? masks[i] : nil,
                                            drawMask: drawMask, drawBoxes: drawBoxes,
-                                           names: names, style: kitStyle)
+                                           names: names, style: kitStyle,
+                                           label: labelMode, pose: poseNow)
                     uis.append(UIImage(cgImage: cg))
                 }
             }
@@ -612,7 +626,8 @@ struct PhotoTestView: View {
 /// labels) into a standalone image for export.
 private func composeExport(_ img: CGImage, dets: [Detection], mask: CGImage?,
                            drawMask: Bool, drawBoxes: Bool,
-                           names: [String], style: YOLOMasterKit.BoxStyle) -> CGImage {
+                           names: [String], style: YOLOMasterKit.BoxStyle,
+                           label: LabelMode, pose: PoseDisplay) -> CGImage {
     var out = img
     if drawMask, let mask,
        let ctx = CGContext(data: nil, width: img.width, height: img.height,
@@ -627,7 +642,7 @@ private func composeExport(_ img: CGImage, dets: [Detection], mask: CGImage?,
     }
     if !dets.isEmpty {
         out = annotate(out, dets, names: names, style: style,
-                       label: .full, drawBoxes: drawBoxes) ?? out
+                       label: label, drawBoxes: drawBoxes, pose: pose) ?? out
     }
     return out
 }

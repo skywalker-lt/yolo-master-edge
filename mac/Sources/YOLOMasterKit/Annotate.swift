@@ -8,6 +8,53 @@ public enum BoxStyle: String, CaseIterable, Sendable { case hud, solid, neon }
 public enum LabelMode: String, CaseIterable, Sendable { case full, min, off }
 /// Segmentation display: masks only (boxes removed), boxes only, or both. Ignored for detectors.
 public enum SegOverlay: String, CaseIterable, Sendable { case masks, boxes, both }
+/// Pose display: the skeleton only (person boxes and labels removed), boxes only, or both.
+public enum PoseOverlay: String, CaseIterable, Sendable { case skeleton, boxes, both }
+
+/// How a pose is drawn: the user's pose overlay settings, read by the baked `annotate` output
+/// and by the SwiftUI overlays in the apps, so a saved photo shows what the screen showed.
+/// The default draws everything the model reports, as before these settings existed.
+public struct PoseDisplay: Sendable, Equatable {
+    public var overlay: PoseOverlay
+    /// A keypoint the model is less than this sure it can see is not drawn, nor are its limbs.
+    /// `Keypoint.conf` is on one scale for every pose model: the model's own cut-off sits at
+    /// `PoseSkeleton.minConfidence` (see `Detector.poseKeypoints` for the top-down models).
+    public var minConfidence: Float
+    /// The four groups of the 133-keypoint whole-body layout (ignored for any other layout):
+    /// the 17 body joints, the 6 foot points, the 68 face points, the 42 hand points.
+    public var body: Bool
+    public var feet: Bool
+    public var face: Bool
+    public var hands: Bool
+    /// Multiplies the joint radius and the limb width.
+    public var size: CGFloat
+
+    public init(overlay: PoseOverlay = .both, minConfidence: Float = PoseSkeleton.minConfidence,
+                body: Bool = true, feet: Bool = true, face: Bool = true, hands: Bool = true,
+                size: CGFloat = 1) {
+        self.overlay = overlay; self.minConfidence = minConfidence
+        self.body = body; self.feet = feet; self.face = face; self.hands = hands
+        self.size = size
+    }
+
+    /// Skeletons are drawn in every mode but `boxes`.
+    public var drawsSkeleton: Bool { overlay != .boxes }
+    /// Person boxes and their labels are drawn in every mode but `skeleton`.
+    public var drawsBoxes: Bool { overlay != .skeleton }
+
+    /// Whether keypoint `index` of a pose of `count` keypoints is drawn at visibility `conf`.
+    /// A limb is drawn when both of its ends are.
+    public func shows(keypoint index: Int, count: Int, conf: Float) -> Bool {
+        guard drawsSkeleton, conf >= minConfidence else { return false }
+        guard count == 133 else { return true }
+        switch index {
+        case 0..<17: return body
+        case 17..<23: return feet
+        case 23..<91: return face
+        default: return hands
+        }
+    }
+}
 
 private let palette: [CGColor] = [
     (0.98, 0.26, 0.30), (0.20, 0.71, 0.98), (0.16, 0.85, 0.52), (0.99, 0.79, 0.12),
@@ -106,20 +153,23 @@ public enum PoseSkeleton {
 }
 
 /// One pose skeleton into a bottom-left-origin context of height `h` (keypoints are top-left origin).
-private func drawPose(_ ctx: CGContext, _ kpts: [Keypoint], imageHeight h: CGFloat, lineWidth lw: CGFloat) {
+private func drawPose(_ ctx: CGContext, _ kpts: [Keypoint], imageHeight h: CGFloat, lineWidth baseWidth: CGFloat,
+                      display: PoseDisplay) {
     func pt(_ k: Keypoint) -> CGPoint { CGPoint(x: k.x, y: h - k.y) }
-    let minConf = PoseSkeleton.minConfidence
+    let lw = baseWidth * display.size
+    let n = kpts.count
     ctx.saveGState()
     ctx.setLineCap(.round)
-    for limb in PoseSkeleton.limbs(forKeypointCount: kpts.count) {
+    for limb in PoseSkeleton.limbs(forKeypointCount: n) {
         let a = kpts[limb.a], b = kpts[limb.b]
-        guard a.conf >= minConf, b.conf >= minConf else { continue }
+        guard display.shows(keypoint: limb.a, count: n, conf: a.conf),
+              display.shows(keypoint: limb.b, count: n, conf: b.conf) else { continue }
         let fine = PoseSkeleton.isFine(keypoint: max(limb.a, limb.b), count: kpts.count)
         ctx.setStrokeColor(PoseSkeleton.color(part: limb.part))
         ctx.setLineWidth(lw * (fine ? 0.7 : 1.3))
         ctx.move(to: pt(a)); ctx.addLine(to: pt(b)); ctx.strokePath()
     }
-    for (i, k) in kpts.enumerated() where k.conf >= minConf {
+    for (i, k) in kpts.enumerated() where display.shows(keypoint: i, count: n, conf: k.conf) {
         let fine = PoseSkeleton.isFine(keypoint: i, count: kpts.count)
         let r = lw * (fine ? 1 : 2)
         let c = pt(k)
@@ -141,9 +191,12 @@ func trackColor(_ id: Int) -> CGColor {
 
 /// Draw detections onto `image`, returning a new annotated CGImage.
 /// `masks` (segmentation) are composited under the boxes; pass `drawBoxes: false` to render masks only.
+/// `pose` says how the skeletons of a pose model are drawn (`PoseDisplay`); for its skeleton-only
+/// mode the caller also passes `drawBoxes: false` and `label: .off`.
 public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
                      style: BoxStyle = .hud, label: LabelMode = .full,
-                     masks: [MaskBitmap] = [], drawBoxes: Bool = true) -> CGImage? {
+                     masks: [MaskBitmap] = [], drawBoxes: Bool = true,
+                     pose: PoseDisplay = PoseDisplay()) -> CGImage? {
     let w = image.width, h = image.height
     guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                               space: CGColorSpaceCreateDeviceRGB(),
@@ -164,8 +217,9 @@ public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
     let lw = max(CGFloat(2), CGFloat(w) / 640)
     // pose skeletons go on last, over the boxes and labels (no-op for detections without keypoints)
     func drawPoses() {
+        guard pose.drawsSkeleton else { return }
         for d in dets where !d.keypoints.isEmpty {
-            drawPose(ctx, d.keypoints, imageHeight: CGFloat(h), lineWidth: lw)
+            drawPose(ctx, d.keypoints, imageHeight: CGFloat(h), lineWidth: lw, display: pose)
         }
     }
     if !drawBoxes && label == .off { drawPoses(); return ctx.makeImage() }   // masks-only, no labels
