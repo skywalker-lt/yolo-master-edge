@@ -539,12 +539,18 @@ struct PhotoTestView: View {
             var ok = false
             do {
                 let toSave = uis
-                try await PHPhotoLibrary.shared().performChanges {
-                    for ui in toSave {
-                        PHAssetChangeRequest.creationRequestForAsset(from: ui)
+                // Never send an EMPTY change request (possible when the gallery changed
+                // while the export was being composed): one that creates nothing is not an
+                // add-only request - PhotoKit asks for read-write access for it, and with
+                // no NSPhotoLibraryUsageDescription in the bundle iOS aborts the app.
+                if !toSave.isEmpty {
+                    try await PHPhotoLibrary.shared().performChanges {
+                        for ui in toSave {
+                            PHAssetChangeRequest.creationRequestForAsset(from: ui)
+                        }
                     }
+                    ok = true
                 }
-                ok = !toSave.isEmpty
             } catch {
                 ok = false
             }

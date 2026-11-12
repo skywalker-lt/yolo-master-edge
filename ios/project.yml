@@ -73,6 +73,8 @@ targets:
         # system picker, which needs no library permission. Only saving needs one
         # (add-only). Do not call PHPhotoLibrary with .readWrite without restoring
         # that key - iOS kills the app on a permission request with no usage string.
+        # That includes performChanges with NO creation request in it (an empty
+        # block): PhotoKit treats it as read-write. It crashed every launch once.
         NSPhotoLibraryAddUsageDescription: "Saves captured detection frames to your photo library."
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         # Core ML packages are DIRECTORIES. iOS presents a directory as one selectable

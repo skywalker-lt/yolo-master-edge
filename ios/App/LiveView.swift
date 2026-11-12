@@ -250,13 +250,15 @@ struct LiveView: View {
             lightHaptic.prepare()
             heavyHaptic.prepare()
             firmHaptic.prepare()
-            // first performChanges spins up the photo-library connection (seconds
-            // on a cold start) - warm it here instead of on the first shutter tap
-            if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .authorized {
-                Task.detached(priority: .utility) {
-                    try? await PHPhotoLibrary.shared().performChanges {}
-                }
-            }
+            // NO photo-library warm-up here. There used to be an EMPTY
+            // performChanges {} to spin up the Photos connection ahead of the first
+            // shutter tap. A change request that creates nothing is not an add-only
+            // request: PhotoKit asks for read-write access for it, and this app
+            // declares no NSPhotoLibraryUsageDescription (it only ever adds), so iOS
+            // aborted the app (termination reason TCC) - on EVERY launch from the
+            // moment saving photos had been allowed, on a phone that had never
+            // answered a read-write prompt. Only ever call performChanges with a
+            // creation request inside; the first save pays the connection start-up.
             // Read the model list EVERY time the tab appears, not only at launch: a
             // model imported or deleted in Settings since then has to enter (or
             // leave) the menu - it used to stay invisible until the app was
