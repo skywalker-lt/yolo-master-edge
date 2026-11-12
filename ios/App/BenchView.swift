@@ -180,12 +180,17 @@ struct BenchView: View {
         .safeAreaInset(edge: .top) { topBar }
         .onAppear {
             lightHaptic.prepare(); medHaptic.prepare(); notifyHaptic.prepare()
-            guard models.isEmpty else { return }
+            // every time the tab appears (not only the first), so a model imported or
+            // deleted in Settings enters or leaves the list - but never under a run in
+            // progress, which is iterating over the list it started with
+            guard !running else { return }
             Task.detached {
                 let found = BundledModel.discover()
                 await MainActor.run {
-                    models = found
-                    if selectedModel == nil { selectedModel = BundledModel.preferred(in: found) }
+                    guard !running else { return }
+                    if found != models { models = found }
+                    let keep = BundledModel.reselect(selectedModel, in: found)
+                    if keep != selectedModel { selectedModel = keep }
                 }
             }
         }

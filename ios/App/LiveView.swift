@@ -243,22 +243,20 @@ struct LiveView: View {
                     try? await PHPhotoLibrary.shared().performChanges {}
                 }
             }
-            if models.isEmpty {
-                // discovery compiles bundled packages on first launch - keep it
-                // off the main thread, behind the Initializing card
-                Task.detached(priority: .userInitiated) {
-                    let found = BundledModel.discover()
-                    await MainActor.run {
-                        models = found
-                        initializing = false
-                        if selectedModel == nil {
-                            selectedModel = BundledModel.preferred(in: found)
-                        }
-                        if wantRun { startLoop() }     // cold-start auto-run
-                    }
+            // Read the model list EVERY time the tab appears, not only at launch: a
+            // model imported or deleted in Settings since then has to enter (or
+            // leave) the menu - it used to stay invisible until the app was
+            // relaunched. discover() only lists files, nothing is compiled; it
+            // stays off the main thread, behind the Initializing card at launch.
+            Task.detached(priority: .userInitiated) {
+                let found = BundledModel.discover()
+                await MainActor.run {
+                    if found != models { models = found }
+                    initializing = false
+                    let keep = BundledModel.reselect(selectedModel, in: found)
+                    if keep != selectedModel { selectedModel = keep }
+                    if wantRun { startLoop() }     // cold-start auto-run, auto-resume on tab return
                 }
-            } else if wantRun {
-                startLoop()                            // auto-resume on tab return
             }
         }
         .onDisappear { suspendLoop(); camera.stop() }  // pause, intent preserved

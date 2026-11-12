@@ -103,6 +103,15 @@ struct BundledModel: Identifiable, Hashable {
     static func preferred(in models: [BundledModel]) -> BundledModel? {
         models.first { $0.id.localizedCaseInsensitiveContains("seg") } ?? models.first
     }
+
+    /// The selection to keep after the model list has been read again (every tab re-reads
+    /// it each time it appears, so a model imported or deleted in Settings enters or leaves
+    /// its menu): the same model while it still exists - matched by id, so a package that
+    /// has been compiled since keeps its place - otherwise the launch default.
+    static func reselect(_ current: BundledModel?, in models: [BundledModel]) -> BundledModel? {
+        if let current, let same = models.first(where: { $0.id == current.id }) { return same }
+        return preferred(in: models)
+    }
 }
 
 extension Detector {

@@ -104,14 +104,14 @@ struct PhotoTestView: View {
             .onAppear {
                 lightHaptic.prepare()
                 notifyHaptic.prepare()
-                guard models.isEmpty else { return }
+                // every time the tab appears (not only the first): a model imported or
+                // deleted in Settings must enter or leave the menu. File listing only.
                 Task.detached {
                     let found = BundledModel.discover()
                     await MainActor.run {
-                        models = found
-                        if selectedModel == nil {
-                            selectedModel = BundledModel.preferred(in: found)
-                        }
+                        if found != models { models = found }
+                        let keep = BundledModel.reselect(selectedModel, in: found)
+                        if keep != selectedModel { selectedModel = keep }
                     }
                 }
             }
