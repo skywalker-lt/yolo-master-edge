@@ -498,9 +498,10 @@ struct SettingsView: View {
         }
         let summary = parts.joined(separator: " · ")
         return HStack(spacing: 12) {
-            Image(systemName: facts.kind.icon)
+            ModelIcon.image(facts.kind)
+                .resizable().scaledToFit()
+                .frame(width: 22, height: 22)
                 .foregroundStyle(.secondary)
-                .frame(width: 24)
             VStack(alignment: .leading, spacing: 3) {
                 Text(m.fullName).font(.callout).lineLimit(1)
                 Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)

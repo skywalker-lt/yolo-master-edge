@@ -292,7 +292,7 @@ struct BenchView: View {
                         set: { on in
                             if on { benchExcluded.remove(m.id) } else { benchExcluded.insert(m.id) }
                         })) {
-                        Label(m.fullName, systemImage: m.kind.icon)
+                        Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }
                     }
                     .menuActionDismissBehavior(.disabled)
                 }
@@ -319,7 +319,8 @@ struct BenchView: View {
                 Menu {
                     Picker("Model", selection: $selectedModel) {
                         ForEach(models) { m in
-                            Label(m.fullName, systemImage: m.kind.icon).tag(Optional(m))
+                            Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }
+                                .tag(Optional(m))
                         }
                     }
                 } label: {

@@ -1,6 +1,7 @@
 // Shared stats HUD: FPS tachometer (smooth color ramp), per-stage latency bars
 // (green -> orange as a stage misbehaves), detection count, thermal state.
 import SwiftUI
+import UIKit
 import YOLOMasterKit
 
 // MARK: - color ramps
@@ -405,15 +406,92 @@ struct CrossShape: Shape {
     }
 }
 
+/// The model-type icons, drawn to ONE size.
+///
+/// SF Symbols are not designed to a common size: at the same point size a viewfinder or a
+/// square fills its box while a figure is a narrow glyph of capital-letter height, so in a
+/// menu the pose icon came out visibly smaller than the others - and a menu ignores the size
+/// modifiers of an `Image(systemName:)`, it only shows a bitmap at the size it has. So each
+/// symbol is rendered once, the box its ink occupies is measured, and that ink is scaled to
+/// the same extent (the longer of its width and height) and centred in the same square.
+/// The result is a template image: it takes the text colour like a symbol does.
+enum ModelIcon {
+    /// The square every icon is drawn into, and the extent its ink is scaled to, in points.
+    private static let side: CGFloat = 24
+    private static let ink: CGFloat = 21
+    private static var cache: [String: UIImage] = [:]   // by symbol name; main thread only
+
+    /// The icon of `kind` at the common size (the plain symbol if it cannot be drawn).
+    static func image(_ kind: ModelKind) -> Image {
+        if let drawn = normalized(kind.icon) {
+            return Image(uiImage: drawn).renderingMode(.template)
+        }
+        return Image(systemName: kind.icon)
+    }
+
+    private static func normalized(_ symbol: String) -> UIImage? {
+        if let hit = cache[symbol] { return hit }
+        guard let drawn = draw(symbol) else { return nil }
+        cache[symbol] = drawn
+        return drawn
+    }
+
+    private static func draw(_ symbol: String) -> UIImage? {
+        // 1. the symbol, large and black, into a bitmap that can be read back
+        let config = UIImage.SymbolConfiguration(pointSize: 96, weight: .regular)
+        guard let glyph = UIImage(systemName: symbol, withConfiguration: config)?
+            .withTintColor(.black, renderingMode: .alwaysOriginal) else { return nil }
+        let w = Int(glyph.size.width.rounded(.up)), h = Int(glyph.size.height.rounded(.up))
+        guard w > 0, h > 0,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.translateBy(x: 0, y: CGFloat(h))     // UIKit draws from the top-left corner
+        ctx.scaleBy(x: 1, y: -1)
+        UIGraphicsPushContext(ctx)
+        glyph.draw(in: CGRect(x: 0, y: 0, width: glyph.size.width, height: glyph.size.height))
+        UIGraphicsPopContext()
+        // 2. the box its ink occupies (rows run top to bottom in memory, as in the CGImage)
+        guard let data = ctx.data else { return nil }
+        let bytes = data.assumingMemoryBound(to: UInt8.self)
+        let rowBytes = ctx.bytesPerRow
+        var minX = w, minY = h, maxX = -1, maxY = -1
+        for y in 0..<h {
+            for x in 0..<w where bytes[y * rowBytes + x * 4 + 3] > 16 {
+                if x < minX { minX = x }
+                if x > maxX { maxX = x }
+                if y < minY { minY = y }
+                if y > maxY { maxY = y }
+            }
+        }
+        guard maxX >= minX, maxY >= minY,
+              let inked = ctx.makeImage()?.cropping(to: CGRect(x: minX, y: minY,
+                                                                width: maxX - minX + 1,
+                                                                height: maxY - minY + 1)) else { return nil }
+        // 3. that ink at the common extent, centred in the common square
+        let scale = ink / CGFloat(max(inked.width, inked.height))
+        let size = CGSize(width: CGFloat(inked.width) * scale, height: CGFloat(inked.height) * scale)
+        let canvas = CGSize(width: side, height: side)
+        let out = UIGraphicsImageRenderer(size: canvas).image { _ in
+            UIImage(cgImage: inked).draw(in: CGRect(x: (side - size.width) / 2,
+                                                    y: (side - size.height) / 2,
+                                                    width: size.width, height: size.height))
+        }
+        return out.withRenderingMode(.alwaysTemplate)
+    }
+}
+
 /// The collapsed label of a model picker: the model's type as an icon, its short name, the
 /// menu chevrons. Live, Photo and Bench share it; the menu rows show the same icon beside
-/// the full name (`Label(m.fullName, systemImage: m.kind.icon)`).
+/// the full name (`Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }`).
 struct ModelChip: View {
     let model: BundledModel?
     var body: some View {
         HStack(spacing: 4) {
             if let model {
-                Image(systemName: model.kind.icon).font(.caption)
+                ModelIcon.image(model.kind)
+                    .resizable().scaledToFit()
+                    .frame(width: 17, height: 17)
             }
             Text(model?.shortID ?? "Model").lineLimit(1)
             Image(systemName: "chevron.up.chevron.down").font(.caption2)

@@ -428,7 +428,8 @@ struct LiveView: View {
                 Picker("Model", selection: $selectedModel) {
                     ForEach(models) { m in
                         // the model's type as an icon beside its name
-                        Label(m.fullName, systemImage: m.kind.icon).tag(Optional(m))
+                        Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }
+                            .tag(Optional(m))
                     }
                 }
             } label: {
