@@ -120,6 +120,7 @@ Core ML cannot predict on Linux, so the packages themselves were not run):
 | yolov5nu | box mAP50-95 | 0.3374 | 0.3369 | 5.5 MB | 2.9 MB |
 | YOLO-Master v0.1-N | box mAP50-95 | 0.4245 | 0.4232 | 15.5 MB | 8.2 MB |
 | yolo26n-pose | pose mAP50-95 | 0.5686 | 0.5649 | 6.2 MB | 3.3 MB |
+| YOLO-Master v0.1-seg-N | mask mAP50-95 (500 val images, via its ONNX export) | 0.3605 | 0.3594 | 6.2 MB | 3.4 MB |
 | RTMW-l 384x288 | hand keypoints within 20% of the hand's size | 83.1% | 83.0% | 114.9 MB | 57.7 MB |
 
 Sizes are the whole package on disk. Speed is not expected to change: the weights are expanded
