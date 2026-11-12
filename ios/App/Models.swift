@@ -17,9 +17,12 @@ struct BundledModel: Identifiable, Hashable {
         return id
     }
     /// A stock model from another family: its file name already says what it is (yolo11n,
-    /// yolo12n, yolo26n-pose, yolov8n ...) and had no YOLO-Master prefix to strip. Showing it
-    /// as "YOLO-Master-yolo11n" would put this project's name on someone else's model.
-    private var isStock: Bool { id.lowercased().hasPrefix("yolo") && stem == id }
+    /// yolo12n, yolo26n-pose, yolov8n, dwpose-t ...) and had no YOLO-Master prefix to strip.
+    /// Showing it as "YOLO-Master-yolo11n" would put this project's name on someone else's model.
+    private var isStock: Bool {
+        let name = id.lowercased()
+        return stem == id && ["yolo", "dwpose", "rtmpose", "rtmw"].contains { name.hasPrefix($0) }
+    }
     /// Display name: YOLO-Master models are presented as YOLO-Master-<stem> (existing
     /// YOLO-Master prefixes are normalized, never doubled); stock models keep their own name.
     var fullName: String { isStock ? id : "YOLO-Master-" + stem }
@@ -120,11 +123,48 @@ struct BundledModel: Identifiable, Hashable {
     /// a package that still has to be compiled - keep it off the main thread.
     func loadProblem() -> String? {
         do {
-            _ = try Detector(modelURL: try compiledURL(), compute: ComputeMode("cpu"))
+            _ = try makeDetector(compute: ComputeMode("cpu"))
             return nil
         } catch {
             return error.localizedDescription
         }
+    }
+
+    /// This model, loaded for inference - the one way the app creates a `Detector`.
+    ///
+    /// A top-down pose model (DWPose) does not find people itself: the Kit runs a detection
+    /// model on the frame first and the pose model once per person. The Kit asks for that
+    /// detector only when the package turns out to be top-down, so every other model loads
+    /// exactly as before.
+    func makeDetector(compute: ComputeMode) throws -> Detector {
+        let own = id
+        return try Detector(modelURL: try compiledURL(), compute: compute, personDetector: {
+            try BundledModel.personDetector(compute: compute, excluding: own)
+        })
+    }
+
+    /// The detector that finds the people for a top-down pose model: a plain detection model
+    /// in the app whose classes include "person". yolo26n first - the pose model's accuracy
+    /// was measured behind it - then the other stock nano detectors, then anything else by
+    /// name. Models named as segmentation or pose are not tried (they would cost a load each
+    /// to find out), and one that fails to load is skipped.
+    static func personDetector(compute: ComputeMode, excluding: String) throws -> Detector {
+        let preferred = ["yolo26n", "yolo11n", "yolo12n", "yolov8n", "yolov5nu"]
+        let candidates = discover().filter { m in
+            let name = m.id.lowercased()
+            return m.id != excluding && !name.contains("seg") && !name.contains("pose")
+        }
+        let ordered = candidates.sorted { a, b in
+            let ra = preferred.firstIndex(of: a.id.lowercased()) ?? preferred.count
+            let rb = preferred.firstIndex(of: b.id.lowercased()) ?? preferred.count
+            return ra != rb ? ra < rb : a.id < b.id
+        }
+        for m in ordered {
+            guard let url = try? m.compiledURL(),
+                  let det = try? Detector(modelURL: url, compute: compute) else { continue }
+            if !det.isSegment, !det.isPose, det.classNames.contains("person") { return det }
+        }
+        throw DetectorError.needsPersonDetector
     }
 }
 

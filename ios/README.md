@@ -65,6 +65,16 @@ Before every upload:
   COCO keypoints, limbs coloured by body part, joints the model is less than
   50% sure it can see left out. Saved photos carry the skeleton too. Decoding
   and the skeleton rules live in the Kit (`Detection.keypoints`, `PoseSkeleton`).
+  A 133-keypoint COCO-WholeBody model draws the body skeleton plus feet, finger
+  bones and the 68 face points (those at half size).
+- **Top-down pose (DWPose)** - `dwpose-t-wholebody` (exported with
+  `coreml_export/export_dwpose.py`) does not find people itself. The Kit runs a
+  detection model on the frame first and the pose model once per person (up to
+  8), so it needs a plain detector with a `person` class in the app: `yolo26n`
+  is used when present, else `yolo11n`, `yolo12n`, or any other one. The conf
+  and IoU sliders act on the person boxes (conf down to 0.10). The HUD's model
+  time is both stages together. Without a detector the model is refused with
+  that reason, in Live and at import.
 - **NMS-free models** - a model in the end-to-end layout (`end2end=true` in its
   metadata: YOLO26 / YOLOv10 exported without `--anchors`) emits one row per
   object. The app runs no NMS on it and hides the IoU slider in both tabs; only

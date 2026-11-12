@@ -142,18 +142,22 @@ enum DetOverlay {
         for limb in PoseSkeleton.limbs(forKeypointCount: kpts.count) {
             let a = kpts[limb.a], b = kpts[limb.b]
             guard a.conf >= minConf, b.conf >= minConf else { continue }
+            // feet, face and hands of the whole-body layout are drawn at about half size
+            let fine = PoseSkeleton.isFine(keypoint: max(limb.a, limb.b), count: kpts.count)
             var line = Path()
             line.move(to: pt(a))
             line.addLine(to: pt(b))
             ctx.stroke(line, with: .color(Color(cgColor: PoseSkeleton.color(part: limb.part))),
-                       style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                       style: StrokeStyle(lineWidth: fine ? 1.5 : 2.5, lineCap: .round))
         }
         for (i, k) in kpts.enumerated() where k.conf >= minConf {
+            let fine = PoseSkeleton.isFine(keypoint: i, count: kpts.count)
+            let r: CGFloat = fine ? 2 : 3.5
             let c = pt(k)
-            let dot = Path(ellipseIn: CGRect(x: c.x - 3.5, y: c.y - 3.5, width: 7, height: 7))
+            let dot = Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r))
             let part = PoseSkeleton.part(ofKeypoint: i, count: kpts.count)
             ctx.fill(dot, with: .color(Color(cgColor: PoseSkeleton.color(part: part))))
-            ctx.stroke(dot, with: .color(.white.opacity(0.9)), lineWidth: 1)
+            ctx.stroke(dot, with: .color(.white.opacity(0.9)), lineWidth: fine ? 0.5 : 1)
         }
     }
 

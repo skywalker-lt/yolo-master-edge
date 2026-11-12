@@ -628,8 +628,7 @@ struct BenchView: View {
                     if control.cancelled { return }
                     if !(await pauseGate()) { return }
                     await MainActor.run { phase = .loadingModel(m.fullName, c.rawValue) }
-                    guard let url = try? m.compiledURL(),
-                          let det = try? Detector(modelURL: url, compute: c.mode) else {
+                    guard let det = try? m.makeDetector(compute: c.mode) else {
                         done += 1; continue
                     }
                     await MainActor.run { phase = .benchmarking(m.fullName, c.rawValue, done, total) }
@@ -666,8 +665,7 @@ struct BenchView: View {
         loopTask = Task.detached(priority: .userInitiated) {
             let img = testImage()
             await MainActor.run { phase = .loadingModel(m.fullName, c.rawValue) }
-            guard let url = try? m.compiledURL(),
-                          let det = try? Detector(modelURL: url, compute: c.mode) else {
+            guard let det = try? m.makeDetector(compute: c.mode) else {
                 await MainActor.run { running = false; phase = .idle }; return
             }
             // cold baseline

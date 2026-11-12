@@ -126,12 +126,17 @@ public enum DetectorError: Error, LocalizedError {
     case inputBuildFailed, badOutput
     /// The package loads in Core ML but is not something this decoder can run; the text says why.
     case unsupportedModel(String)
+    /// A top-down pose model was loaded without a detector to find the people for it
+    /// (see `Detector.init`'s `personDetector`).
+    case needsPersonDetector
 
     public var errorDescription: String? {
         switch self {
         case .inputBuildFailed: return "The image could not be turned into the model's input."
         case .badOutput: return "The model did not return a detection tensor this app can read."
         case .unsupportedModel(let why): return why
+        case .needsPersonDetector:
+            return "This pose model works on one person at a time and needs a detection model with a \"person\" class next to it (for example yolo26n). Add one first."
         }
     }
 }
@@ -175,6 +180,24 @@ public final class Detector {
     /// The original YOLOv5 head (ultralytics/yolov5): output [1, anchors, 5 + nc], one ROW per
     /// anchor holding cx, cy, w, h, objectness and the class scores (score = objectness x class).
     public let anchorRows: Bool
+    /// Top-down pose model (DWPose / RTMPose, metadata task "pose-topdown"): it does not find
+    /// people. Its input is ONE person crop [1, 3, cropH, cropW] (RGB, 0..1) and its output
+    /// [1, keypoints, 3] holds x, y in crop pixels and a score per keypoint. `forward` runs
+    /// `personDetector` on the frame first and this model once per person found, so the rest
+    /// of the Kit and the apps see an ordinary pose model: detections with a box and keypoints.
+    public let isTopDown: Bool
+    private let personDetector: Detector?
+    private let personClass: Int          // index of "person" in the person detector's classes
+    private let cropW: Int, cropH: Int    // the person crop the model takes (0 unless top-down)
+    /// People are looked for down to this score, so the conf lever can be lowered to it without
+    /// a second forward pass; the best `maxPersons` of them get a pose.
+    static let personFloor: Float = 0.1
+    static let maxPersons = 8
+    /// A top-down keypoint score is the height of its SimCC peak, not a probability. Measured on
+    /// COCO-WholeBody val (DWPose-t), 0.3 keeps 91% of the hand points and 87% of the body points
+    /// and drops under 5% of the correct ones; it is mapped onto `PoseSkeleton.minConfidence`, the
+    /// visibility every frontend draws from.
+    static let topDownKeypointScore: Float = 0.3
     public let modelURL: URL
     /// The exporter's creator-defined metadata (names, imgsz, task, precision when stamped, ...).
     public let metadata: [String: String]
@@ -186,7 +209,11 @@ public final class Detector {
 
     /// `forceCompute: true` keeps the requested compute units even for end2end models,
     /// which otherwise auto-downgrade to CPU (see below).
-    public init(modelURL: URL, compute: ComputeMode = .cpuAndGPU, forceCompute: Bool = false) throws {
+    /// `personDetector` is called only when the package turns out to be a top-down pose model
+    /// (`isTopDown`): it returns the detector that finds the people for it - any detection model
+    /// with a "person" class. Without it such a package throws `needsPersonDetector`.
+    public init(modelURL: URL, compute: ComputeMode = .cpuAndGPU, forceCompute: Bool = false,
+                personDetector: (() throws -> Detector)? = nil) throws {
         let compiledURL = modelURL.pathExtension.lowercased() == "mlmodelc"
             ? modelURL : try MLModel.compileModel(at: modelURL)
         func load(_ mode: ComputeMode) throws -> MLModel {
@@ -206,8 +233,10 @@ public final class Detector {
         // keypoint values follow the class scores in the detection tensor, already decoded to
         // letterboxed-input pixels (x, y) and a sigmoid visibility.
         let poseTask = (meta["task"] ?? "detect") == "pose"
+        // top-down pose (DWPose / RTMPose): one person crop in, [1, keypoints, 3] out
+        let topDown = (meta["task"] ?? "detect") == "pose-topdown"
         let kptShape: (count: Int, dims: Int) = {
-            guard poseTask else { return (0, 0) }
+            guard poseTask || topDown else { return (0, 0) }
             let parts = (meta["kpt_shape"] ?? "").split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
             if parts.count == 2, parts[0] > 0, parts[1] == 2 || parts[1] == 3 { return (parts[0], parts[1]) }
             return (17, 3)   // COCO keypoints, the ultralytics pose default
@@ -251,6 +280,31 @@ public final class Detector {
                 throw DetectorError.unsupportedModel(
                     "Its output \"\(outName)\" has shape \(outShape): the anchors come first. Export it as [1, 4 + classes, anchors].")
             }
+        }
+        // Top-down pose: check the crop and the keypoint tensor the package declares, then get
+        // the detector that finds the people. Everything here can throw, so it runs before the
+        // first stored property is set.
+        var personResolved: Detector? = nil
+        var personIndex = 0
+        var cropSize = (w: 0, h: 0)
+        if topDown {
+            guard let shape = md.inputDescriptionsByName[inName]?.multiArrayConstraint?.shape, shape.count == 4,
+                  shape[2].intValue > 0, shape[3].intValue > 0 else {
+                throw DetectorError.unsupportedModel(
+                    "Its input \"\(inName)\" does not declare a [1, 3, height, width] person crop.")
+            }
+            cropSize = (w: shape[3].intValue, h: shape[2].intValue)
+            if outShape.count == 3, outShape[1] != kptShape.count || outShape[2] < 3 {
+                throw DetectorError.unsupportedModel(
+                    "Its output \"\(outName)\" has shape \(outShape); a top-down pose model returns [1, \(kptShape.count), 3] (x, y and a score per keypoint).")
+            }
+            guard let make = personDetector else { throw DetectorError.needsPersonDetector }
+            let person = try make()
+            guard !person.isTopDown, let idx = person.classNames.firstIndex(of: "person") else {
+                throw DetectorError.needsPersonDetector
+            }
+            personResolved = person
+            personIndex = idx
         }
         // class count from the output shape [1, 4+nc, anchors] (authoritative for ANY model);
         // fall back to the metadata names count. An end2end tensor's dim1 is max_det, not
@@ -316,14 +370,21 @@ public final class Detector {
         self.protoName = protoResolved
         self.isSegment = segTask
         self.nm = nmResolved
-        self.isPose = poseTask
+        self.isPose = poseTask || topDown
         self.keypointCount = kptShape.count
         self.keypointDims = kptShape.dims
-        self.nc = ncFinal
-        self.classNames = metaNames.count == ncFinal ? metaNames : (0..<ncFinal).map { "class\($0)" }
+        // a top-down pose model has one class, the person its detector found
+        self.nc = topDown ? 1 : ncFinal
+        self.classNames = topDown ? ["person"]
+            : (metaNames.count == ncFinal ? metaNames : (0..<ncFinal).map { "class\($0)" })
         self.imgsz = szResolved
         self.end2end = e2eResolved && !segTask
         self.anchorRows = v5Rows
+        self.isTopDown = topDown
+        self.personDetector = personResolved
+        self.personClass = personIndex
+        self.cropW = cropSize.w
+        self.cropH = cropSize.h
     }
 
     /// Human-readable one-line model summary (parity with the CLI `[model]` banner).
@@ -414,6 +475,8 @@ public final class Detector {
     /// All boxes above `confFloor` (NO NMS), ORIGINAL-image pixels, sorted by score desc.
     /// Cache this once per image after `forward`; then re-run `nms(_:conf:iou:)` for cheap tuning.
     public func candidates(_ raw: RawOutput, confFloor: Float = 0.05) -> [Detection] {
+        // top-down pose: the people and their keypoints were worked out in `forward`
+        if let poses = raw.poses { return poses.filter { $0.score > confFloor } }
         let y = raw.y
         guard outputFits(y) else { return [] }   // a mask-only raw ([1]) or a foreign RawOutput: nothing to decode
         let na = y.shape[2].intValue
@@ -694,10 +757,16 @@ public final class Detector {
         public let preMs: Double
         /// GPU command-buffer time of the Metal preprocess (0 on the CPU path); a sub-metric of `preMs`.
         public let preGpuMs: Double
+        /// Top-down pose only: the people found in the frame, each with its keypoints, sorted by
+        /// score. `candidates` returns these instead of decoding `y` (which is then the person
+        /// detector's tensor, kept only to satisfy the field).
+        fileprivate let poses: [Detection]?
         fileprivate init(y: MLMultiArray, proto: MLMultiArray?, scaleX: CGFloat, scaleY: CGFloat, padX: CGFloat, padY: CGFloat,
-                         origW: Int, origH: Int, inferMs: Double, preMs: Double = 0, preGpuMs: Double = 0) {
+                         origW: Int, origH: Int, inferMs: Double, preMs: Double = 0, preGpuMs: Double = 0,
+                         poses: [Detection]? = nil) {
             self.y = y; self.proto = proto; self.scaleX = scaleX; self.scaleY = scaleY; self.padX = padX; self.padY = padY
             self.origW = origW; self.origH = origH; self.inferMs = inferMs; self.preMs = preMs; self.preGpuMs = preGpuMs
+            self.poses = poses
         }
 
         /// A copy retaining ONLY what mask rendering needs (proto tensor + letterbox geometry),
@@ -713,6 +782,7 @@ public final class Detector {
 
     /// Core ML forward pass only (letterbox → predict). Cache the result and re-`decode`.
     public func forward(_ image: CGImage) throws -> RawOutput {
+        if isTopDown { return try forwardTopDown(image) }
         if gpuActive, let mp = metal {
             let tp = Date()
             guard let tex = mp.texture(from: image),
@@ -754,6 +824,11 @@ public final class Detector {
     /// the Metal kernel directly (zero copy through the texture cache); on the CPU path it is wrapped
     /// as a CGImage with a single copy (no CIContext) then letterboxed as usual.
     public func forward(_ pixelBuffer: CVPixelBuffer) throws -> RawOutput {
+        if isTopDown {
+            // the person crops are cut from an image, so the buffer is wrapped once for both stages
+            guard let cg = Detector.cgImage(from: pixelBuffer) else { throw DetectorError.inputBuildFailed }
+            return try forwardTopDown(cg)
+        }
         if gpuActive, let mp = metal, let (tex, holder) = mp.texture(from: pixelBuffer) {
             let tp = Date()
             let w = CVPixelBufferGetWidth(pixelBuffer), h = CVPixelBufferGetHeight(pixelBuffer)
@@ -764,6 +839,108 @@ public final class Detector {
         }
         guard let cg = Detector.cgImage(from: pixelBuffer) else { throw DetectorError.inputBuildFailed }
         return try forward(cg)
+    }
+
+    // ---------- top-down pose (DWPose / RTMPose) ----------
+    /// Person boxes from `personDetector`, then this model once per person. The result behaves
+    /// like any pose model's forward pass: `candidates` / `decode` return the people with their
+    /// keypoints, and the conf and IoU levers act on the person boxes (down to `personFloor`,
+    /// and up to the 0.7 overlap the people are thinned to here).
+    private func forwardTopDown(_ image: CGImage) throws -> RawOutput {
+        guard let person = personDetector else { throw DetectorError.needsPersonDetector }
+        let praw = try person.forward(image)
+        let t0 = Date()
+        let people = person.decode(praw, conf: Detector.personFloor, iou: 0.7)
+            .filter { $0.cls == personClass }
+            .prefix(Detector.maxPersons)
+        var poses: [Detection] = []
+        var poseMs = 0.0
+        for p in people {
+            let region = poseRegion(p.rect)
+            guard let input = poseInput(image, region: region) else { continue }
+            let ti = Date()
+            let out = try model.prediction(from: input)
+            poseMs += Date().timeIntervalSince(ti) * 1000
+            guard let k = out.featureValue(for: outputName)?.multiArrayValue else { continue }
+            poses.append(Detection(cls: 0, score: p.score, rect: p.rect,
+                                   keypoints: poseKeypoints(k, region: region)))
+        }
+        // model time is both stages together; decoding the boxes and cutting the crops counts
+        // as preprocessing
+        let stageMs = Date().timeIntervalSince(t0) * 1000
+        return RawOutput(y: praw.y, proto: nil, scaleX: praw.scaleX, scaleY: praw.scaleY,
+                         padX: praw.padX, padY: praw.padY, origW: image.width, origH: image.height,
+                         inferMs: praw.inferMs + poseMs, preMs: praw.preMs + max(0, stageMs - poseMs),
+                         poses: poses)
+    }
+
+    /// The part of the frame one person's crop is cut from, as mmpose's top-down pipeline does
+    /// it: the box grown by a quarter about its centre, then widened or heightened to the crop's
+    /// shape. It may reach past the frame; that part of the crop stays black.
+    private func poseRegion(_ box: CGRect) -> CGRect {
+        var w = box.width * 1.25, h = box.height * 1.25
+        let aspect = CGFloat(cropW) / CGFloat(cropH)
+        if w > h * aspect { h = w / aspect } else { w = h * aspect }
+        return CGRect(x: box.midX - w / 2, y: box.midY - h / 2, width: w, height: h)
+    }
+
+    /// `region` of `image` resized to the model's crop, as its input tensor (RGB, 0..1, planar).
+    private func poseInput(_ image: CGImage, region: CGRect) -> MLDictionaryFeatureProvider? {
+        let w = cropW, h = cropH
+        guard w > 0, h > 0, region.width > 1, region.height > 1 else { return nil }
+        let sx = CGFloat(w) / region.width, sy = CGFloat(h) / region.height
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        px.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                                      bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
+            ctx.interpolationQuality = .medium
+            // The whole image is drawn scaled so that `region` lands exactly on the raster.
+            // Raster row 0 is the TOP of the context and Core Graphics measures y from the
+            // bottom, so the image's bottom edge sits at h - (imageHeight - region.minY) * sy.
+            ctx.draw(image, in: CGRect(x: -region.minX * sx,
+                                       y: CGFloat(h) - (CGFloat(image.height) - region.minY) * sy,
+                                       width: CGFloat(image.width) * sx, height: CGFloat(image.height) * sy))
+        }
+        guard let arr = try? MLMultiArray(shape: [1, 3, NSNumber(value: h), NSNumber(value: w)], dataType: .float32)
+        else { return nil }
+        let p = arr.dataPointer.bindMemory(to: Float32.self, capacity: arr.count)
+        let plane = w * h
+        px.withUnsafeBufferPointer { rb in
+            guard let src = rb.baseAddress else { return }
+            for ch in 0..<3 {
+                vDSP_vfltu8(src + ch, 4, p + ch * plane, 1, vDSP_Length(plane))
+            }
+        }
+        var inv255 = Float32(1.0 / 255.0)
+        vDSP_vsmul(p, 1, &inv255, p, 1, vDSP_Length(3 * plane))
+        return try? MLDictionaryFeatureProvider(dictionary: [inputName: MLFeatureValue(multiArray: arr)])
+    }
+
+    /// The model's [1, keypoints, 3] output (x, y in crop pixels, score) as keypoints in
+    /// ORIGINAL-image pixels. The score becomes the visibility the frontends draw from:
+    /// `topDownKeypointScore` lands on `PoseSkeleton.minConfidence`.
+    private func poseKeypoints(_ k: MLMultiArray, region: CGRect) -> [Keypoint] {
+        guard k.shape.count == 3, k.shape[1].intValue >= keypointCount, k.shape[2].intValue >= 3 else { return [] }
+        let s1 = k.strides[1].intValue, s2 = k.strides[2].intValue
+        let base = k.dataPointer
+        let type = k.dataType
+        func value(_ i: Int, _ c: Int) -> Float32 {
+            let at = i * s1 + c * s2
+            if type == .float16 { return halfToFloat(base.load(fromByteOffset: at * 2, as: UInt16.self)) }
+            if type == .double { return Float32(base.load(fromByteOffset: at * 8, as: Double.self)) }
+            return base.load(fromByteOffset: at * 4, as: Float32.self)
+        }
+        let sx = region.width / CGFloat(cropW), sy = region.height / CGFloat(cropH)
+        let toVisibility = PoseSkeleton.minConfidence / Detector.topDownKeypointScore
+        var pts: [Keypoint] = []
+        pts.reserveCapacity(keypointCount)
+        for i in 0..<keypointCount {
+            pts.append(Keypoint(x: CGFloat(value(i, 0)) * sx + region.minX,
+                                y: CGFloat(value(i, 1)) * sy + region.minY,
+                                conf: min(1, max(0, value(i, 2) * toVisibility))))
+        }
+        return pts
     }
 
     /// The model input tensor for `image` on the current preprocessing device (no prediction), as
@@ -1324,6 +1501,17 @@ public final class Detector {
     /// Model-only forward (no decode/draw) - for latency benchmarking. Returns ms.
     @discardableResult
     public func inferOnly(_ image: CGImage) throws -> Double {
+        if isTopDown {
+            // one frame with one person in it: the person detector, then one crop (the whole
+            // image stands in for the person, a benchmark image has nobody in it)
+            guard let person = personDetector else { throw DetectorError.needsPersonDetector }
+            let detectMs = try person.inferOnly(image)
+            let whole = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+            guard let input = poseInput(image, region: poseRegion(whole)) else { throw DetectorError.inputBuildFailed }
+            let t0 = Date()
+            _ = try model.prediction(from: input)
+            return detectMs + Date().timeIntervalSince(t0) * 1000
+        }
         let lb = letterbox(image)
         guard let input = fillInput(lb.px) else { throw DetectorError.inputBuildFailed }
         let t0 = Date()

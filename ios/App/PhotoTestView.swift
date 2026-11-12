@@ -435,7 +435,7 @@ struct PhotoTestView: View {
         maskImages = Array(repeating: nil, count: imgs.count)
         Task.detached {
             do {
-                let det = try Detector(modelURL: m.compiledURL(), compute: mode)
+                let det = try m.makeDetector(compute: mode)
                 // known as soon as the model is loaded: the IoU lever leaves (or returns)
                 // before the first result of this run is on screen
                 let free = det.end2end

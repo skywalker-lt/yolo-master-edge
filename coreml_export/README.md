@@ -43,7 +43,17 @@ python export_coreml.py --weights base.pt --merge-lora-dir lora_adapter/ --imgsz
 # stock ultralytics models for the iOS app (iOS 17 target); a pose model is detected from its head
 python export_coreml.py --weights yolo11n.pt --imgsz 640 --target ios17 --out yolo11n.mlpackage
 python export_coreml.py --weights yolo26n-pose.pt --imgsz 640 --target ios17 --anchors --out yolo26n-pose.mlpackage
+
+# top-down whole-body pose (DWPose-t, 133 keypoints): a separate script, from the published ONNX
+python export_dwpose.py --onnx rtmpose-t_.../end2end.onnx --target ios17 --out dwpose-t-wholebody.mlpackage
 ```
+
+`export_dwpose.py` covers the top-down SimCC pose models (DWPose / RTMPose). They take one
+person crop, not a frame, so the package is a different contract: input `image`
+`[1, 3, 256, 192]` (RGB, 0..1), output `keypoints` `[1, 133, 3]` (x, y in crop pixels and a
+score), `task=pose-topdown`. Normalisation and SimCC decoding are inside the package; the app
+runs a person detector in front of it. The script header has the download link and the three
+extra packages it needs (`onnx`, `onnxruntime`, `onnx2torch`).
 
 ## What the script handles (and why)
 

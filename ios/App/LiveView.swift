@@ -547,7 +547,7 @@ struct LiveView: View {
         loopTask = Task.detached(priority: .userInitiated) {
             let det: Detector
             do {
-                det = try Detector(modelURL: try model.compiledURL(), compute: mode)
+                det = try model.makeDetector(compute: mode)
             } catch {
                 // A model that cannot be loaded (a damaged package, or one that is not a
                 // detector the Kit can decode): say why and go back to the paused state.

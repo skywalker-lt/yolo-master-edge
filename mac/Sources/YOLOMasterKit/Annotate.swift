@@ -41,20 +41,57 @@ public enum PoseSkeleton {
         (1, 2, 0), (0, 1, 0), (0, 2, 0), (1, 3, 0), (2, 4, 0), (3, 5, 0), (4, 6, 0),     // head
     ]
 
-    /// Limbs to draw for a pose of `count` keypoints: the COCO skeleton for 17, none otherwise
-    /// (a custom keypoint set has no known topology here, so only its joints are drawn).
+    /// The COCO-WholeBody skeleton (133 keypoints): the 17 body keypoints first, in COCO order,
+    /// then 17-22 feet (big toe, small toe, heel, left then right), 23-90 the 68 face points,
+    /// 91-111 the left hand and 112-132 the right hand (wrist, then four joints per finger from
+    /// thumb to little finger). Body limbs, each ankle to its toes and heel, and the finger
+    /// bones are drawn; the face is points only.
+    public static let wholeBodyLimbs: [(a: Int, b: Int, part: Int)] = {
+        var all: [(a: Int, b: Int, part: Int)] = PoseSkeleton.coco17Limbs
+        let feet: [(a: Int, b: Int, part: Int)] = [
+            (15, 17, 3), (15, 18, 3), (15, 19, 3), (16, 20, 3), (16, 21, 3), (16, 22, 3),
+        ]
+        all.append(contentsOf: feet)
+        for wrist in [91, 112] {
+            for finger in 0..<5 {
+                let first = wrist + 1 + finger * 4
+                all.append((a: wrist, b: first, part: 1))
+                for joint in 0..<3 {
+                    all.append((a: first + joint, b: first + joint + 1, part: 1))
+                }
+            }
+        }
+        return all
+    }()
+
+    /// Limbs to draw for a pose of `count` keypoints: the COCO skeleton for 17, the whole-body
+    /// one for 133, none otherwise (a custom keypoint set has no known topology here, so only
+    /// its joints are drawn).
     public static func limbs(forKeypointCount count: Int) -> [(a: Int, b: Int, part: Int)] {
-        count == 17 ? coco17Limbs : []
+        switch count {
+        case 17: return coco17Limbs
+        case 133: return wholeBodyLimbs
+        default: return []
+        }
     }
 
     /// Body part of keypoint `index` in a pose of `count` keypoints (0 when the layout is unknown).
     public static func part(ofKeypoint index: Int, count: Int) -> Int {
-        guard count == 17 else { return 0 }
+        guard count == 17 || count == 133 else { return 0 }
         switch index {
-        case 0...4: return 0
-        case 5...10: return 1
-        default: return 3
+        case 0...4: return 0        // head
+        case 5...10: return 1       // arms
+        case 11...22: return 3      // legs, and the feet of the whole-body layout
+        case 23...90: return 0      // face
+        default: return 1           // hands
         }
+    }
+
+    /// A keypoint of the whole-body layout beyond the 17 body joints (feet, face, hands). There
+    /// are 116 of them, 68 on the face alone, so they are drawn at about half size, and so are
+    /// the limbs that end in one.
+    public static func isFine(keypoint index: Int, count: Int) -> Bool {
+        count == 133 && index >= 17
     }
 
     /// Colour of a body part, from the class palette: head green, arms blue, torso purple, legs orange.
@@ -77,18 +114,20 @@ private func drawPose(_ ctx: CGContext, _ kpts: [Keypoint], imageHeight h: CGFlo
     for limb in PoseSkeleton.limbs(forKeypointCount: kpts.count) {
         let a = kpts[limb.a], b = kpts[limb.b]
         guard a.conf >= minConf, b.conf >= minConf else { continue }
+        let fine = PoseSkeleton.isFine(keypoint: max(limb.a, limb.b), count: kpts.count)
         ctx.setStrokeColor(PoseSkeleton.color(part: limb.part))
-        ctx.setLineWidth(lw * 1.3)
+        ctx.setLineWidth(lw * (fine ? 0.7 : 1.3))
         ctx.move(to: pt(a)); ctx.addLine(to: pt(b)); ctx.strokePath()
     }
-    let r = lw * 2
     for (i, k) in kpts.enumerated() where k.conf >= minConf {
+        let fine = PoseSkeleton.isFine(keypoint: i, count: kpts.count)
+        let r = lw * (fine ? 1 : 2)
         let c = pt(k)
         let dot = CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
         ctx.setFillColor(PoseSkeleton.color(part: PoseSkeleton.part(ofKeypoint: i, count: kpts.count)))
         ctx.fillEllipse(in: dot)
         ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.9))
-        ctx.setLineWidth(lw * 0.5)
+        ctx.setLineWidth(lw * (fine ? 0.25 : 0.5))
         ctx.strokeEllipse(in: dot)
     }
     ctx.restoreGState()
