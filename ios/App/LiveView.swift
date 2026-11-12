@@ -700,7 +700,9 @@ struct LiveView: View {
                 // comes back LANDSCAPE was not rotated by the capture pipeline
                 // (the front camera): turn it the same way as its video frames.
                 let still = shot.flatMap { (img: CGImage) -> CGImage? in
-                    img.width > img.height ? quarterTurned(img, clockwise: !front) : img
+                    img.width > img.height
+                        ? quarterTurned(img, clockwise: CameraController.sidewaysTurnIsClockwise(front: front))
+                        : img
                 }
                 if let photo = still {
                     // photo sensor FOV is wider than the 16:9 video FOV the
@@ -812,10 +814,9 @@ struct LiveView: View {
 /// `image` turned a quarter-turn, as a new bitmap (width and height swap).
 ///
 /// Needed because a camera's sensor is mounted landscape: when the capture
-/// pipeline does not rotate a frame, it arrives lying on its side. Measured on
-/// an iPhone 15 Pro Max against the on-screen preview, a FRONT-camera frame
-/// has to turn counter-clockwise to stand upright; the back sensor is mounted
-/// the other way round and turns clockwise.
+/// pipeline does not rotate a frame, it arrives lying on its side. Which way
+/// it has to turn depends on the phone's sensor, not only on front or back:
+/// `CameraController.sidewaysTurnIsClockwise(front:)` decides.
 ///
 /// Core Graphics is y-up, so a positive angle is counter-clockwise on screen.
 /// The translation moves the turned image back into the positive quadrant:
@@ -844,7 +845,8 @@ private func quarterTurned(_ image: CGImage, clockwise: Bool) -> CGImage? {
 /// orientation and gets a quarter-turn (see `quarterTurned`).
 private func uprightFrame(_ pb: CVPixelBuffer, front: Bool) -> CGImage? {
     guard let cg = Detector.cgImage(from: pb) else { return nil }
-    return cg.width > cg.height ? quarterTurned(cg, clockwise: !front) : cg
+    return cg.width > cg.height
+        ? quarterTurned(cg, clockwise: CameraController.sidewaysTurnIsClockwise(front: front)) : cg
 }
 
 /// Camera-app shutter feel: quick shrink while pressed.

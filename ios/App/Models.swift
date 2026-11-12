@@ -187,14 +187,20 @@ enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
     /// and newer default to Auto. Everything non-iPhone (iPad, simulator) also
     /// defaults to Auto.
     static var deviceDefault: ComputeChoice {
-        var sys = utsname(); uname(&sys)
-        let id = Mirror(reflecting: sys.machine).children.compactMap { c -> String? in
-            guard let v = c.value as? Int8, v != 0 else { return nil }
-            return String(UnicodeScalar(UInt8(v)))
-        }.joined()                                   // e.g. "iPhone16,1"
-        guard id.hasPrefix("iPhone"),
-              let major = Int(id.dropFirst(6).prefix { $0.isNumber })
-        else { return .auto }
+        guard let major = iPhoneHardwareGeneration else { return .auto }
         return major <= 16 ? .gpu : .auto
     }
 }
+
+/// The phone's hardware generation: N in the hardware identifier "iPhoneN,M" - 16 for the
+/// iPhone 15 Pro / Pro Max, 17 for the iPhone 16 family, 18 for the iPhone 17 family and the
+/// iPhone Air. nil when this is not an iPhone (iPad, simulator).
+let iPhoneHardwareGeneration: Int? = {
+    var sys = utsname(); uname(&sys)
+    let id = Mirror(reflecting: sys.machine).children.compactMap { c -> String? in
+        guard let v = c.value as? Int8, v != 0 else { return nil }
+        return String(UnicodeScalar(UInt8(v)))
+    }.joined()                                   // e.g. "iPhone16,1"
+    guard id.hasPrefix("iPhone") else { return nil }
+    return Int(id.dropFirst(6).prefix { $0.isNumber })
+}()

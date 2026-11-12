@@ -217,14 +217,37 @@ final class CameraController: NSObject, ObservableObject,
 
     /// Rotation asked of the capture pipeline. Back camera: 90 (portrait), as
     /// this app has always done. Front camera: 0, the sensor's own landscape
-    /// buffer - ON PURPOSE. On device (iPhone 15 Pro Max, iOS 27.2) the
-    /// pipeline never rotated the front camera's frames, whatever angle was
-    /// set and whenever it was set, so the app does not depend on it there:
-    /// LiveView turns a landscape frame upright itself (a front frame needs a
-    /// quarter-turn counter-clockwise, measured against the preview). Asking
-    /// for 0 keeps that starting point fixed instead of leaving it to
-    /// whatever the pipeline decides to honour.
+    /// buffer - ON PURPOSE. On an iPhone Air the pipeline never rotated the
+    /// front camera's frames, whatever angle was set and whenever it was set,
+    /// so the app does not depend on it there: LiveView turns a landscape
+    /// frame upright itself, in the direction `sidewaysTurnIsClockwise` gives
+    /// for this phone's sensor. Asking for 0 keeps that starting point fixed
+    /// on every phone instead of leaving it to whatever the pipeline decides
+    /// to honour.
     private static func pipelineAngle(front: Bool) -> CGFloat { front ? 0 : 90 }
+
+    /// Which way a frame that arrives lying on its side must be turned to
+    /// stand upright - it depends on how the sensor is mounted, so it is NOT
+    /// the same on every iPhone.
+    ///
+    /// Up to the iPhone 16 family both sensors are mounted the same way round:
+    /// an unrotated frame needs a CLOCKWISE quarter-turn. That is the portrait
+    /// orientation Apple documents for camera buffers: `.right` for the back
+    /// camera and `.leftMirrored` for the front one - the same turn plus the
+    /// selfie mirror, which this app applies in the overlay instead.
+    /// The square front sensor that came with the iPhone 17 family (measured
+    /// on an iPhone Air) is mounted the other way round: its frames need a
+    /// COUNTER-CLOCKWISE quarter-turn.
+    ///
+    /// 1.1.0 build 2 turned every front frame counter-clockwise, a rule taken
+    /// from the iPhone Air alone. On an iPhone 15 Pro Max that left the frame
+    /// upside down: the detector saw the room inverted (a clock came back as
+    /// "frisbee") and every box and mask landed mirrored through the centre
+    /// of the screen.
+    static func sidewaysTurnIsClockwise(front: Bool) -> Bool {
+        guard front else { return true }
+        return (iPhoneHardwareGeneration ?? 0) < 18
+    }
 
     /// Orientation and mirroring of the frames handed to the detector.
     /// Connections are rebuilt whenever the input changes, so this goes back
