@@ -129,8 +129,24 @@ struct SettingsView: View {
     @State private var licensesOpen = false
     @State private var privacyOpen = false
 
+    @State private var importingFolder = false   // the importer is open in folder mode
+
+    static let modelExtensions = ["mlpackage", "mlmodelc", "mlmodel"]
+
+    /// Content types the importer offers in document mode.
+    ///
+    /// A `.mlpackage` and a `.mlmodelc` are DIRECTORIES. iOS presents a directory as one
+    /// selectable document only when a package type is declared for its extension, which
+    /// `project.yml` now does (UTImportedTypeDeclarations, the same identifiers the Mac app
+    /// uses). A type built from the bare file extension describes a FILE and never matches
+    /// a directory: with only those, Files showed every package as a folder that could be
+    /// opened but not chosen, so no model could be imported. `.package` admits a package
+    /// iOS knows under another identifier; whatever comes back is checked by extension.
     private var modelTypes: [UTType] {
-        ["mlpackage", "mlmodelc", "mlmodel"].compactMap { UTType(filenameExtension: $0) }
+        let declared = ["com.apple.coreml.mlpackage", "com.apple.coreml.mlmodelc", "com.apple.coreml.model"]
+            .map { UTType(importedAs: $0) }
+        let byExtension = Self.modelExtensions.compactMap { UTType(filenameExtension: $0) }
+        return declared + byExtension + [.package]
     }
 
     var body: some View {
@@ -144,8 +160,12 @@ struct SettingsView: View {
                 eraseSection
             }
             .navigationTitle("Settings")
-            .fileImporter(isPresented: $importing, allowedContentTypes: modelTypes,
-                          allowsMultipleSelection: true) { importModels($0) }
+            // one importer, two modes: model documents, or (the fallback for a package that
+            // Files still shows as a plain folder) a folder. Mixing `.folder` with document
+            // types in one picker is unreliable on iOS, hence the separate mode.
+            .fileImporter(isPresented: $importing,
+                          allowedContentTypes: importingFolder ? [.folder] : modelTypes,
+                          allowsMultipleSelection: !importingFolder) { importModels($0) }
             .alert("Erase all history?", isPresented: $confirmErase) {
                 Button("Erase", role: .destructive) { history.clear() }
                 Button("Cancel", role: .cancel) {}
@@ -417,9 +437,16 @@ struct SettingsView: View {
     private var customModelsSection: some View {
         Section {
             Button {
+                importingFolder = false
                 importing = true
             } label: {
                 Label("Load custom Core ML model", systemImage: "plus.circle")
+            }
+            Button {
+                importingFolder = true
+                importing = true
+            } label: {
+                Label("Load models from a folder", systemImage: "folder.badge.plus")
             }
             ForEach(customModels) { m in
                 HStack {
@@ -438,7 +465,7 @@ struct SettingsView: View {
         } header: {
             Text("Custom models")
         } footer: {
-            Text("Import a .mlpackage, .mlmodelc, or .mlmodel. Imported models appear in the Live, Photo, and Bench pickers the next time you open that tab. Compilation happens on first load and may take a moment.")
+            Text("Import a .mlpackage, .mlmodelc, or .mlmodel. If Files shows a model package as a folder, use Load models from a folder: open the package, or the folder that holds your models, and tap Open. Imported models appear in the Live, Photo, and Bench pickers the next time you open that tab. Compilation happens on first load and may take a moment.")
         }
     }
 
@@ -464,18 +491,55 @@ struct SettingsView: View {
         case .success(let urls):
             let dir = BundledModel.customModelsDir
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            for src in urls {
-                let scoped = src.startAccessingSecurityScopedResource()
-                defer { if scoped { src.stopAccessingSecurityScopedResource() } }
-                let dest = dir.appendingPathComponent(src.lastPathComponent)
-                do {
-                    try? FileManager.default.removeItem(at: dest)
-                    try FileManager.default.copyItem(at: src, to: dest)
-                } catch {
-                    importError = error.localizedDescription
+            var problems: [String] = []
+            for picked in urls {
+                let scoped = picked.startAccessingSecurityScopedResource()
+                defer { if scoped { picked.stopAccessingSecurityScopedResource() } }
+                let items = modelItems(at: picked)
+                if items.isEmpty {
+                    problems.append("\(picked.lastPathComponent) is not a Core ML model and contains none (.mlpackage, .mlmodelc, .mlmodel).")
+                    continue
+                }
+                for src in items {
+                    if let problem = copyModel(src, into: dir) { problems.append(problem) }
                 }
             }
+            if !problems.isEmpty { importError = problems.joined(separator: "\n") }
             customModels = BundledModel.customModels()
         }
+    }
+
+    /// The models a picked URL stands for: itself when it is a model; otherwise, for a plain
+    /// folder chosen in folder mode, the models directly inside it.
+    private func modelItems(at url: URL) -> [URL] {
+        if Self.modelExtensions.contains(url.pathExtension.lowercased()) { return [url] }
+        let inside = (try? FileManager.default.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: nil)) ?? []
+        return inside.filter { Self.modelExtensions.contains($0.pathExtension.lowercased()) }
+    }
+
+    /// Copy one model into the app's CustomModels folder. Returns a message on failure.
+    /// The read is coordinated, so an item kept in iCloud Drive is downloaded first and a
+    /// package is copied as one consistent directory.
+    private func copyModel(_ src: URL, into dir: URL) -> String? {
+        let dest = dir.appendingPathComponent(src.lastPathComponent)
+        var coordinationError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: src, options: [],
+                                       error: &coordinationError) { readable in
+            // replacing a model of the same name: remove the old copy AND the compiled
+            // cache it produced, or the app would keep running the old model
+            BundledModel.deleteCustom(BundledModel(
+                id: dest.deletingPathExtension().lastPathComponent, url: dest))
+            do {
+                try FileManager.default.copyItem(at: readable, to: dest)
+            } catch {
+                copyError = error
+            }
+        }
+        if let failure = (coordinationError as Error?) ?? copyError {
+            return "\(src.lastPathComponent): \(failure.localizedDescription)"
+        }
+        return nil
     }
 }

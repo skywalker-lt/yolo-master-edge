@@ -75,6 +75,26 @@ targets:
         # that key - iOS kills the app on a permission request with no usage string.
         NSPhotoLibraryAddUsageDescription: "Saves captured detection frames to your photo library."
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # Core ML packages are DIRECTORIES. iOS presents a directory as one selectable
+        # document only when a package type is declared for its extension; without these
+        # the custom-model importer in Settings could not select a .mlpackage or .mlmodelc
+        # (Files showed them as folders). Imported, not exported: the types are Apple's.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.apple.coreml.mlpackage
+            UTTypeDescription: Core ML Model Package
+            UTTypeConformsTo: [com.apple.package, public.composite-content]
+            UTTypeTagSpecification:
+              public.filename-extension: [mlpackage]
+          - UTTypeIdentifier: com.apple.coreml.mlmodelc
+            UTTypeDescription: Compiled Core ML Model
+            UTTypeConformsTo: [com.apple.package, public.composite-content]
+            UTTypeTagSpecification:
+              public.filename-extension: [mlmodelc]
+          - UTTypeIdentifier: com.apple.coreml.model
+            UTTypeDescription: Core ML Model
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [mlmodel]
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1"
