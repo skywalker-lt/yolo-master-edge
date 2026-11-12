@@ -74,7 +74,13 @@ Before every upload:
   is used when present, else `yolo11n`, `yolo12n`, or any other one. The conf
   and IoU sliders act on the person boxes (conf down to 0.10). The HUD's model
   time is both stages together. Without a detector the model is refused with
-  that reason, in Live and at import.
+  that reason, in Live and at import. The larger models of the family
+  (DWPose-m / -l, RTMW-l) run the same way and place hands much better at a
+  higher cost per person; `coreml_export/README.md` has the comparison.
+  These models always return all 133 points, also for parts that are not in
+  the frame, so the feet, the face and each hand are shown or hidden as a
+  whole by the part's typical score (a frame filled by one hand shows that
+  hand, not an invented body). Each package carries its own score cut-off.
 - **NMS-free models** - a model in the end-to-end layout (`end2end=true` in its
   metadata: YOLO26 / YOLOv10 exported without `--anchors`) emits one row per
   object. The app runs no NMS on it and hides the IoU slider in both tabs; only

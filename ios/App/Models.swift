@@ -153,6 +153,7 @@ struct BundledModel: Identifiable, Hashable {
         let candidates = discover().filter { m in
             let name = m.id.lowercased()
             return m.id != excluding && !name.contains("seg") && !name.contains("pose")
+                && !name.contains("wholebody") && !name.hasPrefix("rtm")
         }
         let ordered = candidates.sorted { a, b in
             let ra = preferred.firstIndex(of: a.id.lowercased()) ?? preferred.count

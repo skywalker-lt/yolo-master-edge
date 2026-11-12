@@ -7,12 +7,16 @@ keypoints. The apps run a detection model first and this one once per person
 
     input   "image"      [1, 3, H, W]   RGB, 0..1, one person crop (DWPose-t: H 256, W 192)
     output  "keypoints"  [1, K, 3]      x, y in crop pixels and a score per keypoint
-    metadata             task=pose-topdown, kpt_shape="K,3", names=person
+    metadata             task=pose-topdown, kpt_shape="K,3", names=person, kpt_score
 
 The mean / std normalisation and the SimCC decoding live inside the package: x and y are the
 argmax of the two classification vectors divided by the split ratio (2 bins per pixel), the
 score is the smaller of the two peak values (mmpose `get_simcc_maximum`). The score is NOT a
-probability; the Kit draws a keypoint from 0.3 up.
+probability and its scale differs from model to model, so the package carries the score to
+draw a keypoint from (`--kpt-score`, metadata `kpt_score`; the Kit assumes 0.3 without it).
+Measured on COCO-WholeBody val behind yolo26n person boxes, as the score that keeps 95% of
+the correctly placed body keypoints: DWPose-t 0.3, DWPose-m and DWPose-l 0.45, RTMW-l at
+384x288 2.8 (README.md has the table).
 
 The source is the ONNX file OpenMMLab publishes for the checkpoint (no mmpose / mmcv install
 needed), turned back into a PyTorch graph with onnx2torch and traced for coremltools:
@@ -108,7 +112,7 @@ def check_against_onnxruntime(model, onnx_path: str, shape) -> None:
         raise RuntimeError("the rebuilt graph does not reproduce the ONNX model")
 
 
-def export(onnx_path: str, out: str, target: str = "ios17", source: str = "") -> dict:
+def export(onnx_path: str, out: str, target: str = "ios17", source: str = "", kpt_score: float = 0.3) -> dict:
     import coremltools as ct
     core, shape = load_core(onnx_path)
     if len(shape) != 4 or shape[1] != 3:
@@ -128,12 +132,13 @@ def export(onnx_path: str, out: str, target: str = "ios17", source: str = "") ->
     meta["imgsz"] = f"{shape[2]}x{shape[3]}"       # height x width of the person crop
     meta["precision"] = "fp16"
     meta["names"] = "person"
+    meta["kpt_score"] = f"{kpt_score:g}"          # keypoints scoring below this are not drawn
     if source:
         meta["source"] = source
     ml.short_description = (f"Top-down pose: one person crop [1,3,{shape[2]},{shape[3]}] RGB 0..1 in, "
                             f"keypoints [1,{k},3] (x, y in crop pixels, score) out.")
     ml.save(out)
-    return {"out": out, "crop": f"{shape[2]}x{shape[3]}", "keypoints": k}
+    return {"out": out, "crop": f"{shape[2]}x{shape[3]}", "keypoints": k, "kpt_score": kpt_score}
 
 
 def main():
@@ -142,10 +147,13 @@ def main():
     ap.add_argument("--out", required=True, help="output .mlpackage path")
     ap.add_argument("--target", default="ios17", choices=["macos13", "macos14", "macos15", "ios16", "ios17"])
     ap.add_argument("--source", default="", help="free text stamped into the package (which checkpoint this is)")
+    ap.add_argument("--kpt-score", type=float, default=0.3,
+                    help="keypoint score to draw from, stamped as kpt_score (model-specific, see the header)")
     a = ap.parse_args()
     try:
-        r = export(a.onnx, a.out, a.target, a.source)
-        print(f"OK  {r['out']}  task=pose-topdown  crop={r['crop']}  keypoints={r['keypoints']}")
+        r = export(a.onnx, a.out, a.target, a.source, a.kpt_score)
+        print(f"OK  {r['out']}  task=pose-topdown  crop={r['crop']}  keypoints={r['keypoints']}  "
+              f"kpt_score={r['kpt_score']:g}")
     except Exception as e:
         print(f"FAIL  {a.onnx}  {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)

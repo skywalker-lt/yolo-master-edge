@@ -193,11 +193,16 @@ public final class Detector {
     /// a second forward pass; the best `maxPersons` of them get a pose.
     static let personFloor: Float = 0.1
     static let maxPersons = 8
-    /// A top-down keypoint score is the height of its SimCC peak, not a probability. Measured on
-    /// COCO-WholeBody val (DWPose-t), 0.3 keeps 91% of the hand points and 87% of the body points
-    /// and drops under 5% of the correct ones; it is mapped onto `PoseSkeleton.minConfidence`, the
-    /// visibility every frontend draws from.
+    /// A top-down keypoint score is the height of its SimCC peak, not a probability, and its
+    /// scale differs from model to model (a 384x288 RTMW scores several times higher than a
+    /// 256x192 DWPose-t). The package states the score to draw from in its `kpt_score` metadata
+    /// (measured per model at export); it is mapped onto `PoseSkeleton.minConfidence`, the
+    /// visibility every frontend draws from (`poseKeypoints` has the rule for the feet, face and
+    /// hands of the whole-body layout). 0.3 when the package does not say: measured on
+    /// COCO-WholeBody val for DWPose-t, it keeps 91% of the hand points and 87% of the body
+    /// points and drops under 5% of the correct ones.
     static let topDownKeypointScore: Float = 0.3
+    private let keypointScore: Float
     public let modelURL: URL
     /// The exporter's creator-defined metadata (names, imgsz, task, precision when stamped, ...).
     public let metadata: [String: String]
@@ -385,6 +390,8 @@ public final class Detector {
         self.personClass = personIndex
         self.cropW = cropSize.w
         self.cropH = cropSize.h
+        let stampedScore = Float(meta["kpt_score"] ?? "") ?? 0
+        self.keypointScore = stampedScore > 0 ? stampedScore : Detector.topDownKeypointScore
     }
 
     /// Human-readable one-line model summary (parity with the CLI `[model]` banner).
@@ -918,8 +925,19 @@ public final class Detector {
     }
 
     /// The model's [1, keypoints, 3] output (x, y in crop pixels, score) as keypoints in
-    /// ORIGINAL-image pixels. The score becomes the visibility the frontends draw from:
-    /// `topDownKeypointScore` lands on `PoseSkeleton.minConfidence`.
+    /// ORIGINAL-image pixels. The score becomes the visibility the frontends draw from: the
+    /// cut-off of each keypoint lands on `PoseSkeleton.minConfidence`.
+    ///
+    /// A body keypoint is drawn from the package's `kpt_score`. In the 133-keypoint whole-body
+    /// layout the feet, the face and each hand are shown or hidden as a WHOLE, by the median
+    /// score of the part: a top-down model always returns all 133 points, and for a part that is
+    /// not in the frame (a frame filled by one hand, a person seen from behind) it invents them
+    /// with scores that overlap the real ones point by point but not part by part. Gates, as
+    /// multiples of `kpt_score`: feet 0.6, face 1.2, a hand 0.6 - and 0.9 for the weaker of the
+    /// two hands, because one visible hand is usually reported in both hand slots. The points of
+    /// a part that is shown are drawn from 0.35. Measured for RTMW-l 384x288 behind yolo26n
+    /// boxes: on whole people every annotated part stays (98-100%); on frames holding only a
+    /// hand that hand stays in 93% and the invented body, feet and face are gone in 75%.
     private func poseKeypoints(_ k: MLMultiArray, region: CGRect) -> [Keypoint] {
         guard k.shape.count == 3, k.shape[1].intValue >= keypointCount, k.shape[2].intValue >= 3 else { return [] }
         let s1 = k.strides[1].intValue, s2 = k.strides[2].intValue
@@ -931,14 +949,33 @@ public final class Detector {
             if type == .double { return Float32(base.load(fromByteOffset: at * 8, as: Double.self)) }
             return base.load(fromByteOffset: at * 4, as: Float32.self)
         }
+        var scores = [Float32](repeating: 0, count: keypointCount)
+        for i in 0..<keypointCount { scores[i] = value(i, 2) }
+        // the score each keypoint is drawn from; infinity hides it
+        var cut = [Float32](repeating: keypointScore, count: keypointCount)
+        if keypointCount == 133 {
+            func median(_ part: Range<Int>) -> Float32 {
+                let ordered = scores[part].sorted()
+                return ordered[ordered.count / 2]
+            }
+            let feet = 17..<23, face = 23..<91, leftHand = 91..<112, rightHand = 112..<133
+            let left = median(leftHand), right = median(rightHand)
+            let gates: [(part: Range<Int>, gate: Float32)] = [
+                (feet, 0.6), (face, 1.2),
+                (leftHand, left >= right ? 0.6 : 0.9), (rightHand, right > left ? 0.6 : 0.9),
+            ]
+            for g in gates {
+                let shown = median(g.part) >= g.gate * keypointScore
+                for i in g.part { cut[i] = shown ? 0.35 * keypointScore : .infinity }
+            }
+        }
         let sx = region.width / CGFloat(cropW), sy = region.height / CGFloat(cropH)
-        let toVisibility = PoseSkeleton.minConfidence / Detector.topDownKeypointScore
         var pts: [Keypoint] = []
         pts.reserveCapacity(keypointCount)
         for i in 0..<keypointCount {
             pts.append(Keypoint(x: CGFloat(value(i, 0)) * sx + region.minX,
                                 y: CGFloat(value(i, 1)) * sy + region.minY,
-                                conf: min(1, max(0, value(i, 2) * toVisibility))))
+                                conf: min(1, max(0, scores[i] * PoseSkeleton.minConfidence / cut[i]))))
         }
         return pts
     }

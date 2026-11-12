@@ -55,6 +55,21 @@ score), `task=pose-topdown`. Normalisation and SimCC decoding are inside the pac
 runs a person detector in front of it. The script header has the download link and the three
 extra packages it needs (`onnx`, `onnxruntime`, `onnx2torch`).
 
+Any model of that family exports the same way and runs in the app unchanged; the crop size is
+read from the package. Their keypoint scores are on different scales, so pass the score to
+draw from as `--kpt-score` (stamped as `kpt_score`). Measured on 200 COCO-WholeBody val images
+behind stock yolo26n person boxes, in PyTorch: share of keypoints within 20% of the hand's
+size (10% of the face's size) of the label, and the score that keeps 95% of the correctly
+placed body keypoints. The Kit draws body keypoints from that score and gates the feet, the
+face and each hand as whole parts at multiples of it (`Detector.poseKeypoints`).
+
+| ONNX (download.openmmlab.com/mmpose/v1/projects/...) | crop | size | GFLOPs | hands | face | `--kpt-score` |
+| :-- | :-- | --: | --: | --: | --: | --: |
+| DWPose-t `rtmposev1/onnx_sdk/rtmpose-t_simcc-ucoco_dw-ucoco_270e-256x192-dcf277bf_20230728.zip` | 256x192 | 11 MB | 0.5 | 62% | 97% | 0.3 |
+| DWPose-m `rtmposev1/onnx_sdk/rtmpose-m_simcc-ucoco_dw-ucoco_270e-256x192-c8b76419_20230728.zip` | 256x192 | 36 MB | 2.2 | 74% | 98% | 0.45 |
+| DWPose-l `rtmposev1/onnx_sdk/rtmpose-l_simcc-ucoco_dw-ucoco_270e-384x288-2438fd99_20230728.zip` | 384x288 | 67 MB | 10 | 82% | 99% | 0.45 |
+| RTMW-l `rtmw/onnx_sdk/rtmw-dw-x-l_simcc-cocktail14_270e-384x288_20231122.zip` | 384x288 | 115 MB | 17.7 | 85% | 99% | 2.8 |
+
 ## What the script handles (and why)
 
 - **YOLO-Master MoE** — forces the dense path (`is_in_onnx_export=True`), constant-folds shapes
