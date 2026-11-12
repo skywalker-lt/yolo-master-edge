@@ -93,6 +93,7 @@ struct LiveView: View {
                                               // switches and app backgrounding;
                                               // true at launch = cold-start auto-run
     @State private var loopTask: Task<Void, Never>?
+    @State private var visible = false        // Live is the tab on screen
 
     var body: some View {
         ZStack {
@@ -242,6 +243,7 @@ struct LiveView: View {
         .onChange(of: allowCPU) { _, on in if !on && compute == .cpu { compute = ComputeChoice.deviceDefault } }
         .onChange(of: selectedModel) { _, _ in loadError = nil }   // the message was about the previous model
         .onAppear {
+            visible = true
             if !allowCPU && compute == .cpu { compute = ComputeChoice.deviceDefault }
             camera.start()
             haptic.prepare()
@@ -267,13 +269,20 @@ struct LiveView: View {
                     initializing = false
                     let keep = BundledModel.reselect(selectedModel, in: found)
                     if keep != selectedModel { selectedModel = keep }
-                    if wantRun { startLoop() }     // cold-start auto-run, auto-resume on tab return
+                    // cold-start auto-run, auto-resume on tab return - unless the tab
+                    // was left again while the list was being read
+                    if wantRun, visible { startLoop() }
                 }
             }
         }
-        .onDisappear { suspendLoop(); camera.stop() }  // pause, intent preserved
+        .onDisappear { visible = false; suspendLoop(); camera.stop() }  // pause, intent preserved
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                // Only when Live is the tab on screen. This handler runs whichever tab is
+                // showing: coming back from the Home screen on Photo, Bench or Settings
+                // used to restart the camera and the detection loop behind that tab - and
+                // would now hold the screen awake there as well (see keepAwake).
+                guard visible else { return }
                 camera.start()
                 if wantRun { startLoop() }             // auto-resume from background
             } else {
@@ -516,9 +525,18 @@ struct LiveView: View {
         .allowsHitTesting(false)
     }
 
+    /// Hold the screen awake while the camera is detecting: a viewfinder that dims and locks
+    /// after 30 seconds without a touch is no use for watching detections. Released whenever
+    /// the loop stops - pause, another tab, the Home screen, a model that fails to load - so
+    /// the phone sleeps on its normal timer everywhere else. Main thread only.
+    private func keepAwake(_ on: Bool) {
+        UIApplication.shared.isIdleTimerDisabled = on
+    }
+
     private func startLoop() {
         guard let model = selectedModel, !running else { return }
         running = true
+        keepAwake(true)
         loadingModel = true
         let mode = compute.mode
         let tuningRef = tuning      // plain class ref: detached-safe, no wrapper
@@ -536,6 +554,7 @@ struct LiveView: View {
                 let why = error.localizedDescription
                 await MainActor.run {
                     running = false
+                    keepAwake(false)
                     loadingModel = false
                     wantRun = false
                     loadError = "\(model.fullName) could not be loaded. \(why)"
@@ -751,6 +770,7 @@ struct LiveView: View {
     /// lifecycle pauses auto-resume.
     private func suspendLoop() {
         running = false
+        keepAwake(false)
         loadingModel = false
         loopTask?.cancel()
         loopTask = nil
