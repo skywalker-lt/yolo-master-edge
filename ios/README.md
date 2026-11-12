@@ -72,8 +72,8 @@ Before every upload:
   labels, and hides the box-style row, which has nothing to style then), a
   `kpt` slider for the keypoint visibility to draw from (0.50 is the model's
   own cut-off) and a `size` slider for joints and limbs. A whole-body model
-  also gets a Body / Feet / Face / Hands row - it looks like the segmented
-  pickers above it, but any number of groups can be on - and a Hand skeleton
+  also gets a Body / Feet / Face / Hands row - four separate buttons, blue
+  while their group is drawn - and a Hand skeleton
   switch that removes the finger bones and keeps the hand points; that switch
   shares a line with Show stats HUD. Saved photos and exported images follow
   the same settings (the Kit's `PoseDisplay`).

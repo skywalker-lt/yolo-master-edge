@@ -518,37 +518,31 @@ struct ModelChip: View {
 /// 21 pt is the margin of the system's floating tab bar, measured on an iPhone Air (iOS 26).
 let barSideInset: CGFloat = 21
 
-/// A row that looks like the segmented pickers around it but lets any number of its segments
-/// be on at once (a `Picker` selects exactly one). Each segment is a switch: a white capsule
-/// behind the ones that are on, plain text for the rest, all the same width.
-struct MultiSegmented: View {
-    let items: [(String, Binding<Bool>)]   // title, on/off
+/// An on/off choice drawn as a button of its own: a capsule filled with the accent colour
+/// (blue), white text, while on; a quiet grey capsule while off. The whole-body part row is
+/// four of them side by side, equal in width, with clear gaps between them.
+/// (Two earlier attempts at that row did not look right on device: system toggle buttons -
+/// blue text in dim capsules, packed tight - and a look-alike of the segmented pickers.)
+struct OnOffButton: View {
+    let title: String
+    @Binding var isOn: Bool
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(items.indices, id: \.self) { i in
-                segment(items[i].0, items[i].1)
-            }
-        }
-        .padding(2)
-        .background(Color(.tertiarySystemFill), in: Capsule())
-    }
-
-    private func segment(_ title: String, _ isOn: Binding<Bool>) -> some View {
-        let on = isOn.wrappedValue
-        return Button {
-            withAnimation(.easeOut(duration: 0.15)) { isOn.wrappedValue.toggle() }
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { isOn.toggle() }
         } label: {
             Text(title)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
-                .foregroundStyle(on ? Color.black : Color.primary)
-                .frame(maxWidth: .infinity, minHeight: 28)
-                .background(on ? Color.white : Color.clear, in: Capsule())
-                .contentShape(Rectangle())
+                .minimumScaleFactor(0.85)
+                .foregroundStyle(isOn ? Color.white : Color.primary)
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, minHeight: 32)
+                .background(isOn ? Color.accentColor : Color(.tertiarySystemFill), in: Capsule())
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(on ? .isSelected : [])
+        .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 }
 
@@ -557,9 +551,9 @@ struct MultiSegmented: View {
 ///
 /// A pose model adds its own overlay controls (`pose` non-nil): skeleton / boxes / both, the
 /// keypoint visibility to draw from ("kpt") and the joint and limb size. A whole-body model
-/// (`wholeBody`, the 133-keypoint layout) also gets a Body / Feet / Face / Hands row - it
-/// looks like the pickers above it but any number of groups can be on (`MultiSegmented`),
-/// because 68 face points and 42 hand points are often more than the picture needs - and a
+/// (`wholeBody`, the 133-keypoint layout) also gets a Body / Feet / Face / Hands row - four
+/// separate buttons, blue while their group is drawn (`OnOffButton`), because 68 face
+/// points and 42 hand points are often more than the picture needs - and a
 /// "Hand skeleton" switch that takes the finger bones away and leaves the hand points.
 /// The skeleton controls are hidden in boxes mode, where no skeleton is drawn, and the box
 /// styles are hidden in skeleton mode, where no box is drawn.
@@ -609,8 +603,12 @@ struct TuningPanel: View {
                 }
                 .pickerStyle(.segmented)
                 if wholeBody && pose.wrappedValue.drawsSkeleton {
-                    MultiSegmented(items: [("Body", pose.body), ("Feet", pose.feet),
-                                           ("Face", pose.face), ("Hands", pose.hands)])
+                    HStack(spacing: 8) {
+                        OnOffButton(title: "Body", isOn: pose.body)
+                        OnOffButton(title: "Feet", isOn: pose.feet)
+                        OnOffButton(title: "Face", isOn: pose.face)
+                        OnOffButton(title: "Hands", isOn: pose.hands)
+                    }
                 }
             }
             // the switches together, one line: hand skeleton (off: the finger bones go, the
