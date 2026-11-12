@@ -99,7 +99,31 @@ default `compute_precision` for ML programs); the packages here are fp16 already
 step (v0.1-N: 7.55 M parameters, 15.5 MB on disk; yolov12x: 59.4 M, 119 MB).
 
 `quantize_w8a16.py in.mlpackage out.mlpackage` turns an existing package into W8A16 (int8
-per-channel weights, fp16 activations; the Project03 recipe). yolov12x goes 119 -> 60 MB.
+per-channel weights, fp16 activations). The package halves: yolov12x 119 -> 60 MB, RTMW-l
+115 -> 58 MB, yolo26n 4.9 -> 2.5 MB.
+
+Only conv / linear weights are quantized. Until 2026-11-12 this script and the Project03
+recipe (`scripts/export_coreml_p03.py`, `mac/quantize_a8_p03.py`) used a global config, which
+also rounds the detection head's anchor grid and stride table to int8 with one scale per
+table - every box moves, and mAP50-95 falls by about 0.10 (yolo26n 0.403 -> 0.296, v0.1-N
+0.425 -> 0.320). A `p03_v01n_coco_w8.mlpackage` built before that date has this fault.
+
+Effect of the fixed recipe on the full COCO val2017 set, simulated in PyTorch (the fused
+model's weights rounded exactly as the package holds them, then ultralytics' validation;
+Core ML cannot predict on Linux, so the packages themselves were not run):
+
+| model | metric | fp16 | W8A16 | fp16 size | W8A16 size |
+| :-- | :-- | --: | --: | --: | --: |
+| yolo26n | box mAP50-95 | 0.4034 | 0.4012 | 5.1 MB | 2.7 MB |
+| yolo11n | box mAP50-95 | 0.3878 | 0.3872 | 5.5 MB | 2.9 MB |
+| yolo12n | box mAP50-95 | 0.4016 | 0.4012 | 5.5 MB | 3.0 MB |
+| yolov5nu | box mAP50-95 | 0.3374 | 0.3369 | 5.5 MB | 2.9 MB |
+| YOLO-Master v0.1-N | box mAP50-95 | 0.4245 | 0.4232 | 15.5 MB | 8.2 MB |
+| yolo26n-pose | pose mAP50-95 | 0.5686 | 0.5649 | 6.2 MB | 3.3 MB |
+| RTMW-l 384x288 | hand keypoints within 20% of the hand's size | 83.1% | 83.0% | 114.9 MB | 57.7 MB |
+
+Sizes are the whole package on disk. Speed is not expected to change: the weights are expanded
+to fp16 when the model loads and the arithmetic is the same; that is not measured here.
 
 ## Neural Engine and the MoE router (`--no-ane-safe-moe` to opt out)
 

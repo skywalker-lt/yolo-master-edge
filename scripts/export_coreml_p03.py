@@ -159,8 +159,12 @@ def main():
     mlmodel.save(str(fp16_path))
     print(f"[coreml] {fp16_path}")
 
-    w8_cfg = OptimizationConfig(global_config=OpLinearQuantizerConfig(
-        mode="linear_symmetric", dtype="int8", granularity="per_channel"))
+    # conv / linear WEIGHTS only. A global config also rounds the head's anchor grid and stride
+    # table (one int8 scale for each whole table), which moves every box - about 0.10 mAP50-95
+    # on a nano detector (simulated: yolo26n 0.403 -> 0.296); see coreml_export/quantize_w8a16.py.
+    w8_op = OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8", granularity="per_channel")
+    w8_cfg = OptimizationConfig(global_config=None, op_type_configs={
+        t: w8_op for t in ("conv", "conv_transpose", "linear", "matmul")})
     w8 = linear_quantize_weights(mlmodel, config=w8_cfg)
     for k, v in mlmodel.user_defined_metadata.items():
         w8.user_defined_metadata[k] = v

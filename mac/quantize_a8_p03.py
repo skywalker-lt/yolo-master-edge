@@ -64,9 +64,12 @@ def main():
     w8a8 = linear_quantize_activations(fp16, a8_cfg, sample_data=sample)
     # weights too (A8 pass quantizes activations only)
     from coremltools.optimize.coreml import OpLinearQuantizerConfig, linear_quantize_weights
+    # conv / linear WEIGHTS only: a global config also rounds the head's anchor grid and stride
+    # table and moves every box (see coreml_export/quantize_w8a16.py)
+    w8_op = OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8", granularity="per_channel")
     w8a8 = linear_quantize_weights(w8a8, config=OptimizationConfig(
-        global_config=OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8",
-                                              granularity="per_channel")))
+        global_config=None,
+        op_type_configs={t: w8_op for t in ("conv", "conv_transpose", "linear", "matmul")}))
     out = d / "p03_v01n_coco_w8a8.mlpackage"
     w8a8.save(str(out))
     print(f"[a8] {out}")
