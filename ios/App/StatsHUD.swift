@@ -405,6 +405,22 @@ struct CrossShape: Shape {
     }
 }
 
+/// The collapsed label of a model picker: the model's type as an icon, its short name, the
+/// menu chevrons. Live, Photo and Bench share it; the menu rows show the same icon beside
+/// the full name (`Label(m.fullName, systemImage: m.kind.icon)`).
+struct ModelChip: View {
+    let model: BundledModel?
+    var body: some View {
+        HStack(spacing: 4) {
+            if let model {
+                Image(systemName: model.kind.icon).font(.caption)
+            }
+            Text(model?.shortID ?? "Model").lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down").font(.caption2)
+        }
+    }
+}
+
 /// conf / IoU tuning sliders + box style - the detection knobs, one panel.
 /// `iou` is nil for an NMS-free model: no NMS runs on its output, so there is no lever to show.
 ///

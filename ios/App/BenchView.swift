@@ -128,6 +128,9 @@ struct BenchView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showSettings = false
     @State private var expandedCards: Set<String> = []
+    // cold run: the models to measure. Kept as the ones the user switched OFF, so every
+    // model is selected by default and one imported later joins the run without a tap.
+    @State private var benchExcluded: Set<String> = []
     // sustained target + settings
     @State private var selectedModel: BundledModel?
     @State private var selectedCompute: ComputeChoice = ComputeChoice.deviceDefault
@@ -157,7 +160,7 @@ struct BenchView: View {
                 // vertically centered, matching the Photo tab's "No photos" empty state
                 ContentUnavailableView("No benchmarks yet",
                     systemImage: "speedometer",
-                    description: Text("Run a cold pass across every model and compute unit."))
+                    description: Text("Run a cold pass across the selected models and every compute unit."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -253,12 +256,13 @@ struct BenchView: View {
                         Image(systemName: "play.fill").frame(minWidth: 40)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(models.isEmpty || (mode == .sustained && selectedModel == nil))
+                    .disabled(models.isEmpty || (mode == .sustained && selectedModel == nil)
+                              || (mode == .cold && benchModels.isEmpty))
                 }
             }
             // sustained target + duration are ALWAYS visible in sustained mode
             // (not hidden behind the gear); the gear holds advanced iters/warmup
-            if mode == .sustained { sustainedConfig }
+            if mode == .sustained { sustainedConfig } else { coldConfig }
             if showSettings { advancedSettings }
         }
         .padding(8)
@@ -267,18 +271,59 @@ struct BenchView: View {
         .onChange(of: mode) { _, _ in lightHaptic.impactOccurred(); lightHaptic.prepare() }
     }
 
+    /// The models the cold run measures: all of them unless switched off in `coldConfig`.
+    private var benchModels: [BundledModel] { models.filter { !benchExcluded.contains($0.id) } }
+
+    /// Cold run: which models to measure. A menu of switches, one per model with its type
+    /// icon, all on by default; it stays open while models are ticked. Every selected model
+    /// is measured on every compute unit.
+    private var coldConfig: some View {
+        let chosen = benchModels.count
+        return HStack {
+            Menu {
+                Button(chosen == models.count ? "Deselect all" : "Select all") {
+                    benchExcluded = chosen == models.count ? Set(models.map(\.id)) : []
+                }
+                .menuActionDismissBehavior(.disabled)
+                Divider()
+                ForEach(models) { m in
+                    Toggle(isOn: Binding(
+                        get: { !benchExcluded.contains(m.id) },
+                        set: { on in
+                            if on { benchExcluded.remove(m.id) } else { benchExcluded.insert(m.id) }
+                        })) {
+                        Label(m.fullName, systemImage: m.kind.icon)
+                    }
+                    .menuActionDismissBehavior(.disabled)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(chosen == models.count ? "All \(models.count) models"
+                         : "\(chosen) of \(models.count) models").lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                }
+            }
+            .fixedSize()
+            Spacer(minLength: 0)
+            Text("x \(ComputeChoice.allCases.count) compute units")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .disabled(running || models.isEmpty)
+    }
+
     private var sustainedConfig: some View {
         VStack(spacing: 8) {
             HStack {
                 Menu {
                     Picker("Model", selection: $selectedModel) {
-                        ForEach(models) { m in Text(m.fullName).tag(Optional(m)) }
+                        ForEach(models) { m in
+                            Label(m.fullName, systemImage: m.kind.icon).tag(Optional(m))
+                        }
                     }
                 } label: {
-                    HStack(spacing: 3) {
-                        Text(selectedModel?.shortID ?? "Model").lineLimit(1)
-                        Image(systemName: "chevron.up.chevron.down").font(.caption2)
-                    }
+                    ModelChip(model: selectedModel)
                 }
                 .fixedSize()
                 Picker("Unit", selection: $selectedCompute) {
@@ -618,12 +663,13 @@ struct BenchView: View {
 
     private func runCold() {
         let warmN = warmup, iterN = iters
+        let chosen = benchModels          // the selection as it stands when the run starts
         loopTask = Task.detached(priority: .userInitiated) {
             let img = testImage()
             let units = ComputeChoice.allCases
-            let total = models.count * units.count
+            let total = chosen.count * units.count
             var done = 0
-            for m in models {
+            for m in chosen {
                 for c in units {
                     if control.cancelled { return }
                     if !(await pauseGate()) { return }

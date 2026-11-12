@@ -132,6 +132,12 @@ struct SettingsView: View {
     @State private var importingFolder = false   // the importer is open in folder mode
     @State private var checkingImport = false    // picked models are being copied and checked
 
+    // model gallery: every model in the app, with its size on disk
+    @State private var galleryOpen = false
+    @State private var galleryModels: [BundledModel] = []
+    @State private var gallerySizes: [String: Int64] = [:]
+    @State private var openModels: Set<String> = []   // ids of the models whose attributes are shown
+
     static let modelExtensions = ["mlpackage", "mlmodelc", "mlmodel"]
 
     /// Content types the importer offers in document mode.
@@ -157,6 +163,7 @@ struct SettingsView: View {
                 licensesSection
                 privacySection
                 computeSection
+                modelGallerySection
                 customModelsSection
                 eraseSection
             }
@@ -179,7 +186,10 @@ struct SettingsView: View {
             } message: {
                 Text(importError ?? "")
             }
-            .onAppear { customModels = BundledModel.customModels() }
+            .onAppear {
+                customModels = BundledModel.customModels()
+                loadGallery()
+            }
         }
     }
 
@@ -435,6 +445,160 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: Model gallery
+
+    /// Every model in the app, bundled and imported. Collapsed by default; each model opens
+    /// to its type and attributes. They come from the metadata Core ML's compiler stores with
+    /// the model (`ModelFacts`), so nothing is loaded to show them.
+    private var modelGallerySection: some View {
+        Section {
+            DisclosureGroup(isExpanded: $galleryOpen) {
+                ForEach(galleryModels) { m in
+                    DisclosureGroup(isExpanded: Binding(
+                        get: { openModels.contains(m.id) },
+                        set: { open in
+                            if open { openModels.insert(m.id) } else { openModels.remove(m.id) }
+                        })) {
+                        modelAttributes(m)
+                    } label: {
+                        modelRowLabel(m)
+                    }
+                }
+            } label: {
+                Label("Model gallery", systemImage: "square.grid.2x2")
+            }
+        } header: {
+            Text("Models")
+        } footer: {
+            Text("\(galleryModels.count) model\(galleryModels.count == 1 ? "" : "s") in the app. Open one to see what it does and how it was exported.")
+        }
+    }
+
+    /// The model list and each model's size on disk, read off the main thread.
+    private func loadGallery() {
+        Task.detached {
+            let found = BundledModel.discover()
+            var sizes: [String: Int64] = [:]
+            for m in found { sizes[m.id] = m.diskSize }
+            let measured = sizes
+            await MainActor.run {
+                galleryModels = found
+                gallerySizes = measured
+            }
+        }
+    }
+
+    /// A gallery row: the type icon, the model's name, and a one-line summary under it.
+    private func modelRowLabel(_ m: BundledModel) -> some View {
+        let facts = m.facts
+        var parts = [facts.kind.label]
+        if let precision = precisionName(facts) { parts.append(precision) }
+        if let size = gallerySizes[m.id], size > 0 {
+            parts.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+        }
+        let summary = parts.joined(separator: " · ")
+        return HStack(spacing: 12) {
+            Image(systemName: facts.kind.icon)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(m.fullName).font(.callout).lineLimit(1)
+                Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// The attributes of one model as name / value lines. Text only, values wrap.
+    private func modelAttributes(_ m: BundledModel) -> some View {
+        let rows = attributeRows(m)
+        return VStack(alignment: .leading, spacing: 10) {
+            ForEach(rows.indices, id: \.self) { i in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(rows[i].name).font(.caption).foregroundStyle(.secondary)
+                        .frame(width: 84, alignment: .leading)
+                    Text(rows[i].value).font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    /// "FP16", "W8A16" from the exporter's stamp, else what Core ML says the weights are stored as.
+    private func precisionName(_ f: ModelFacts) -> String? {
+        guard let stamp = f.precision, !stamp.isEmpty else { return f.storagePrecision }
+        return stamp.uppercased()
+    }
+
+    private func attributeRows(_ m: BundledModel) -> [(name: String, value: String)] {
+        let f = m.facts
+        var rows: [(name: String, value: String)] = []
+        rows.append(("Type", f.kindIsGuess
+                     ? f.kind.label + " (going by the file name: the model has not been compiled yet)"
+                     : f.kind.label))
+        if f.keypoints == 133 {
+            rows.append(("Keypoints", "133 per person: 17 body, 6 feet, 68 face, 42 hands"))
+        } else if f.keypoints > 0 {
+            rows.append(("Keypoints", "\(f.keypoints) per person"))
+        }
+        if f.topDown {
+            rows.append(("Pipeline", "Top-down: a detection model finds the people, this model runs once per person"))
+        } else if !f.kindIsGuess {
+            rows.append(("Pipeline", f.end2end ? "One pass, NMS-free output" : "One pass, NMS in the app"))
+        }
+        if f.classNames.count == 1 {
+            rows.append(("Classes", f.classNames[0]))
+        } else if f.classNames.count > 1 {
+            let shown = f.classNames.prefix(6).joined(separator: ", ")
+            let more = f.classNames.count - 6
+            let tail = more > 0 ? " and \(more) more" : ""
+            rows.append(("Classes", "\(f.classNames.count): " + shown + tail))
+        }
+        for p in f.inputs { rows.append(("Input", portText(p))) }
+        for p in f.outputs { rows.append(("Output", portText(p))) }
+        if let name = precisionName(f) {
+            var text = name
+            switch name {
+            case "FP16": text = "FP16: 16-bit float weights and activations"
+            case "W8A16": text = "W8A16: 8-bit weights, 16-bit float activations"
+            case "W8A8": text = "W8A8: 8-bit weights and activations"
+            default: break
+            }
+            if let stored = f.storagePrecision, stored != name { text += ". Stored as " + stored }
+            rows.append(("Precision", text))
+        }
+        if let format = f.format {
+            var text = format
+            if let spec = f.specVersion { text += ", specification \(spec)" }
+            if let os = f.minimumIOS { text += ", iOS " + os + " or later" }
+            rows.append(("Format", text))
+        }
+        if let n = f.operations, n > 0 { rows.append(("Operations", "\(n)")) }
+        if let size = gallerySizes[m.id], size > 0 {
+            rows.append(("Size", ByteCountFormatter.string(fromByteCount: size, countStyle: .file)))
+        }
+        rows.append(("Origin", m.isImported ? "Imported in Settings" : "Bundled with the app"))
+        if let cut = f.metadata["kpt_score"], !cut.isEmpty {
+            rows.append(("Kpt score", "drawn from " + cut))
+        }
+        if let source = f.metadata["source"], !source.isEmpty { rows.append(("Source", source)) }
+        if let about = f.summary { rows.append(("About", about)) }
+        if let author = f.author { rows.append(("Author", author)) }
+        if let license = f.license { rows.append(("License", license)) }
+        if let version = f.version { rows.append(("Version", version)) }
+        rows.append(("File", m.id))
+        return rows
+    }
+
+    /// "image  1 x 3 x 640 x 640  Float16"
+    private func portText(_ p: ModelPort) -> String {
+        var parts = [p.name, p.shape.isEmpty ? "shape not declared" : p.shape]
+        if !p.dataType.isEmpty { parts.append(p.dataType) }
+        return parts.joined(separator: "   ")
+    }
+
     private var customModelsSection: some View {
         Section {
             Button {
@@ -466,6 +630,7 @@ struct SettingsView: View {
                     Button(role: .destructive) {
                         BundledModel.deleteCustom(m)
                         customModels = BundledModel.customModels()
+                        loadGallery()
                     } label: {
                         Image(systemName: "trash").foregroundStyle(.red)
                     }
@@ -508,6 +673,7 @@ struct SettingsView: View {
                     checkingImport = false
                     if !problems.isEmpty { importError = problems.joined(separator: "\n\n") }
                     customModels = BundledModel.customModels()
+                    loadGallery()
                 }
             }
         }

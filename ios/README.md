@@ -97,9 +97,22 @@ Before every upload:
 - **Stock models** - a bundled model whose file name starts with `yolo`
   (yolo11n, yolo12n, yolo26n-pose) is listed under its own name, not as
   YOLO-Master-...
+- **Model type at a glance** - every model picker (Live, Photo, Bench) shows
+  the model's type as an icon beside its name: a viewfinder for detection, a
+  lasso for segmentation, a figure for pose, a hand for whole-body pose. The
+  type is read from the `metadata.json` Core ML's compiler stores in the
+  compiled model (the exporter's `task` and `kpt_shape`), so no model is
+  loaded for it; a package that has not been compiled yet is judged by its
+  file name until its first load.
+- **Model gallery** - Settings > Models lists every model in the app, bundled
+  and imported. A model opens to its attributes: type, keypoints, pipeline
+  (top-down, NMS-free), classes, declared inputs and outputs, precision,
+  format and minimum iOS, operation count, size on disk, origin, and what
+  the exporter stamped (source checkpoint, keypoint score).
 - **Bench tab** - the criterion harness:
-  - *cold run*: every bundled model x every compute unit, 50-iter median +
-    p90 after warmup;
+  - *cold run*: the selected models x every compute unit, 50-iter median +
+    p90 after warmup. The model menu is a list of switches, all on by default
+    (a model imported later is on too); it stays open while models are ticked;
   - *sustained pass*: N-minute loop reporting the last-quarter median - the
     thermal steady state. Flagship phones throttle; a real-time claim needs
     both numbers (methodology carried over from the Orin work);

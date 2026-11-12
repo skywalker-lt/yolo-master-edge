@@ -54,6 +54,7 @@ struct BundledModel: Identifiable, Hashable {
     static func deleteCustom(_ m: BundledModel) {
         try? FileManager.default.removeItem(at: m.url)
         try? FileManager.default.removeItem(at: cacheDir.appendingPathComponent(m.id + ".mlmodelc"))
+        ModelFacts.forget(m.id)
     }
 
     /// A ready-to-load .mlmodelc. If this model is a .mlpackage, it is compiled
@@ -98,7 +99,11 @@ struct BundledModel: Identifiable, Hashable {
             }
         }
         for m in customModels() where seen.insert(m.id).inserted { found.append(m) }
-        return found.sorted { $0.id < $1.id }
+        let sorted = found.sorted { $0.id < $1.id }
+        // type and attributes of each model (a small JSON read, cached): the callers run this
+        // off the main thread, so the pickers and the Settings gallery find them ready
+        for m in sorted { _ = ModelFacts.of(m) }
+        return sorted
     }
 
     /// Launch default: the bundled segmentation model when present (v0.1-seg-N,
@@ -138,9 +143,11 @@ struct BundledModel: Identifiable, Hashable {
     /// exactly as before.
     func makeDetector(compute: ComputeMode) throws -> Detector {
         let own = id
-        return try Detector(modelURL: try compiledURL(), compute: compute, personDetector: {
+        let det = try Detector(modelURL: try compiledURL(), compute: compute, personDetector: {
             try BundledModel.personDetector(compute: compute, excluding: own)
         })
+        ModelFacts.note(own, loaded: det)   // no-op when the facts were already read from disk
+        return det
     }
 
     /// The detector that finds the people for a top-down pose model: a plain detection model
@@ -166,6 +173,227 @@ struct BundledModel: Identifiable, Hashable {
             if !det.isSegment, !det.isPose, det.classNames.contains("person") { return det }
         }
         throw DetectorError.needsPersonDetector
+    }
+}
+
+// MARK: - Model type and attributes
+
+/// What a model does. Shown as an icon beside the model's name in every model picker and
+/// spelled out in Settings > Models.
+enum ModelKind: String {
+    case detection, segmentation, pose, wholeBody
+
+    var label: String {
+        switch self {
+        case .detection: return "Detection"
+        case .segmentation: return "Segmentation"
+        case .pose: return "Pose"
+        case .wholeBody: return "Whole-body pose"
+        }
+    }
+
+    /// SF Symbol standing for the kind: a box finder, a traced outline, a figure, a hand.
+    var icon: String {
+        switch self {
+        case .detection: return "viewfinder"
+        case .segmentation: return "lasso"
+        case .pose: return "figure.stand"
+        case .wholeBody: return "hand.raised"
+        }
+    }
+}
+
+/// One declared input or output of a model.
+struct ModelPort: Hashable {
+    let name: String
+    let shape: String      // "1 x 3 x 640 x 640"; empty when the model leaves it open
+    let dataType: String   // "Float16"
+}
+
+/// What can be said about a model WITHOUT loading it. Core ML's compiler writes a
+/// `metadata.json` into every .mlmodelc - the exporter's own metadata (task, names, kpt_shape,
+/// precision ...), the declared inputs and outputs, the storage precision - so a model's type
+/// and attributes cost one small file read. Bundled models are compiled by Xcode and imported
+/// ones by the import check, so the file is normally there. Where it is not (a package that
+/// has not been compiled yet), the kind is guessed from the file name until the model has
+/// been loaded once (`note`).
+struct ModelFacts {
+    var kind: ModelKind
+    var kindIsGuess = false       // from the file name only
+    var topDown = false           // pose model that runs once per person behind a detector
+    var end2end = false           // NMS-free output
+    var keypoints = 0             // per person; 0 unless a pose model
+    var classNames: [String] = []
+    var inputs: [ModelPort] = []
+    var outputs: [ModelPort] = []
+    var precision: String? = nil          // the exporter's stamp: fp16, w8a16
+    var storagePrecision: String? = nil   // Core ML's reading of the stored weights
+    var computePrecision: String? = nil
+    var format: String? = nil             // "ML Program", "Neural network"
+    var specVersion: Int? = nil
+    var minimumIOS: String? = nil
+    var operations: Int? = nil
+    var summary: String? = nil
+    var author: String? = nil
+    var license: String? = nil
+    var version: String? = nil
+    var metadata: [String: String] = [:]  // the exporter's metadata as stamped
+
+    private static var cache: [String: ModelFacts] = [:]
+    private static let lock = NSLock()
+
+    /// The facts of `m`: cached, else read from its compiled form, else a guess from its name
+    /// (not cached, so it is replaced as soon as the model has been compiled or loaded).
+    static func of(_ m: BundledModel) -> ModelFacts {
+        lock.lock()
+        let hit = cache[m.id]
+        lock.unlock()
+        if let hit { return hit }
+        if let compiled = m.compiledIfReady, let facts = read(compiled) {
+            lock.lock()
+            cache[m.id] = facts
+            lock.unlock()
+            return facts
+        }
+        return ModelFacts(kind: guessKind(m.id), kindIsGuess: true)
+    }
+
+    /// A model that has just been loaded tells what it is, whatever its files say.
+    static func note(_ id: String, loaded det: Detector) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard cache[id] == nil else { return }
+        let kind: ModelKind
+        if det.isSegment {
+            kind = .segmentation
+        } else if det.isPose {
+            kind = det.keypointCount == 133 ? .wholeBody : .pose
+        } else {
+            kind = .detection
+        }
+        var f = ModelFacts(kind: kind)
+        f.topDown = det.isTopDown
+        f.end2end = det.end2end
+        f.keypoints = det.isPose ? det.keypointCount : 0
+        f.classNames = det.classNames
+        f.precision = det.metadata["precision"]
+        f.metadata = det.metadata
+        cache[id] = f
+    }
+
+    static func forget(_ id: String) {
+        lock.lock()
+        cache[id] = nil
+        lock.unlock()
+    }
+
+    /// The Kit's own rule (`Detector.init`): the exporter's `task`, with `kpt_shape` telling a
+    /// 133-keypoint whole-body model from a 17-keypoint one.
+    private static func kindOf(task: String, keypoints: Int) -> ModelKind {
+        switch task {
+        case "segment": return .segmentation
+        case "pose", "pose-topdown": return keypoints == 133 ? .wholeBody : .pose
+        default: return .detection
+        }
+    }
+
+    private static func guessKind(_ id: String) -> ModelKind {
+        let n = id.lowercased()
+        if n.contains("wholebody") || n.hasPrefix("dwpose") || n.hasPrefix("rtmw") { return .wholeBody }
+        if n.contains("pose") { return .pose }
+        if n.contains("seg") { return .segmentation }
+        return .detection
+    }
+
+    private static func read(_ compiled: URL) -> ModelFacts? {
+        guard let data = try? Data(contentsOf: compiled.appendingPathComponent("metadata.json")),
+              let root = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        // the file is an array holding one object
+        guard let top = (root as? [[String: Any]])?.first ?? (root as? [String: Any]) else { return nil }
+        let user = (top["userDefinedMetadata"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
+        let task = user["task"] ?? "detect"
+        let isPose = task == "pose" || task == "pose-topdown"
+        let keypoints: Int = {
+            guard isPose else { return 0 }
+            let parts = (user["kpt_shape"] ?? "").split(separator: ",")
+                .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            return parts.first.map { $0 > 0 ? $0 : 17 } ?? 17
+        }()
+        func ports(_ key: String) -> [ModelPort] {
+            (top[key] as? [[String: Any]] ?? []).map { p in
+                let raw = (p["shape"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
+                let dims = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                return ModelPort(name: p["name"] as? String ?? "?",
+                                 shape: dims.joined(separator: " x "),
+                                 dataType: p["dataType"] as? String ?? "")
+            }
+        }
+        func text(_ key: String) -> String? {
+            guard let v = top[key] as? String, !v.isEmpty else { return nil }
+            return v
+        }
+        var f = ModelFacts(kind: kindOf(task: task, keypoints: keypoints))
+        f.topDown = task == "pose-topdown"
+        f.end2end = user["end2end"] == "true"
+        f.keypoints = keypoints
+        f.classNames = (user["names"] ?? "").split(separator: ",").map(String.init)
+        f.inputs = ports("inputSchema")
+        f.outputs = ports("outputSchema")
+        f.precision = user["precision"]
+        f.storagePrecision = text("storagePrecision")
+        f.computePrecision = text("computePrecision")
+        if let type = (top["modelType"] as? [String: Any])?["name"] as? String {
+            switch type {
+            case "MLModelType_mlProgram": f.format = "ML Program"
+            case "MLModelType_neuralNetwork": f.format = "Neural network"
+            default: f.format = type.replacingOccurrences(of: "MLModelType_", with: "")
+            }
+        }
+        f.specVersion = top["specificationVersion"] as? Int
+        f.minimumIOS = (top["availability"] as? [String: Any])?["iOS"] as? String
+        if let histogram = top["mlProgramOperationTypeHistogram"] as? [String: Any] {
+            f.operations = histogram.values.compactMap { $0 as? Int }.reduce(0, +)
+        }
+        f.summary = text("shortDescription")
+        f.author = text("author")
+        f.license = text("license")
+        f.version = text("version")
+        f.metadata = user
+        return f
+    }
+}
+
+extension BundledModel {
+    /// The compiled model on disk if there is one already. Never compiles.
+    var compiledIfReady: URL? {
+        if url.pathExtension.lowercased() == "mlmodelc" { return url }
+        let cached = BundledModel.cacheDir.appendingPathComponent(id + ".mlmodelc")
+        return FileManager.default.fileExists(atPath: cached.path) ? cached : nil
+    }
+
+    /// Type and attributes, without loading the model (`ModelFacts`).
+    var facts: ModelFacts { ModelFacts.of(self) }
+    var kind: ModelKind { facts.kind }
+
+    /// Imported in Settings (false: shipped inside the app).
+    var isImported: Bool { url.path.hasPrefix(BundledModel.customModelsDir.path) }
+
+    /// Bytes the model occupies in the app: the package or compiled folder it is loaded from.
+    /// Walks the folder - keep it off the main thread.
+    var diskSize: Int64 {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return 0 }
+        if !isDirectory.boolValue {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        }
+        var total: Int64 = 0
+        if let walker = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) {
+            for case let file as URL in walker {
+                total += Int64((try? file.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+            }
+        }
+        return total
     }
 }
 

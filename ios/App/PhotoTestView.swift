@@ -273,15 +273,12 @@ struct PhotoTestView: View {
             Menu {
                 Picker("Model", selection: $selectedModel) {
                     ForEach(models) { m in
-                        Text(m.fullName).tag(Optional(m))
+                        // the model's type as an icon beside its name
+                        Label(m.fullName, systemImage: m.kind.icon).tag(Optional(m))
                     }
                 }
             } label: {
-                HStack(spacing: 3) {
-                    Text(selectedModel?.shortID ?? "Model").lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2)
-                }
+                ModelChip(model: selectedModel)
             }
             .fixedSize()
             .disabled(isRunning)
