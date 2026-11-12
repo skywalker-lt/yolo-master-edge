@@ -99,7 +99,8 @@ Before every upload:
   YOLO-Master-...
 - **Model type at a glance** - every model picker (Live, Photo, Bench) shows
   the model's type as an icon beside its name: a viewfinder for detection, a
-  lasso for segmentation, a figure for pose, a hand for whole-body pose. The
+  filled shape in a dashed box for segmentation, a figure for pose, a hand for
+  whole-body pose. The
   type is read from the `metadata.json` Core ML's compiler stores in the
   compiled model (the exporter's `task` and `kpt_shape`), so no model is
   loaded for it; a package that has not been compiled yet is judged by its

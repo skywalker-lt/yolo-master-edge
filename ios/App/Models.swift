@@ -192,11 +192,13 @@ enum ModelKind: String {
         }
     }
 
-    /// SF Symbol standing for the kind: a box finder, a traced outline, a figure, a hand.
+    /// SF Symbol standing for the kind: an empty box finder for detection, a filled shape
+    /// inside a dashed box for segmentation (the mask in its box), a figure, a hand.
+    /// Segmentation was `lasso` at first: at menu size it read as a scribbled "Q".
     var icon: String {
         switch self {
         case .detection: return "viewfinder"
-        case .segmentation: return "lasso"
+        case .segmentation: return "square.dashed.inset.filled"
         case .pose: return "figure.stand"
         case .wholeBody: return "hand.raised"
         }
