@@ -752,6 +752,10 @@ struct PhotoTestView: View {
     /// much of each edge the bars take. The photo is fitted and centred inside what is left,
     /// so nothing covers it at rest, and because the padding belongs to the zoomed view, every
     /// part of a zoomed photo can still be brought out from behind the bars.
+    /// The sides count too: on an iPhone Duo held open like a book the tabs are in a strip at
+    /// the side, 84 pt wide, and the bars are centred in what it leaves. Centred on the whole
+    /// screen, the photo stood 42 pt to the side of the bars above and below it. On a phone
+    /// held upright the side insets are 0 and the margin is the 8 pt it always was.
     private func annotated(_ shot: Shot, clear: EdgeInsets) -> some View {
         GeometryReader { geo in
             let img = shot.image
@@ -777,7 +781,8 @@ struct PhotoTestView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
-        .padding(EdgeInsets(top: clear.top, leading: 8, bottom: clear.bottom, trailing: 8))
+        .padding(EdgeInsets(top: clear.top, leading: clear.leading + 8,
+                            bottom: clear.bottom, trailing: clear.trailing + 8))
     }
 
     // MARK: pipeline
@@ -1255,6 +1260,94 @@ private func composeExport(_ img: CGImage, dets: [Detection], mask: CGImage?,
     return out
 }
 
+/// What a page of the pager hands to SwiftUI: it holds the zoomable scroll view and keeps it
+/// on the WINDOW from top to bottom, wherever SwiftUI and the pager have put the page.
+///
+/// A page's photo is placed by padding it from the top and the bottom of the screen
+/// (`annotated`), and that is only right while the page really is the screen. On an iPhone
+/// Duo held open like a book the page that was open when the pager came up lay 17 pt too
+/// high - half the height of the home-indicator inset at the bottom, the mark of a view
+/// centred in the screen less that inset - so the photo's top was under the top bar and a gap
+/// stood above the stats HUD. Pages reached by a swipe were right, and so was the same page
+/// with the Duo turned upright, where the insets at top and bottom are equal. Why that one
+/// page is put there was not found, so its frame is not trusted: this view looks where it is
+/// on the window and gives the scroll view the frame that starts at the window's top edge and
+/// is as tall as the window. Where the page is the screen - every page seen on an iPhone Air -
+/// that frame is this view's own bounds, and nothing differs from the scroll view being the
+/// page itself.
+final class PagePin: UIView {
+    let scroll = UIScrollView()
+    private var lift: CGFloat = 0      // the scroll view's top, measured from this view's top
+    private var extra: CGFloat = 0     // the scroll view's height less this view's height
+    private var waiting = 0            // looks still owed while a transition scales the pager
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        addSubview(scroll)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        pin()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil else { return }
+        pin()
+        // and again when things have settled: a page can be moved after its first layout
+        // without anything in this view being told
+        for delay in [0.3, 0.8] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.pin() }
+        }
+    }
+
+    // moved without a change of size: no layout pass comes for that
+    override var frame: CGRect {
+        didSet { if frame.origin != oldValue.origin { pin() } }
+    }
+    override var center: CGPoint {
+        didSet { if center != oldValue { pin() } }
+    }
+
+    /// Put the scroll view on the window from top to bottom. Called on every layout, on a
+    /// move, on every SwiftUI update of the page and when a zoom ends; it changes something
+    /// only when the page is not where the screen is.
+    func pin() {
+        if let window {
+            let seen = convert(bounds, to: window)
+            if abs(seen.width - bounds.width) > 0.5 || abs(seen.height - bounds.height) > 0.5 {
+                // The pager is growing into place or shrinking away - its transition scales
+                // it - and what is measured through that scale is not where the page will
+                // rest. Keep what is known and look again shortly.
+                if waiting < 15 {
+                    waiting += 1
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in self?.pin() }
+                }
+            } else {
+                waiting = 0
+                lift = -seen.minY
+                extra = window.bounds.height - bounds.height
+            }
+        }
+        let want = CGRect(x: 0, y: lift, width: bounds.width, height: bounds.height + extra)
+        let now = scroll.frame
+        if abs(now.minX - want.minX) > 0.25 || abs(now.minY - want.minY) > 0.25
+            || abs(now.width - want.width) > 0.25 || abs(now.height - want.height) > 0.25 {
+            scroll.frame = want
+        }
+        // At rest the content is exactly as large as the scroll view, so any offset is a
+        // leftover that would shift the photo the same way.
+        if scroll.zoomScale <= scroll.minimumZoomScale * 1.01, !scroll.isZooming,
+           !scroll.isZoomBouncing, !scroll.isDragging, !scroll.isDecelerating,
+           scroll.contentOffset != .zero {
+            scroll.contentOffset = .zero
+        }
+    }
+}
+
 /// Photos-app zoom behavior via UIScrollView: pinch zoom anchored at the
 /// fingers, one-finger pan ONLY while zoomed (1x swipes pass through to the
 /// pager), double-tap zooms to the tapped point. Two ways back to the gallery
@@ -1272,8 +1365,9 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
         return Coordinator(host: host)
     }
 
-    func makeUIView(context: Context) -> UIScrollView {
-        let sv = UIScrollView()
+    func makeUIView(context: Context) -> PagePin {
+        let page = PagePin()
+        let sv = page.scroll
         sv.minimumZoomScale = 1
         sv.maximumZoomScale = 5
         sv.bouncesZoom = true
@@ -1304,12 +1398,13 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
         down.maximumNumberOfTouches = 1
         down.delegate = context.coordinator
         sv.addGestureRecognizer(down)
-        return sv
+        return page
     }
 
-    func updateUIView(_ sv: UIScrollView, context: Context) {
+    func updateUIView(_ page: PagePin, context: Context) {
         context.coordinator.host.rootView = content
         context.coordinator.onExit = onExit
+        page.pin()
     }
 
     final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
@@ -1341,6 +1436,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
                                      atScale scale: CGFloat) {
             exitFired = false
             pinchFromRest = false
+            (sv.superview as? PagePin)?.pin()
         }
 
         @objc func handleDoubleTap(_ gr: UITapGestureRecognizer) {

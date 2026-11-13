@@ -118,7 +118,13 @@ Before every upload:
   have on a phone (`barMaxWidth`, 398 pt) and sit centred over the camera
   picture or the photos, the flip button stays beside the shutter, the
   gallery shows as many columns as fit at 120 pt (six or five instead of
-  three), and Bench's bar and cards stop at 600 pt. Where the tabs are in the
+  three), and Bench's bar and cards stop at 600 pt. An open photo is centred
+  in what the bars and the tab strip leave free, so it stands under the bars
+  and not 42 pt to their side. Each page of the pager also puts its scroll
+  view on the window from top to bottom by looking where it really is
+  (`PagePin`): held open like a book, the page that was open when the pager
+  came up lay 17 pt too high, with the photo's top under the top bar, and why
+  that page is placed there was not found. Where the tabs are in the
   strip at the side there is no status bar above the content, so a top bar
   keeps 16 pt from the screen's edge (`screenEdgeAware`, `topEdgeGap`). Every
   other iPhone held upright is compact in width with no inset at its sides,
