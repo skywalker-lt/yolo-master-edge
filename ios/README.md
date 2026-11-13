@@ -58,8 +58,16 @@ Before every upload:
   Core ML's own placement (`MLComputeUnits.all`): it decides which parts of the
   model run on the Neural Engine, GPU and CPU. It was labelled "ANE" up to
   1.1.0 build 1; saved benchmark history with that label still loads.
-- **Photo tab** - batch detection over up to 100 album images; gallery and
+- **Photo tab** - batch detection over a run of up to 100 album images; gallery and
   pager views; conf/IoU sliders retune from cached passes without re-running.
+  Picking photos ADDS them to the run, and only the new ones are inferred (the
+  loaded model is kept; a model or compute change re-runs them all). A file over
+  20 MB is not imported and is named in a message. A photo opens with a tap and
+  closes with a pinch or a one-finger swipe down. In the gallery, Select turns
+  taps into a selection (All / None for the lot): save the chosen photos,
+  annotated, or take them out of the run. A save that does not happen shows an
+  alert with the reason, and a button to the app's Settings page when Photos
+  access is off.
 - **Segmentation** - bundle a seg .mlpackage (e.g. v0.1-seg-N above) and both
   tabs render instance masks tinted by class, with a Masks / Boxes / Both
   switch in the tuning panel and a mask-compose stage bar in the HUD. Same
@@ -83,8 +91,11 @@ Before every upload:
   the same settings (the Kit's `PoseDisplay`).
   In Live and in Photo the top controls, the tuning panel and the stats HUD
   are all as wide as the tab bar (`barSideInset`), so they keep their edges
-  when switching tabs. Photo's top bar holds four buttons once photos are
-  loaded, so its buttons are narrower than Live's (38 pt, 6 pt apart).
+  when switching tabs. Photo's top bar holds four buttons in the gallery
+  (select, save, tuning, add), so its buttons are narrower than Live's (38 pt,
+  6 pt apart). In Photo, as in Live, the bars float over the content on a
+  translucent material: the gallery scrolls under them, and the pager's photo
+  fills the screen behind them.
 - **Top-down pose (DWPose)** - `dwpose-t-wholebody` (exported with
   `coreml_export/export_dwpose.py`) does not find people itself. The Kit runs a
   detection model on the frame first and the pose model once per person (up to
