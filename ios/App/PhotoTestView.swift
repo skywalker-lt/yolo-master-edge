@@ -23,6 +23,67 @@ private func megabytes(_ bytes: Int) -> String {
     String(format: "%.1f MB", Double(bytes) / 1_000_000)
 }
 
+/// The image the run works on, from a picked photo's bytes: upright (EXIF applied), at most
+/// 2048 pixels on its longer side, and DECODED here, while photos are loading.
+/// ImageIO otherwise hands back an image that is decoded the first time something reads its
+/// pixels. That was the model's forward pass for every photo not yet on screen - 100 to 500 ms
+/// of decoding counted as preprocessing (a 505 ms "pre" beside a 13 ms inference, seen on
+/// device) - and the main thread for the photos on screen. `ShouldCacheImmediately` asks for
+/// the decode now; reading the pixels once makes sure of it whatever ImageIO does with the
+/// flag for a thumbnail (it is the same read the Kit's preprocessing does).
+private func decodedPhoto(_ data: Data) -> CGImage? {
+    guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+          let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [
+              kCGImageSourceCreateThumbnailWithTransform: true,   // EXIF
+              kCGImageSourceCreateThumbnailFromImageAlways: true,
+              kCGImageSourceThumbnailMaxPixelSize: 2048,
+              kCGImageSourceShouldCacheImmediately: true,
+          ] as CFDictionary) else { return nil }
+    autoreleasepool { _ = img.dataProvider?.data }
+    return img
+}
+
+/// Untimed passes on a freshly loaded model, so that Core ML's one-off set-up is not counted
+/// as the model's speed. Core ML finishes setting a model up inside its first predictions:
+/// 9 s on the GPU for the first one (seen on device, it made the first photo read 9,112 ms),
+/// and with ONE warm-up pass a photo still came out at 3,457 ms on Auto. So: at least three
+/// passes, and more (up to six) while a pass is still far above the fastest seen. A two-stage
+/// pose model also runs its pose network once, whether or not the photo has a person in it
+/// (`inferOnly`). A pass that fails ends the warm-up without a report: the timed pass on the
+/// same photo fails the same way, and that one is reported.
+private func warmUp(_ det: Detector, on image: CGImage) {
+    var fastest = Double.infinity
+    for pass in 0..<6 {
+        var ms = -1.0
+        autoreleasepool {
+            if let raw = try? det.forward(image) { ms = raw.inferMs }
+        }
+        if ms < 0 { break }
+        if pass >= 2, ms < fastest * 2 { break }        // settled
+        fastest = min(fastest, ms)
+    }
+    if det.isTopDown {
+        autoreleasepool { _ = try? det.inferOnly(image) }
+    }
+}
+
+/// What a pick did not bring in, for the message box: files over the size limit by name and
+/// size, and how many could not be read at all.
+private func importMessage(tooBig: [String], unreadable: Int) -> String {
+    var parts: [String] = []
+    if !tooBig.isEmpty {
+        let listed = tooBig.prefix(3).joined(separator: ", ")
+        let more = tooBig.count > 3 ? " and \(tooBig.count - 3) more" : ""
+        parts.append("Not imported, over \(photoByteLimit / 1_000_000) MB: \(listed)\(more).")
+    }
+    if unreadable == 1 {
+        parts.append("1 photo could not be read.")
+    } else if unreadable > 1 {
+        parts.append("\(unreadable) photos could not be read.")
+    }
+    return parts.joined(separator: " ")
+}
+
 /// A picked photo: its encoded bytes plus the file name the picker hands over.
 /// Loading through a FILE representation is what exposes the original name
 /// (IMG_4231.HEIC) with no photo-library permission: the system picker runs
@@ -667,7 +728,9 @@ struct PhotoTestView: View {
         let firstID = nextShotID
         nextShotID += take.count
         let firstNumber = shots.count + 1
-        Task {
+        // off the main actor: each photo is decoded here (`decodedPhoto`), and that must not
+        // hold up the interface. State is touched only inside `MainActor.run`.
+        Task.detached(priority: .userInitiated) {
             var added: [Shot] = []
             var tooBig: [String] = []
             var unreadable = 0
@@ -695,13 +758,7 @@ struct PhotoTestView: View {
                 }
                 if bytes > photoByteLimit {
                     tooBig.append("\(name) (\(megabytes(bytes)))")
-                } else if let data,
-                          let src = CGImageSourceCreateWithData(data as CFData, nil),
-                          let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [
-                              kCGImageSourceCreateThumbnailWithTransform: true,   // EXIF
-                              kCGImageSourceCreateThumbnailFromImageAlways: true,
-                              kCGImageSourceThumbnailMaxPixelSize: 2048,
-                          ] as CFDictionary) {
+                } else if let data, let img = decodedPhoto(data) {
                     added.append(Shot(id: firstID + idx, image: img, name: name, type: type))
                 } else {
                     unreadable += 1
@@ -728,23 +785,6 @@ struct PhotoTestView: View {
                 runPending()                    // only the new photos have no result yet
             }
         }
-    }
-
-    /// What the last pick did not bring in, for the message box: files over the size limit
-    /// by name and size, and how many could not be read at all.
-    private func importMessage(tooBig: [String], unreadable: Int) -> String {
-        var parts: [String] = []
-        if !tooBig.isEmpty {
-            let listed = tooBig.prefix(3).joined(separator: ", ")
-            let more = tooBig.count > 3 ? " and \(tooBig.count - 3) more" : ""
-            parts.append("Not imported, over \(photoByteLimit / 1_000_000) MB: \(listed)\(more).")
-        }
-        if unreadable == 1 {
-            parts.append("1 photo could not be read.")
-        } else if unreadable > 1 {
-            parts.append("\(unreadable) photos could not be read.")
-        }
-        return parts.joined(separator: " ")
     }
 
     /// The model or the compute unit changed: every photo needs a result from the new one.
@@ -775,8 +815,10 @@ struct PhotoTestView: View {
         progress = 0
         progressTotal = shots.filter { !$0.done }.count
         phase = loaded == nil ? .loadingModel : .inferring
-        let warm = shots.first(where: { !$0.done })?.image      // for the warm-up pass below
-        Task.detached {
+        let warm = shots.first(where: { !$0.done })?.image      // for the warm-up passes below
+        // the user is waiting for this: not the default priority, where work that only has
+        // to get done some time may be scheduled ahead of it
+        Task.detached(priority: .userInitiated) {
             var ready = loaded != nil       // false until the model of this run is loaded
             do {
                 let det: Detector
@@ -784,20 +826,9 @@ struct PhotoTestView: View {
                     det = loaded
                 } else {
                     det = try m.makeDetector(compute: choice.mode)
-                    // Core ML finishes setting a model up inside its FIRST prediction (9 s on
-                    // the GPU, seen on device), and that is not the model's speed: counted, it
-                    // made the first photo read 9,112 ms and dragged the run's FPS down. So a
-                    // freshly loaded model gets one untimed pass on the first waiting photo
-                    // while the bar still says "Loading the model". A two-stage pose model also
-                    // runs its pose network once here, whether or not the photo has a person
-                    // in it (`inferOnly`). A pass that fails here is not reported: the timed
-                    // pass on the same photo fails the same way and is.
-                    if let warm {
-                        autoreleasepool {
-                            _ = try? det.forward(warm)
-                            if det.isTopDown { _ = try? det.inferOnly(warm) }
-                        }
-                    }
+                    // untimed passes on the first waiting photo, while the bar still says
+                    // "Loading the model": Core ML's set-up is not the model's speed (`warmUp`)
+                    if let warm { warmUp(det, on: warm) }
                     await MainActor.run { adopt(det, model: m, compute: choice) }
                 }
                 ready = true

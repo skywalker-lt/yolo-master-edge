@@ -62,8 +62,11 @@ Before every upload:
   pager views; conf/IoU sliders retune from cached passes without re-running.
   Picking photos ADDS them to the run, and only the new ones are inferred (the
   loaded model is kept; a model or compute change re-runs them all). A freshly
-  loaded model gets one untimed warm-up pass, so the first photo's time is the
-  model's speed and not Core ML's one-off set-up (seconds on the GPU). A file over
+  loaded model gets a few untimed warm-up passes, so the first photo's time is
+  the model's speed and not Core ML's one-off set-up (seconds on the GPU).
+  Photos are decoded while they load, off the main thread, not when the model
+  first reads them: that decoding (100 to 500 ms a photo) used to be counted as
+  preprocessing. A file over
   20 MB is not imported and is named in a message. A photo opens with a tap and
   closes with a pinch or a one-finger swipe down. In the gallery, Select turns
   taps into a selection (All / None for the lot): save the chosen photos,
