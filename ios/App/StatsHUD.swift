@@ -222,6 +222,8 @@ struct StageBar: View {
             .animation(.easeOut(duration: 0.15), value: ms)
             Text(String(format: "%4.1f", ms))
                 .font(.caption2.monospacedDigit())
+                .lineLimit(1)                   // a four-digit time shrinks; it used to wrap
+                .minimumScaleFactor(0.6)        // onto a second line ("9075." / "2")
                 .frame(width: 36, alignment: .trailing)
         }
     }

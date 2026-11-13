@@ -295,21 +295,30 @@ struct PhotoTestView: View {
             }
             .transition(.scale(scale: 0.92).combined(with: .opacity))
         } else {
-            // full screen, bars over it; no page dots. Back to the gallery: pinch in, or
-            // swipe down with one finger (both in `ZoomableScrollView`).
-            TabView(selection: $page) {
-                ForEach(Array(shots.enumerated()), id: \.element.id) { i, shot in
-                    ZoomableScrollView(onExit: {
-                        withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
-                    }) {
-                        annotated(shot)
+            // No page dots. Back to the gallery: pinch in, or swipe down with one finger (both
+            // in `ZoomableScrollView`).
+            // The pager itself is the whole screen, so a photo that is zoomed in passes behind
+            // the bars. At REST the photo is fitted into what the bars leave free - centred on
+            // the whole screen, its lower edge lay under the stats HUD. This reader is laid out
+            // in the safe area, between the top bar and the bottom group, and tells each page
+            // how far that area is from the edges of the screen; it follows the bars when the
+            // HUD is expanded or hidden or the tuning panel opens.
+            GeometryReader { free in
+                let clear = free.safeAreaInsets
+                TabView(selection: $page) {
+                    ForEach(Array(shots.enumerated()), id: \.element.id) { i, shot in
+                        ZoomableScrollView(onExit: {
+                            withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
+                        }) {
+                            annotated(shot, clear: clear)
+                        }
+                        .ignoresSafeArea()
+                        .tag(i)
                     }
-                    .ignoresSafeArea()
-                    .tag(i)
                 }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .ignoresSafeArea()
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .ignoresSafeArea()
             .transition(.scale(scale: 1.08).combined(with: .opacity))
         }
     }
@@ -609,7 +618,11 @@ struct PhotoTestView: View {
         .padding(.horizontal, barSideInset)
     }
 
-    private func annotated(_ shot: Shot) -> some View {
+    /// One page of the pager. The view it is hosted in covers the whole screen; `clear` is how
+    /// much of each edge the bars take. The photo is fitted and centred inside what is left,
+    /// so nothing covers it at rest, and because the padding belongs to the zoomed view, every
+    /// part of a zoomed photo can still be brought out from behind the bars.
+    private func annotated(_ shot: Shot, clear: EdgeInsets) -> some View {
         GeometryReader { geo in
             let img = shot.image
             let scale = min(geo.size.width / CGFloat(img.width),
@@ -634,7 +647,7 @@ struct PhotoTestView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
-        .padding(.horizontal, 8)
+        .padding(EdgeInsets(top: clear.top, leading: 8, bottom: clear.bottom, trailing: 8))
     }
 
     // MARK: pipeline
@@ -762,6 +775,7 @@ struct PhotoTestView: View {
         progress = 0
         progressTotal = shots.filter { !$0.done }.count
         phase = loaded == nil ? .loadingModel : .inferring
+        let warm = shots.first(where: { !$0.done })?.image      // for the warm-up pass below
         Task.detached {
             var ready = loaded != nil       // false until the model of this run is loaded
             do {
@@ -770,6 +784,20 @@ struct PhotoTestView: View {
                     det = loaded
                 } else {
                     det = try m.makeDetector(compute: choice.mode)
+                    // Core ML finishes setting a model up inside its FIRST prediction (9 s on
+                    // the GPU, seen on device), and that is not the model's speed: counted, it
+                    // made the first photo read 9,112 ms and dragged the run's FPS down. So a
+                    // freshly loaded model gets one untimed pass on the first waiting photo
+                    // while the bar still says "Loading the model". A two-stage pose model also
+                    // runs its pose network once here, whether or not the photo has a person
+                    // in it (`inferOnly`). A pass that fails here is not reported: the timed
+                    // pass on the same photo fails the same way and is.
+                    if let warm {
+                        autoreleasepool {
+                            _ = try? det.forward(warm)
+                            if det.isTopDown { _ = try? det.inferOnly(warm) }
+                        }
+                    }
                     await MainActor.run { adopt(det, model: m, compute: choice) }
                 }
                 ready = true

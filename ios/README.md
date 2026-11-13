@@ -61,7 +61,9 @@ Before every upload:
 - **Photo tab** - batch detection over a run of up to 100 album images; gallery and
   pager views; conf/IoU sliders retune from cached passes without re-running.
   Picking photos ADDS them to the run, and only the new ones are inferred (the
-  loaded model is kept; a model or compute change re-runs them all). A file over
+  loaded model is kept; a model or compute change re-runs them all). A freshly
+  loaded model gets one untimed warm-up pass, so the first photo's time is the
+  model's speed and not Core ML's one-off set-up (seconds on the GPU). A file over
   20 MB is not imported and is named in a message. A photo opens with a tap and
   closes with a pinch or a one-finger swipe down. In the gallery, Select turns
   taps into a selection (All / None for the lot): save the chosen photos,
@@ -94,8 +96,9 @@ Before every upload:
   when switching tabs. Photo's top bar holds four buttons in the gallery
   (select, save, tuning, add), so its buttons are narrower than Live's (38 pt,
   6 pt apart). In Photo, as in Live, the bars float over the content on a
-  translucent material: the gallery scrolls under them, and the pager's photo
-  fills the screen behind them.
+  translucent material: the gallery scrolls under them. The pager's photo is
+  fitted between them, so nothing covers it at rest, and passes behind them
+  when it is zoomed in.
 - **Top-down pose (DWPose)** - `dwpose-t-wholebody` (exported with
   `coreml_export/export_dwpose.py`) does not find people itself. The Kit runs a
   detection model on the frame first and the pose model once per person (up to
