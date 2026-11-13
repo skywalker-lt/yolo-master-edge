@@ -76,7 +76,16 @@ targets:
         # That includes performChanges with NO creation request in it (an empty
         # block): PhotoKit treats it as read-write. It crashed every launch once.
         NSPhotoLibraryAddUsageDescription: "Saves captured detection frames to your photo library."
+        # iPhone: upright only. iPad: all four, which is what makes the app a resizable,
+        # full-screen-capable iPad app (an iPad app that leaves an orientation out, or an
+        # iPhone-only app, runs in the system's compatibility window). The camera follows
+        # the interface there (CameraController.followsInterface).
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         # Core ML packages are DIRECTORIES. iOS presents a directory as one selectable
         # document only when a package type is declared for its extension; without these
         # the custom-model importer in Settings could not select a .mlpackage or .mlmodelc
@@ -99,7 +108,7 @@ targets:
               public.filename-extension: [mlmodel]
     settings:
       base:
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"           # iPhone and iPad (universal)
         SWIFT_VERSION: "5.9"
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

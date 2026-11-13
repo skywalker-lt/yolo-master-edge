@@ -40,6 +40,85 @@ final class CameraController: NSObject, ObservableObject,
     private var photoDone: ((CGImage?) -> Void)?
     private var focusRevert: DispatchWorkItem?
     private var latestIsFront = false   // which camera the `latest` frame came from
+    private var latestTurn = 0          // what turns the `latest` frame upright (`grabLatest`)
+    /// False for a camera with no light (most iPads): the torch button is off then.
+    @Published var hasTorch = true
+
+    // MARK: following the interface (iPad)
+
+    /// On an iPad the interface turns with the device, in all four directions, and the
+    /// camera picture has to turn with it. On an iPhone this app is upright only, and
+    /// everything below is left out: the rules that were measured there
+    /// (`pipelineAngle`, `sidewaysTurnIsClockwise`) stay exactly as they are.
+    ///
+    /// On an iPad the capture pipeline is asked for nothing: every frame and every still
+    /// arrives as the sensor has it. One angle - what the system says turns that picture
+    /// upright in the interface as it is now (`RotationCoordinator`, the preview's angle) -
+    /// is given to the preview layer and, as `turn`, to whoever takes a frame, who turns
+    /// it in software (LiveView). So the preview, the frames the detector sees and the
+    /// saved still always agree, on any iPad, without a rule per sensor and without
+    /// relying on the pipeline to rotate (on an iPhone Air's front camera it did not).
+    static let followsInterface = runsOnPad
+
+    /// The layer the preview is shown in (set by `CameraPreview`, main thread).
+    weak var previewLayer: AVCaptureVideoPreviewLayer? {
+        didSet { if previewLayer !== oldValue { rebuildRotation() } }
+    }
+    private var rotationDevice: AVCaptureDevice?                   // main thread only
+    private var rotation: AVCaptureDevice.RotationCoordinator?     // main thread only
+    private var rotationWatch: NSKeyValueObservation?              // main thread only
+    private var interfaceTurn = 0       // 0, 90, 180 or 270 clockwise; guarded by latestLock
+
+    /// `dev` is the camera in use now: watch what turns its picture upright. Main thread.
+    /// Called again after every change of camera, because the preview's connection is
+    /// rebuilt then and has to get its angle again.
+    private func follow(_ dev: AVCaptureDevice) {
+        guard CameraController.followsInterface else { return }
+        rotationDevice = dev
+        rebuildRotation()
+    }
+
+    private func rebuildRotation() {
+        guard CameraController.followsInterface, let dev = rotationDevice else { return }
+        rotationWatch = nil
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: dev, previewLayer: previewLayer)
+        rotation = coordinator
+        rotationWatch = coordinator.observe(\.videoRotationAngleForHorizonLevelPreview,
+                                            options: [.initial, .new]) { [weak self] c, _ in
+            let angle = c.videoRotationAngleForHorizonLevelPreview
+            DispatchQueue.main.async { self?.applyInterfaceAngle(angle) }
+        }
+    }
+
+    private func applyInterfaceAngle(_ angle: CGFloat) {
+        if let c = previewLayer?.connection, c.videoRotationAngle != angle,
+           c.isVideoRotationAngleSupported(angle) {
+            c.videoRotationAngle = angle
+        }
+        let quarters = Int((angle / 90).rounded())
+        let turn = ((quarters % 4) + 4) % 4 * 90
+        latestLock.lock()
+        interfaceTurn = turn
+        latestLock.unlock()
+    }
+
+    /// How far, in degrees clockwise (0, 90, 180 or 270), a still of `width` x `height`
+    /// from the photo output has to be turned to stand upright - the same answer its
+    /// video frames get in `grabLatest`.
+    func uprightTurn(width: Int, height: Int, front: Bool) -> Int {
+        if CameraController.followsInterface {
+            latestLock.lock(); defer { latestLock.unlock() }
+            return interfaceTurn
+        }
+        return CameraController.fixedTurn(width: width, height: height, front: front)
+    }
+
+    /// The iPhone's rule: a picture that is wider than tall was not rotated by the
+    /// pipeline and gets a quarter-turn, in the direction this phone's sensor needs.
+    private static func fixedTurn(width: Int, height: Int, front: Bool) -> Int {
+        guard width > height else { return 0 }
+        return sidewaysTurnIsClockwise(front: front) ? 90 : 270
+    }
 
     /// Pinch-zoom in DISPLAY units (1 = wide lens, 0.5 = ultra-wide). The
     /// virtual device switches lenses automatically as the factor crosses its
@@ -224,7 +303,11 @@ final class CameraController: NSObject, ObservableObject,
     /// for this phone's sensor. Asking for 0 keeps that starting point fixed
     /// on every phone instead of leaving it to whatever the pipeline decides
     /// to honour.
-    private static func pipelineAngle(front: Bool) -> CGFloat { front ? 0 : 90 }
+    ///
+    /// On an iPad both cameras are asked for 0: see `followsInterface`.
+    private static func pipelineAngle(front: Bool) -> CGFloat {
+        front || followsInterface ? 0 : 90
+    }
 
     /// Which way a frame that arrives lying on its side must be turned to
     /// stand upright - it depends on how the sensor is mounted, so it is NOT
@@ -306,6 +389,12 @@ final class CameraController: NSObject, ObservableObject,
         }
         session.beginConfiguration()
         session.sessionPreset = .hd1280x720
+        // iPad: keep the camera while this app shares the screen with others (Split View,
+        // Stage Manager, a window that is not full screen). Without it the session is
+        // interrupted whenever a second app is in front. Not offered on an iPhone.
+        if session.isMultitaskingCameraAccessSupported {
+            session.isMultitaskingCameraAccessEnabled = true
+        }
         guard let dev = findCamera(.back),
               let input = try? AVCaptureDeviceInput(device: dev),
               session.canAddInput(input) else {
@@ -313,8 +402,10 @@ final class CameraController: NSObject, ObservableObject,
         }
         device = dev
         let lens = prepareDevice(dev)
+        let torch = dev.hasTorch
         DispatchQueue.main.async {
             self.isFront = false
+            self.hasTorch = torch
             self.displayZoom = 1
             self.lensFactors = lens
         }
@@ -335,6 +426,7 @@ final class CameraController: NSObject, ObservableObject,
         session.commitConfiguration()
         applyConnectionSettings(front: false)   // no-op when the first one held
         lockFrameRate(dev)
+        DispatchQueue.main.async { self.follow(dev) }      // iPad only
         session.startRunning()
         applyTorch()
         warmPhotoPipeline()
@@ -364,7 +456,11 @@ final class CameraController: NSObject, ObservableObject,
                 if let cur = self.device { self.applyPhotoSize(for: cur) }
                 self.session.commitConfiguration()
                 self.applyConnectionSettings(front: wasFront)
-                DispatchQueue.main.async { done(false) }
+                let kept = self.device
+                DispatchQueue.main.async {
+                    if let kept { self.follow(kept) }      // iPad only: the connections are new
+                    done(false)
+                }
                 return
             }
             self.device = dev
@@ -386,9 +482,12 @@ final class CameraController: NSObject, ObservableObject,
             self.ageValue = 0
             self.latestLock.unlock()
             self.warmPhotoPipeline()
+            let torch = dev.hasTorch
             DispatchQueue.main.async {
                 self.focusRevert?.cancel()   // a pending one-shot focus revert was for the old camera
+                self.follow(dev)             // iPad only
                 self.isFront = front
+                self.hasTorch = torch
                 if front { self.torchOn = false }   // the front camera has no torch
                 self.displayZoom = 1
                 self.lensFactors = lens
@@ -414,9 +513,14 @@ final class CameraController: NSObject, ObservableObject,
         // tag the frame with the camera it came from, read off the connection
         // itself so a frame still in flight across a switch keeps its own tag
         let front = connection.inputPorts.first?.sourceDevicePosition == .front
+        let fixed = CameraController.fixedTurn(width: CVPixelBufferGetWidth(pb),
+                                               height: CVPixelBufferGetHeight(pb), front: front)
         latestLock.lock()
         latest = pb
         latestIsFront = front
+        // what turns this frame upright travels with it: on an iPhone the fixed rule, on an
+        // iPad the interface's angle at this moment
+        latestTurn = CameraController.followsInterface ? interfaceTurn : fixed
         frameID &+= 1
         ageValue = ageValue == 0 ? ageMs : ageValue * 0.9 + ageMs * 0.1
         rateCount += 1
@@ -445,10 +549,12 @@ final class CameraController: NSObject, ObservableObject,
 
     /// Freshest frame + a monotonically increasing id so consumers can skip
     /// buffers they have already processed, + whether it came from the front
-    /// camera (its overlay must be flipped to match the mirrored preview).
-    func grabLatest() -> (CVPixelBuffer, UInt64, Bool)? {
+    /// camera (its overlay must be flipped to match the mirrored preview), + how far
+    /// the frame has to be turned to stand upright: 0, 90, 180 or 270 degrees clockwise.
+    /// 0 is a frame that is upright as it is.
+    func grabLatest() -> (CVPixelBuffer, UInt64, Bool, Int)? {
         latestLock.lock(); defer { latestLock.unlock() }
         guard let pb = latest else { return nil }
-        return (pb, frameID, latestIsFront)
+        return (pb, frameID, latestIsFront, latestTurn)
     }
 }

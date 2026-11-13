@@ -47,7 +47,10 @@ Before every upload:
 3. the photo library is add-only (`NSPhotoLibraryAddUsageDescription`). The
    Photo tab reads through the system picker and must not request read access;
 4. the privacy policy linked from Settings is `PRIVACY.md` on the default
-   branch - the same URL goes into App Store Connect.
+   branch - the same URL goes into App Store Connect;
+5. the app is universal: App Store Connect asks for iPad screenshots beside
+   the iPhone ones, and once a version with iPad support is on sale a later
+   version cannot leave the iPad out.
 
 ## What the app does
 
@@ -141,6 +144,24 @@ Before every upload:
   looked at yet: Bench on the outer display, and the camera picture on a
   real Duo. The simulator has no camera, and the camera code assumes a phone
   held upright.
+- **iPad** - the app is universal (`TARGETED_DEVICE_FAMILY: "1,2"`) and
+  declares all four orientations for the iPad, so it runs full screen and in
+  resizable windows, not in the phone-shaped compatibility window an
+  iPhone-only app gets. The layout is the one above: a full-screen iPad is
+  regular in width, so the bars are a phone's width and centred, the gallery
+  has as many columns as fit and Bench stops at 600 pt; a narrow window is
+  compact and laid out like a phone. At a regular width the iPad's tabs are
+  in the bar above the content, so the stats HUD ends 24 pt above the bottom
+  edge as it does beside the Duo's strip. The camera follows the interface
+  (`CameraController.followsInterface`): the capture pipeline is asked for no
+  rotation, and one angle from `AVCaptureDevice.RotationCoordinator` turns
+  the preview layer and, in software, every frame and every still, so the
+  picture, the detections and the saved photo agree in all four directions
+  on any iPad. An iPhone keeps its own fixed rules, untouched. The session
+  asks for multitasking camera access, so the camera keeps running beside
+  another app. The torch button is off on an iPad without a light. Messages
+  say "this iPad". None of the camera part has been run: the iPad simulator
+  has no camera.
 - **Top-down pose (DWPose)** - `dwpose-t-wholebody` (exported with
   `coreml_export/export_dwpose.py`) does not find people itself. The Kit runs a
   detection model on the frame first and the pose model once per person (up to

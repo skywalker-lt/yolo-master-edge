@@ -478,3 +478,26 @@ let iPhoneHardwareGeneration: Int? = {
     guard id.hasPrefix("iPhone") else { return nil }
     return Int(id.dropFirst(6).prefix { $0.isNumber })
 }()
+
+/// True on an iPad, and in an iPad simulator (where the hardware identifier is the Mac's
+/// and the model is in the environment). Read off the hardware identifier, like
+/// `iPhoneHardwareGeneration`, so it can be asked from any thread.
+///
+/// It is NOT for layout - that follows the size class and the safe area. It answers two
+/// questions that are about the device: does the interface turn with it (an iPad's does,
+/// in all four directions; on an iPhone this app is upright only), and is the tab bar
+/// above the content at a regular width (on an iPad it is).
+let runsOnPad: Bool = {
+    var sys = utsname(); uname(&sys)
+    var id = Mirror(reflecting: sys.machine).children.compactMap { c -> String? in
+        guard let v = c.value as? Int8, v != 0 else { return nil }
+        return String(UnicodeScalar(UInt8(v)))
+    }.joined()                                   // e.g. "iPad16,6"
+    if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] {
+        id = simulated
+    }
+    return id.hasPrefix("iPad")
+}()
+
+/// What the app calls the device in a message to the user: "iPad" or "iPhone".
+let deviceName = runsOnPad ? "iPad" : "iPhone"

@@ -8,6 +8,10 @@ import YOLOMasterKit
 
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    /// The camera this is the preview of. It is told the layer, which on an iPad it turns
+    /// with the interface (`CameraController.followsInterface`); it does nothing with it
+    /// on an iPhone.
+    var controller: CameraController? = nil
     /// Tap callback with BOTH spaces: capture-device point (for focus) and
     /// layer point (for drawing the focus indicator).
     var onTap: ((CGPoint, CGPoint) -> Void)? = nil
@@ -15,6 +19,7 @@ struct CameraPreview: UIViewRepresentable {
         let v = PreviewView()
         v.videoPreviewLayer.session = session
         v.videoPreviewLayer.videoGravity = .resizeAspectFill
+        controller?.previewLayer = v.videoPreviewLayer
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.tapped(_:)))
         v.addGestureRecognizer(tap)
@@ -122,7 +127,7 @@ struct LiveView: View {
                 // full-screen, safe area ignored together, or boxes shear by
                 // the notch/home-bar insets
                 ZStack {
-                    CameraPreview(session: camera.session) { dp, lp in
+                    CameraPreview(session: camera.session, controller: camera) { dp, lp in
                         // dead zone: taps on or near the lens picker are zoom
                         // interaction, never focus selection (the preview is
                         // full-screen, so its coords equal global coords)
@@ -528,7 +533,7 @@ struct LiveView: View {
             }
             .buttonStyle(.bordered)
             .tint(camera.torchOn ? .yellow : nil)
-            .disabled(camera.isFront)   // the front camera has no torch
+            .disabled(camera.isFront || !camera.hasTorch)   // the front camera has no torch, nor have most iPads
             Button {
                 withAnimation { showTuning.toggle() }
             } label: {
@@ -660,7 +665,7 @@ struct LiveView: View {
             var uiHz = 0.0
             var lastFrameID: UInt64 = 0
             while !Task.isCancelled {
-                guard let (pb, fid, front) = cameraRef.grabLatest() else {
+                guard let (pb, fid, front, turn) = cameraRef.grabLatest() else {
                     try? await Task.sleep(nanoseconds: 20_000_000); continue
                 }
                 if fid == lastFrameID {                    // stale frame - don't reprocess
@@ -683,11 +688,14 @@ struct LiveView: View {
                 // pipeline does not rotate them on device), so a sideways
                 // buffer is turned upright here, whichever camera it is from.
                 // Its cost lands in the preprocess bar.
-                let sideways = CVPixelBufferGetWidth(pb) > CVPixelBufferGetHeight(pb)
+                // `turn` comes with the frame and says how far (`grabLatest`): on an
+                // iPhone 0 for an upright buffer and a quarter-turn for a sideways one,
+                // as before; on an iPad whatever the interface's direction asks for.
+                let sideways = turn == 90 || turn == 270    // width and height swap
                 let frame: ([Detection], CGImage?, Double, Double, Double, Double)? = autoreleasepool {
                     let forwarded: Detector.RawOutput?
-                    if sideways {
-                        forwarded = uprightFrame(pb, front: front).flatMap { try? det.forward($0) }
+                    if turn != 0 {
+                        forwarded = uprightFrame(pb, turn: turn).flatMap { try? det.forward($0) }
                     } else {
                         forwarded = try? det.forward(pb)
                     }
@@ -782,19 +790,20 @@ struct LiveView: View {
         let fSize = frameSize
         let kitStyle = style.kitStyle
         let front = camera.isFront
-        let fallback = camera.grabLatest().flatMap { uprightFrame($0.0, front: $0.2) }
+        let fallback = camera.grabLatest().flatMap { uprightFrame($0.0, turn: $0.3) }
+        let cameraRef = camera
         let t0 = CFAbsoluteTimeGetCurrent()
         camera.capturePhoto { shot in
             Task.detached(priority: .userInitiated) {
                 var base: CGImage? = nil
                 var s: CGFloat = 1
-                // The detections are in an upright portrait frame. A still that
-                // comes back LANDSCAPE was not rotated by the capture pipeline
-                // (the front camera): turn it the same way as its video frames.
+                // The detections are in an upright frame. A still that was not
+                // rotated by the capture pipeline (iPhone: one that comes back
+                // LANDSCAPE, the front camera; iPad: every still) is turned the
+                // same way as its video frames.
                 let still = shot.flatMap { (img: CGImage) -> CGImage? in
-                    img.width > img.height
-                        ? quarterTurned(img, clockwise: CameraController.sidewaysTurnIsClockwise(front: front))
-                        : img
+                    turned(img, by: cameraRef.uprightTurn(width: img.width, height: img.height,
+                                                          front: front))
                 }
                 if let photo = still {
                     // photo sensor FOV is wider than the 16:9 video FOV the
@@ -934,13 +943,39 @@ private func quarterTurned(_ image: CGImage, clockwise: Bool) -> CGImage? {
     return ctx.makeImage()
 }
 
-/// An upright image of a camera frame for the detector. A frame that is
-/// already portrait is wrapped as it is; a landscape one is the sensor's own
-/// orientation and gets a quarter-turn (see `quarterTurned`).
-private func uprightFrame(_ pb: CVPixelBuffer, front: Bool) -> CGImage? {
+/// `image` turned upside down, as a new bitmap of the same size: (x, y) -> (w - x, h - y).
+/// Only an iPad asks for it, held with its camera at the bottom.
+private func halfTurned(_ image: CGImage) -> CGImage? {
+    let w = image.width, h = image.height
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+                                  | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+    ctx.interpolationQuality = .none
+    ctx.translateBy(x: CGFloat(w), y: CGFloat(h))
+    ctx.rotate(by: .pi)
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+    return ctx.makeImage()
+}
+
+/// `image` turned by `turn` degrees clockwise - 0, 90, 180 or 270, what
+/// `CameraController.grabLatest` and `uprightTurn` answer. 0 is the image itself.
+private func turned(_ image: CGImage, by turn: Int) -> CGImage? {
+    switch turn {
+    case 90: return quarterTurned(image, clockwise: true)
+    case 270: return quarterTurned(image, clockwise: false)
+    case 180: return halfTurned(image)
+    default: return image
+    }
+}
+
+/// An upright image of a camera frame for the detector: the frame turned by `turn`
+/// (`CameraController.grabLatest`). On an iPhone that is a quarter-turn for a landscape
+/// frame - the sensor's own orientation, see `quarterTurned` - and nothing for a portrait
+/// one, which is wrapped as it is.
+private func uprightFrame(_ pb: CVPixelBuffer, turn: Int) -> CGImage? {
     guard let cg = Detector.cgImage(from: pb) else { return nil }
-    return cg.width > cg.height
-        ? quarterTurned(cg, clockwise: CameraController.sidewaysTurnIsClockwise(front: front)) : cg
+    return turned(cg, by: turn)
 }
 
 /// Camera-app shutter feel: quick shrink while pressed.

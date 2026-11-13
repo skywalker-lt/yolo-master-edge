@@ -166,7 +166,7 @@ private struct SaveFailure {
             + "Turn on Photos access for it in Settings, then save again.",
         offerSettings: true)
     static let restricted = SaveFailure(
-        message: "Adding to the photo library is restricted on this iPhone, for example by "
+        message: "Adding to the photo library is restricted on this \(deviceName), for example by "
             + "Screen Time or a device management profile. Nothing was saved.",
         offerSettings: false)
 
@@ -181,7 +181,7 @@ private struct SaveFailure {
             case 3310: return restricted
             case 3305:
                 return SaveFailure(
-                    message: "There is not enough free storage on this iPhone to save the images.",
+                    message: "There is not enough free storage on this \(deviceName) to save the images.",
                     offerSettings: false)
             default: break
             }

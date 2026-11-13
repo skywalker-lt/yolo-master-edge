@@ -561,6 +561,8 @@ let outerBarSideInset: CGFloat = 16
 /// like a book). There is no tab bar under the HUD then, and 20 pt above the home
 /// indicator's inset it stood 55 pt above the edge. 24 pt is where the strip itself ends,
 /// measured on screenshots of the simulator, so the two end on one line.
+/// An iPad at a regular width has no tab bar under the HUD either - its tabs are in the
+/// bar above the content - and gets the same distance.
 let sideStripBottomMargin: CGFloat = 24
 
 /// The stats HUD's distance from the bottom of the safe area on every iPhone with its tab
@@ -641,11 +643,11 @@ extension EnvironmentValues {
 /// safe-area insets further in - and hands the tab `topEdgeGap`, `hudBottomGap` and
 /// `duoOuterDisplay`.
 ///
-/// All three differ from their defaults only on an iPhone Duo: on its inner display
+/// All three differ from their defaults only on an iPhone Duo - on its inner display
 /// (regular width) or beside the strip its tabs are in (a safe-area inset at the side,
-/// which an ordinary iPhone held upright does not have). An ordinary iPhone always gets the
-/// defaults, also if a first measurement taken before the window has its insets should
-/// read 0.
+/// which an ordinary iPhone held upright does not have) - and, for the HUD, on an iPad at a
+/// regular width. An ordinary iPhone always gets the defaults, also if a first measurement
+/// taken before the window has its insets should read 0.
 private struct ScreenEdgeAware: ViewModifier {
     @Environment(\.horizontalSizeClass) private var widthClass
     @State private var insets: EdgeInsets?      // nil until measured
@@ -662,8 +664,15 @@ private struct ScreenEdgeAware: ViewModifier {
         return max(0, minTopMargin - insets.top)
     }
 
+    /// Nothing of the tabs is under the content: they are in the strip at the side (iPhone
+    /// Duo), or in the bar above the content (an iPad at a regular width; in a narrow window
+    /// its tab bar is at the bottom like a phone's).
+    private var noTabBarBelow: Bool {
+        besideStrip || (runsOnPad && widthClass == .regular)
+    }
+
     private var hudGap: CGFloat {
-        guard let insets, besideStrip else { return hudBottomPadding }
+        guard let insets, noTabBarBelow else { return hudBottomPadding }
         return min(hudBottomPadding, sideStripBottomMargin - insets.bottom)
     }
 
