@@ -38,7 +38,7 @@ struct Ack: Identifiable {
 /// states who holds the rights.
 let baseProjects: [Ack] = [
     Ack(name: "YOLO-Master",
-        blurb: "The MoE YOLO detector family this app packages.",
+        blurb: "The MoE YOLO detector family this app accelerates.",
         copyright: "Copyright 2026 Tencent", license: "AGPL-3.0",
         repo: "https://github.com/Tencent/YOLO-Master"),
     Ack(name: "YOLO-Master Edge (this app)",
@@ -127,6 +127,8 @@ struct SettingsView: View {
     /// The hosted privacy policy (PRIVACY.md at the repo root, default branch).
     /// App Review wants this same URL in App Store Connect AND a link in the app.
     static let privacyURL = "https://github.com/skywalker-lt/yolo-master-edge/blob/main/PRIVACY.md"
+    /// The form for a new issue in the app's repository (GitHub asks for a sign-in first).
+    static let issueURL = "https://github.com/skywalker-lt/yolo-master-edge/issues/new"
 
     @AppStorage("allowCPU") private var allowCPU = false
     @ObservedObject private var history = BenchHistory.shared
@@ -175,6 +177,7 @@ struct SettingsView: View {
                 modelGallerySection
                 customModelsSection
                 eraseSection
+                reportSection
             }
             .navigationTitle("Settings")
             // one importer, two modes: model documents, or (the fallback for a package that
@@ -270,7 +273,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("YOLO-Master").font(.title3.bold())
                 Text(versionText).font(.caption).foregroundStyle(.secondary)
-                Text("On-device MoE object detection with Core ML.")
+                Text("On-device MoE multi-task detection with Core ML.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -410,10 +413,6 @@ struct SettingsView: View {
                         accessRow("photo.on.rectangle", "Photo Library",
                                   "Reads only the images you pick for the Photo tab, and saves detection frames you explicitly export.")
                     }
-
-                    Text("All inference runs locally on the Neural Engine, GPU, or CPU. No images, results, or usage data ever leave your phone. We do not collect, store, or transmit any personal data. The only time we receive anything from you is if you choose to contact us or report an issue yourself.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.top, 6)
             } label: {
@@ -660,11 +659,34 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 confirmErase = true
             } label: {
+                // red, stated here and not left to the destructive role. With nothing to erase
+                // the button is disabled, and shows it by fading.
                 Label("Erase all benchmark history", systemImage: "trash")
+                    .foregroundStyle(.red)
+                    .opacity(history.runs.isEmpty ? 0.4 : 1)
             }
             .disabled(history.runs.isEmpty)
         } footer: {
             Text("\(history.runs.count) saved run\(history.runs.count == 1 ? "" : "s").")
+        }
+    }
+
+    /// Right under Erase: a row that opens the form for a new issue in the app's repository,
+    /// in the browser. Same shape as the Privacy Policy row.
+    @ViewBuilder private var reportSection: some View {
+        if let url = URL(string: Self.issueURL) {
+            Section {
+                Link(destination: url) {
+                    HStack {
+                        Label("Report an issue", systemImage: "exclamationmark.bubble")
+                        Spacer(minLength: 0)
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            } footer: {
+                Text("Opens a new issue on GitHub in your browser.")
+            }
         }
     }
 
