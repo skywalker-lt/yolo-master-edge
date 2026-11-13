@@ -453,7 +453,7 @@ struct SettingsView: View {
         } header: {
             Text("Compute")
         } footer: {
-            Text("CPU-only inference is the slowest and hottest path, and some models do not run reliably on it in Live and Photo, so it is off by default. Turn this on to add CPU to the Live and Photo compute pickers. The Bench tab always measures CPU.")
+            Text("Inference on CPU is slow and heats up the device rapidly. Some models may not run reliably on CPU.")
         }
     }
 
@@ -481,8 +481,6 @@ struct SettingsView: View {
             }
         } header: {
             Text("Models")
-        } footer: {
-            Text("\(galleryModels.count) model\(galleryModels.count == 1 ? "" : "s") in the app. Open one to see what it does and how it was exported.")
         }
     }
 
@@ -653,7 +651,7 @@ struct SettingsView: View {
         } header: {
             Text("Custom models")
         } footer: {
-            Text("Import a .mlpackage, .mlmodelc, or .mlmodel. If Files shows a model package as a folder, use Load models from a folder: open the package, or the folder that holds your models, and tap Open. Imported models appear in the Live, Photo, and Bench pickers the next time you open that tab. Compilation happens on first load and may take a moment.")
+            Text("Import a .mlpackage, .mlmodelc, or .mlmodel. Use Load models from a folder if Files displays a model package as a folder.")
         }
     }
 
