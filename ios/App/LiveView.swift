@@ -83,6 +83,7 @@ struct LiveView: View {
     @State private var flipCover: Double = 0      // black cover that hides the camera cut mid-flip
     @State private var flipTurns: Double = 0      // half-turns of the flip button's arrows
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.topEdgeGap) private var topGap   // iPhone Duo: keeps the top bar off the screen's edge
     private let haptic = UIImpactFeedbackGenerator(style: .medium)
     private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
     private let heavyHaptic = UIImpactFeedbackGenerator(style: .heavy)
@@ -203,6 +204,10 @@ struct LiveView: View {
                         }
                         .padding(.trailing, 44)
                     }
+                    // on a wide screen (iPhone Duo, inner display) the row is as wide as the
+                    // bars with their margins - a phone's width - so the flip button stays
+                    // beside the shutter instead of going to the far edge of the screen
+                    .barColumn(sideInset: 0, width: barMaxWidth + 2 * barSideInset)
                     // with the stats HUD hidden nothing stands between the shutter and the
                     // tab bar: give it the room the HUD's own margin otherwise provides
                     .padding(.bottom, showHUD ? 8 : 30)
@@ -218,7 +223,7 @@ struct LiveView: View {
                                  : [],
                              fullWidth: true,
                              mask: isSegModel ? statMask : nil)
-                        .padding(.horizontal, barSideInset)   // as wide as the tab bar
+                        .barColumn()   // as wide as the tab bar; a phone's width on a wide screen
                         .padding(.bottom, 20)
                         // its height, for the screen shown without camera access
                         // (`cameraAccessNeeded` centres itself in what the HUD leaves free)
@@ -242,7 +247,7 @@ struct LiveView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                        .padding(.horizontal, barSideInset)
+                        .barColumn()
                 }
                 if showTuning {
                     TuningPanel(conf: $tuning.conf, iou: isNMSFree ? nil : $tuning.iou, style: $style,
@@ -250,9 +255,10 @@ struct LiveView: View {
                                 segOverlay: isSegModel ? $tuning.segOverlay : nil,
                                 pose: poseKeypoints > 0 ? $tuning.pose : nil,
                                 wholeBody: poseKeypoints == 133)
-                        .padding(.horizontal, barSideInset)
+                        .barColumn()
                 }
             }
+            .padding(.top, topGap)      // 0 except on an iPhone Duo (`screenEdgeAware`)
         }
         .onChange(of: allowCPU) { _, on in if !on && compute == .cpu { compute = ComputeChoice.deviceDefault } }
         .onChange(of: selectedModel) { _, _ in loadError = nil }   // the message was about the previous model
@@ -547,7 +553,7 @@ struct LiveView: View {
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         // as wide as the tab bar, like the tuning panel and the stats HUD (`barSideInset`);
         // no top padding: aligns with the photo tab's bar
-        .padding(.horizontal, barSideInset)
+        .barColumn()
     }
 
     private var overlay: some View {

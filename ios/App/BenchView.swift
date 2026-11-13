@@ -126,6 +126,7 @@ struct BenchView: View {
     @State private var runThermalStart = 0
     @State private var runThermalPeak = 0
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.topEdgeGap) private var topGap   // iPhone Duo: keeps the top bar off the screen's edge
     @State private var showSettings = false
     @State private var expandedCards: Set<String> = []
     // cold run: the models to measure. Kept as the ones the user switched OFF, so every
@@ -170,7 +171,10 @@ struct BenchView: View {
                         if mode == .cold, let hero = fastest { heroCard(hero) }
                         ForEach(modelsWithResults, id: \.self) { modelCard($0) }
                     }
-                    .padding(.horizontal, 10)
+                    // a wide screen (iPhone Duo, inner display): the cards keep a readable
+                    // width and sit centred; everywhere else this is the 10 pt margin only
+                    .barColumn(sideInset: 10, width: benchMaxWidth)
+                    .frame(maxWidth: .infinity)
                     .padding(.bottom, 24)
                 }
             }
@@ -180,7 +184,7 @@ struct BenchView: View {
                     .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { exportMsg = nil } }
             }
         }
-        .safeAreaInset(edge: .top) { topBar }
+        .safeAreaInset(edge: .top) { topBar.padding(.top, topGap) }   // 0 except on an iPhone Duo
         .onAppear {
             lightHaptic.prepare(); medHaptic.prepare(); notifyHaptic.prepare()
             // every time the tab appears (not only the first), so a model imported or
@@ -267,7 +271,7 @@ struct BenchView: View {
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 10)
+        .barColumn(sideInset: 10, width: benchMaxWidth)
         .onChange(of: mode) { _, _ in lightHaptic.impactOccurred(); lightHaptic.prepare() }
     }
 

@@ -112,6 +112,21 @@ Before every upload:
   translucent material: the gallery scrolls under them. The pager's photo is
   fitted between them, so nothing covers it at rest, and passes behind them
   when it is zoomed in.
+- **iPhone Duo** - the layout follows the size class and the safe area, not
+  the device model. On the inner display (regular width: 951 pt held open
+  like a book, 669 pt turned) the bars of Live and Photo keep the width they
+  have on a phone (`barMaxWidth`, 398 pt) and sit centred over the camera
+  picture or the photos, the flip button stays beside the shutter, the
+  gallery shows as many columns as fit at 120 pt (six or five instead of
+  three), and Bench's bar and cards stop at 600 pt. Where the tabs are in the
+  strip at the side there is no status bar above the content, so a top bar
+  keeps 16 pt from the screen's edge (`screenEdgeAware`, `topEdgeGap`). Every
+  other iPhone held upright is compact in width with no inset at its sides,
+  and is laid out exactly as before: with a compact width `barColumn` is the
+  side padding it replaced. Not looked at yet: the outer display, where the
+  top bars are narrower than their contents (as on a 393 pt iPhone), and the
+  camera picture on a real Duo. The simulator has no camera, and the camera
+  code assumes a phone held upright.
 - **Top-down pose (DWPose)** - `dwpose-t-wholebody` (exported with
   `coreml_export/export_dwpose.py`) does not find people itself. The Kit runs a
   detection model on the frame first and the pose model once per person (up to

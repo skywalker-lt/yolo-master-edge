@@ -4,12 +4,17 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     var body: some View {
+        // `screenEdgeAware`: the three tabs with a bar floating at the top are told how far
+        // to keep it from the screen's edge on an iPhone Duo (0 on every other iPhone).
         TabView {
             LiveView()
+                .screenEdgeAware()
                 .tabItem { Label("Live", systemImage: "camera.viewfinder") }
             PhotoTestView()
+                .screenEdgeAware()
                 .tabItem { Label("Photo", systemImage: "photo") }
             BenchView()
+                .screenEdgeAware()
                 .tabItem { Label("Bench", systemImage: "speedometer") }
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }

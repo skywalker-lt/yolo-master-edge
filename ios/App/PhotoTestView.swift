@@ -242,6 +242,12 @@ struct PhotoTestView: View {
     private let gridCols = [GridItem(.flexible(), spacing: 4),
                             GridItem(.flexible(), spacing: 4),
                             GridItem(.flexible(), spacing: 4)]
+    /// The gallery's columns on a wide screen (iPhone Duo, inner display): as many as fit
+    /// at 120 pt or more - six held open like a book, five turned - so a cell is about the
+    /// size it has on a phone. Three columns there made each photo 280 pt wide.
+    private let wideGridCols = [GridItem(.adaptive(minimum: 120), spacing: 4)]
+    @Environment(\.horizontalSizeClass) private var widthClass
+    @Environment(\.topEdgeGap) private var topGap   // iPhone Duo: keeps the top bar off the screen's edge
 
     /// Photos are loading or a run is going: the pickers and the add button wait.
     private var busy: Bool { isRunning || phase != .idle }
@@ -259,7 +265,7 @@ struct PhotoTestView: View {
             ZStack { content }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .toolbar(.hidden, for: .navigationBar)
-                .safeAreaInset(edge: .top) { topBar }
+                .safeAreaInset(edge: .top) { topBar.padding(.top, topGap) }   // 0 except on an iPhone Duo
                 .safeAreaInset(edge: .bottom) { bottomBars }
                 .onAppear {
                     lightHaptic.prepare()
@@ -358,7 +364,7 @@ struct PhotoTestView: View {
                         extras: extras, mode: perImage ? .ms : .fps, fullWidth: true,
                         mask: isSeg ? mk : nil)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, barSideInset)   // as wide as the tab bar, like Live's HUD
+            .barColumn()   // as wide as the tab bar, like Live's HUD; a phone's width on a wide screen
     }
 
     // MARK: pieces
@@ -391,7 +397,7 @@ struct PhotoTestView: View {
 
     private var gallery: some View {
         ScrollView {
-            LazyVGrid(columns: gridCols, spacing: 4) {
+            LazyVGrid(columns: widthClass == .regular ? wideGridCols : gridCols, spacing: 4) {
                 ForEach(shots) { shot in
                     galleryCell(shot)
                 }
@@ -518,7 +524,7 @@ struct PhotoTestView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(10)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .padding(.horizontal, barSideInset)
+            .barColumn()
     }
 
     /// What floats over the bottom of the photos, above the tab bar. The stats HUD is last
@@ -537,7 +543,7 @@ struct PhotoTestView: View {
                             segOverlay: isSeg ? $segOverlay : nil,
                             pose: poseKeypoints > 0 ? $pose : nil,
                             wholeBody: poseKeypoints == 133)
-                    .padding(.horizontal, barSideInset)
+                    .barColumn()
             }
             if showHUD { hud.padding(.bottom, 20) }
         }
@@ -561,7 +567,7 @@ struct PhotoTestView: View {
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, barSideInset)
+        .barColumn()
     }
 
     /// Label of an icon button in the top bar. Every button gets the same box, so the bar is
@@ -674,7 +680,7 @@ struct PhotoTestView: View {
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         // as wide as the tab bar and as Live's top bar (`barSideInset`)
-        .padding(.horizontal, barSideInset)
+        .barColumn()
     }
 
     /// The top bar while selecting: leave, how many are chosen, Select all / Deselect, save
@@ -728,7 +734,7 @@ struct PhotoTestView: View {
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, barSideInset)
+        .barColumn()
         .alert(Text(prompt.title), isPresented: $asking) {
             switch prompt {
             case .save:

@@ -521,6 +521,96 @@ struct ModelChip: View {
 /// 21 pt is the margin of the system's floating tab bar, measured on an iPhone Air (iOS 26).
 let barSideInset: CGFloat = 21
 
+// MARK: - wide screens (iPhone Duo)
+
+/// The widest a bar of Live or Photo gets where the screen is much wider than a phone held
+/// upright: the inner display of an iPhone Duo (951 pt held open like a book, 669 pt turned),
+/// which is the only place this app is given a REGULAR horizontal size class - it is
+/// portrait-only, and every other iPhone held upright is compact. There the bars keep the
+/// width they have on the widest ordinary iPhone (440 pt less the two margins) and sit
+/// centred, while the camera picture, the gallery and the open photo use the whole screen.
+/// Stretched from edge to edge the bars were mostly empty: the pickers at one end, the
+/// buttons 600 pt away at the other, the flip button far from the shutter.
+let barMaxWidth: CGFloat = 398
+
+/// The widest the Bench tab's top bar and result cards get on that display. Wider than
+/// `barMaxWidth`: the cards are tables.
+let benchMaxWidth: CGFloat = 600
+
+/// The least distance between a bar at the top of a tab and the top edge of the screen. On
+/// an iPhone Duo with its tabs in the strip at the side there is no status bar over the
+/// content, the safe area starts at the very edge, and a bar placed at its top touched it.
+let minTopMargin: CGFloat = 16
+
+/// A bar with its side margins: used in place of `.padding(.horizontal, sideInset)`.
+/// With a compact width that padding is all it is (a frame with no limit takes the size of
+/// what is in it), so nothing moves on an ordinary iPhone or on the Duo's outer display.
+/// With a regular width the bar is no wider than `width`; the stack or the safe-area inset
+/// it is in centres it.
+private struct BarColumn: ViewModifier {
+    let sideInset: CGFloat
+    let width: CGFloat
+    @Environment(\.horizontalSizeClass) private var widthClass
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, sideInset)
+            .frame(maxWidth: widthClass == .regular ? width + 2 * sideInset : nil)
+    }
+}
+
+extension View {
+    func barColumn(sideInset: CGFloat = barSideInset, width: CGFloat = barMaxWidth) -> some View {
+        modifier(BarColumn(sideInset: sideInset, width: width))
+    }
+}
+
+private struct TopEdgeGapKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    /// What a tab's top bar adds above itself to keep `minTopMargin` from the screen's edge
+    /// (`screenEdgeAware`). 0 wherever the system's own top inset is already that large.
+    var topEdgeGap: CGFloat {
+        get { self[TopEdgeGapKey.self] }
+        set { self[TopEdgeGapKey.self] = newValue }
+    }
+}
+
+/// Measures the system's safe area around a tab - outside the tab's own bars, which are
+/// safe-area insets further in - and hands the tab `topEdgeGap`.
+///
+/// The gap is only ever given on an iPhone Duo: on its inner display (regular width) or
+/// beside the strip its tabs are in (a safe-area inset at the side, which an ordinary
+/// iPhone held upright does not have). An ordinary iPhone always gets 0, also if a first
+/// measurement taken before the window has its insets should read 0.
+private struct ScreenEdgeAware: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var widthClass
+    @State private var insets: EdgeInsets?      // nil until measured
+
+    private var gap: CGFloat {
+        guard let insets else { return 0 }
+        guard widthClass == .regular || insets.leading > 0 || insets.trailing > 0 else { return 0 }
+        return max(0, minTopMargin - insets.top)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.topEdgeGap, gap)
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { insets = g.safeAreaInsets }
+                    .onChange(of: g.safeAreaInsets) { _, now in insets = now }
+            })
+    }
+}
+
+extension View {
+    /// For the root of a tab whose top bar floats at the top of the safe area.
+    func screenEdgeAware() -> some View { modifier(ScreenEdgeAware()) }
+}
+
 /// An on/off choice drawn as a button of its own: a capsule filled with the accent colour
 /// (blue), white text, while on; a quiet grey capsule while off. The whole-body part row is
 /// four of them side by side, equal in width, with clear gaps between them.
