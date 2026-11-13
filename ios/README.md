@@ -26,6 +26,13 @@ In Xcode: set your signing team on the YOLOMasterIOS target, select the
 iPhone, Run. (No team? Simulator works for the UI, but Core ML performance and
 the ANE only exist on-device.)
 
+In the simulator a run starts on CPU and the CPU unit is always in the
+picker. On Auto an iPad simulator returned no detection at all for photos
+full of people, with the model that detects on the phones; the simulator has
+no Neural Engine and no real GPU. CPU is the likeliest path to be right
+there, which has not been confirmed yet. Detections, or their absence, in the
+simulator say nothing about a device.
+
 ## Release build (TestFlight / App Store)
 
 A Debug build runs from a fresh clone (with no model in `ios/Models/` it opens
@@ -79,7 +86,11 @@ Before every upload:
   Photos are decoded while they load, off the main thread, not when the model
   first reads them: that decoding (100 to 500 ms a photo) used to be counted as
   preprocessing. A file over
-  20 MB is not imported and is named in a message. A photo opens with a tap and
+  50 MB is not imported and is named in a message (20 MB up to 1.1.0 build
+  2). A high-resolution photo is treated like any other: the model sees the
+  whole picture scaled into its own input size, in one pass, never in tiles;
+  the copy the app keeps, shows and saves is at most 2048 pixels on its
+  longer side. A photo opens with a tap and
   closes with a pinch (on a photo that is not zoomed in) or a one-finger swipe
   down. In the gallery, Select turns taps into a selection (Select all /
   Deselect for the lot): save the chosen photos, annotated, or take them out

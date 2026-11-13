@@ -16,8 +16,11 @@ import YOLOMasterKit
 private let photoLimit = 100
 
 /// A picked file larger than this is not imported. Decimal megabytes: the unit Photos and
-/// Files show sizes in, so "20 MB" here is the "20 MB" the user reads there.
-private let photoByteLimit = 20_000_000
+/// Files show sizes in, so "50 MB" here is the "50 MB" the user reads there.
+/// (20 MB until 1.1.0 build 2: that left out a 12 MP ProRAW shot and most panoramas.)
+/// The limit is on the FILE, not on the picture's resolution - see `decodedPhoto` for what
+/// becomes of a high-resolution photo.
+private let photoByteLimit = 50_000_000
 
 private func megabytes(_ bytes: Int) -> String {
     String(format: "%.1f MB", Double(bytes) / 1_000_000)
@@ -31,6 +34,14 @@ private func megabytes(_ bytes: Int) -> String {
 /// device) - and the main thread for the photos on screen. `ShouldCacheImmediately` asks for
 /// the decode now; reading the pixels once makes sure of it whatever ImageIO does with the
 /// flag for a thumbnail (it is the same read the Kit's preprocessing does).
+///
+/// A HIGH-RESOLUTION photo is treated like any other: the model sees the WHOLE picture,
+/// scaled into its own input size (`Detector.imgsz`, letterboxed), however many pixels the
+/// file holds. It is never cut into tiles that are run one by one - the Kit can do that
+/// (`forwardPadded`), this app does not ask for it - so a 48 MP photo costs one pass, like a
+/// 1 MP one, and its time on the HUD is the model's. The 2048-pixel copy made here is what
+/// that scaling starts from, and what is shown and saved; the file's bytes are let go once
+/// it is made, so a 50 MB file does not stay in memory.
 private func decodedPhoto(_ data: Data) -> CGImage? {
     guard let src = CGImageSourceCreateWithData(data as CFData, nil),
           let img = CGImageSourceCreateThumbnailAtIndex(src, 0, [

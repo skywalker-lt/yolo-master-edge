@@ -442,8 +442,14 @@ enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
 
     /// Units to expose in a compute picker. CPU-only inference can crash Live/Photo
     /// on some MoE models, so it is hidden unless the user opts in (Settings).
+    /// In the simulator CPU is always offered: it is where a run starts there
+    /// (`deviceDefault`).
     static func available(allowCPU: Bool) -> [ComputeChoice] {
-        allowCPU ? allCases : allCases.filter { $0 != .cpu }
+        #if targetEnvironment(simulator)
+        return allCases
+        #else
+        return allowCPU ? allCases : allCases.filter { $0 != .cpu }
+        #endif
     }
 
     var mode: ComputeMode {
@@ -458,11 +464,20 @@ enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
     /// triggers for these fragmented MoE+attention models is painfully slow on
     /// A17-and-earlier silicon (<= iPhone 15 Pro, hardware id "iPhoneN,M" with
     /// N <= 16), so those devices default to GPU (fast Metal compile); iPhone 16
-    /// and newer default to Auto. Everything non-iPhone (iPad, simulator) also
-    /// defaults to Auto.
+    /// and newer default to Auto. An iPad also defaults to Auto.
+    ///
+    /// The SIMULATOR starts on CPU. It has no Neural Engine and no real GPU, and on Auto an
+    /// iPad simulator returned no detection at all for photos full of people (three
+    /// screenshots, 2026-11-13: 0 dets at 73 to 75 ms, the same model that detects on the
+    /// phones). The CPU path is Core ML's plain one and the likeliest to be right there;
+    /// that it is has not been seen yet. Auto and GPU stay in the picker to compare.
     static var deviceDefault: ComputeChoice {
+        #if targetEnvironment(simulator)
+        return .cpu
+        #else
         guard let major = iPhoneHardwareGeneration else { return .auto }
         return major <= 16 ? .gpu : .auto
+        #endif
     }
 }
 
