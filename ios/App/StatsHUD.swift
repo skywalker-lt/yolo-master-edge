@@ -66,6 +66,7 @@ struct StatsHUD: View {
     var fullWidth: Bool = false
     var mask: Double? = nil    // seg mask-compose ms; nil hides the bar (det models)
 
+    @Environment(\.duoOuterDisplay) private var narrow   // iPhone Duo, outer display
     @State private var thermal = ProcessInfo.processInfo.thermalState
     @State private var expanded = false   // tap toggles the detailed-stats section
     @State private var rowWidth: CGFloat = 0   // measured main-row width: the expanded
@@ -153,12 +154,15 @@ struct StatsHUD: View {
             // compact stage bars only while collapsed - the expanded view has
             // the same stages as named detail rows, no duplication
             if !expanded {
+                // 90 pt of bar make the row 356 pt, the card 376 - more than the 350 pt a
+                // bar has on the outer display of an iPhone Duo, where the bars are 60 pt
+                let bar: CGFloat = narrow ? 60 : 90
                 VStack(alignment: .leading, spacing: 5) {
-                    StageBar(icon: "aspectratio", ms: pre)                       // preprocess
-                    StageBar(icon: "cpu", ms: inf)                               // inference
-                    StageBar(icon: "rectangle.dashed", ms: dec)                  // decode
-                    if let mask {
-                        StageBar(icon: "person.and.background.dotted", ms: mask) // mask compose
+                    StageBar(icon: "aspectratio", ms: pre, barWidth: bar)        // preprocess
+                    StageBar(icon: "cpu", ms: inf, barWidth: bar)                // inference
+                    StageBar(icon: "rectangle.dashed", ms: dec, barWidth: bar)   // decode
+                    if let mask {                                                // mask compose
+                        StageBar(icon: "person.and.background.dotted", ms: mask, barWidth: bar)
                     }
                 }
             }
@@ -203,6 +207,7 @@ struct StageBar: View {
     let icon: String   // SF Symbol naming the stage
     let ms: Double
     var color: Color? = nil   // override the stage-color ramp (bench uses msColor bands)
+    var barWidth: CGFloat = 90     // the stats HUD shortens it where its card must be narrower
     private let fullScale = 50.0   // bar saturates at 50ms
 
     var body: some View {
@@ -218,7 +223,7 @@ struct StageBar: View {
                         .frame(width: max(3, min(ms / fullScale, 1) * g.size.width))
                 }
             }
-            .frame(width: 90, height: 6)
+            .frame(width: barWidth, height: 6)
             .animation(.easeOut(duration: 0.15), value: ms)
             Text(String(format: "%4.1f", ms))
                 .font(.caption2.monospacedDigit())
@@ -542,31 +547,67 @@ let benchMaxWidth: CGFloat = 600
 /// content, the safe area starts at the very edge, and a bar placed at its top touched it.
 let minTopMargin: CGFloat = 16
 
+/// Side margin of the bars of Live and Photo on the OUTER display of an iPhone Duo. Its
+/// tabs are in a strip at the side there, which leaves the tab 382 pt of the screen's 466,
+/// and the bars as they are on a phone do not fit into that: the stats HUD needs 376 pt, the
+/// top bars about 370, so at `barSideInset` they overflowed, ended 3 pt from the screen's
+/// left edge and made the whole tab 419 pt wide. With this margin a bar is 350 pt wide and
+/// what is in it is made to fit (`duoOuterDisplay`). 16 pt is also what a top bar keeps from
+/// the top edge (`minTopMargin`).
+let outerBarSideInset: CGFloat = 16
+
+/// Where the stats HUD ends above the bottom edge of the screen while the tabs are in the
+/// strip at the side (an iPhone Duo: its outer display, and its inner display held open
+/// like a book). There is no tab bar under the HUD then, and 20 pt above the home
+/// indicator's inset it stood 55 pt above the edge. 24 pt is where the strip itself ends,
+/// measured on screenshots of the simulator, so the two end on one line.
+let sideStripBottomMargin: CGFloat = 24
+
+/// The stats HUD's distance from the bottom of the safe area on every iPhone with its tab
+/// bar at the bottom: 20 pt above the tab bar.
+let hudBottomPadding: CGFloat = 20
+
 /// A bar with its side margins: used in place of `.padding(.horizontal, sideInset)`.
 /// With a compact width that padding is all it is (a frame with no limit takes the size of
-/// what is in it), so nothing moves on an ordinary iPhone or on the Duo's outer display.
+/// what is in it), so nothing moves on an ordinary iPhone.
 /// With a regular width the bar is no wider than `width`; the stack or the safe-area inset
 /// it is in centres it.
+/// On the outer display of an iPhone Duo (`duoOuterDisplay`) a bar of Live or Photo - one
+/// that names no margin of its own - gets `outerBarSideInset`, and every bar reports the
+/// width it was offered whatever is in it: should something in a bar still be too wide, it
+/// sticks out of that one bar and no longer widens the tab around it.
 private struct BarColumn: ViewModifier {
-    let sideInset: CGFloat
+    let sideInset: CGFloat?     // nil: the margin of a bar of Live or Photo
     let width: CGFloat
     @Environment(\.horizontalSizeClass) private var widthClass
+    @Environment(\.duoOuterDisplay) private var narrow
 
     func body(content: Content) -> some View {
+        let inset = sideInset ?? (narrow ? outerBarSideInset : barSideInset)
         content
-            .padding(.horizontal, sideInset)
-            .frame(maxWidth: widthClass == .regular ? width + 2 * sideInset : nil)
+            .padding(.horizontal, inset)
+            .frame(minWidth: narrow ? 0 : nil,
+                   maxWidth: widthClass == .regular ? width + 2 * inset
+                                                    : (narrow ? CGFloat.infinity : nil))
     }
 }
 
 extension View {
-    func barColumn(sideInset: CGFloat = barSideInset, width: CGFloat = barMaxWidth) -> some View {
+    func barColumn(sideInset: CGFloat? = nil, width: CGFloat = barMaxWidth) -> some View {
         modifier(BarColumn(sideInset: sideInset, width: width))
     }
 }
 
 private struct TopEdgeGapKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
+}
+
+private struct DuoOuterDisplayKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private struct HUDBottomGapKey: EnvironmentKey {
+    static let defaultValue: CGFloat = hudBottomPadding
 }
 
 extension EnvironmentValues {
@@ -576,28 +617,61 @@ extension EnvironmentValues {
         get { self[TopEdgeGapKey.self] }
         set { self[TopEdgeGapKey.self] = newValue }
     }
+
+    /// True on the outer display of an iPhone Duo: a compact width with the tabs in the
+    /// strip at the side (`screenEdgeAware`). The bars of Live and Photo are narrower there
+    /// than on any phone, and what is in them is spaced and sized to fit. False on every
+    /// other iPhone, where nothing reads differently.
+    var duoOuterDisplay: Bool {
+        get { self[DuoOuterDisplayKey.self] }
+        set { self[DuoOuterDisplayKey.self] = newValue }
+    }
+
+    /// The stats HUD's bottom padding, measured from the bottom of the safe area
+    /// (`screenEdgeAware`): `hudBottomPadding` over a tab bar, and what puts the HUD
+    /// `sideStripBottomMargin` above the screen's edge while the tabs are in the strip at
+    /// the side - a negative number where the home indicator's inset is larger than that.
+    var hudBottomGap: CGFloat {
+        get { self[HUDBottomGapKey.self] }
+        set { self[HUDBottomGapKey.self] = newValue }
+    }
 }
 
 /// Measures the system's safe area around a tab - outside the tab's own bars, which are
-/// safe-area insets further in - and hands the tab `topEdgeGap`.
+/// safe-area insets further in - and hands the tab `topEdgeGap`, `hudBottomGap` and
+/// `duoOuterDisplay`.
 ///
-/// The gap is only ever given on an iPhone Duo: on its inner display (regular width) or
-/// beside the strip its tabs are in (a safe-area inset at the side, which an ordinary
-/// iPhone held upright does not have). An ordinary iPhone always gets 0, also if a first
-/// measurement taken before the window has its insets should read 0.
+/// All three differ from their defaults only on an iPhone Duo: on its inner display
+/// (regular width) or beside the strip its tabs are in (a safe-area inset at the side,
+/// which an ordinary iPhone held upright does not have). An ordinary iPhone always gets the
+/// defaults, also if a first measurement taken before the window has its insets should
+/// read 0.
 private struct ScreenEdgeAware: ViewModifier {
     @Environment(\.horizontalSizeClass) private var widthClass
     @State private var insets: EdgeInsets?      // nil until measured
 
+    /// The tabs are in the strip at the side of the screen, not in a bar at its bottom.
+    private var besideStrip: Bool {
+        guard let insets else { return false }
+        return insets.leading > 0 || insets.trailing > 0
+    }
+
     private var gap: CGFloat {
         guard let insets else { return 0 }
-        guard widthClass == .regular || insets.leading > 0 || insets.trailing > 0 else { return 0 }
+        guard widthClass == .regular || besideStrip else { return 0 }
         return max(0, minTopMargin - insets.top)
+    }
+
+    private var hudGap: CGFloat {
+        guard let insets, besideStrip else { return hudBottomPadding }
+        return min(hudBottomPadding, sideStripBottomMargin - insets.bottom)
     }
 
     func body(content: Content) -> some View {
         content
             .environment(\.topEdgeGap, gap)
+            .environment(\.hudBottomGap, hudGap)
+            .environment(\.duoOuterDisplay, besideStrip && widthClass != .regular)
             .background(GeometryReader { g in
                 Color.clear
                     .onAppear { insets = g.safeAreaInsets }

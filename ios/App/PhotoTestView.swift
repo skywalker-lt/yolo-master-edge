@@ -248,6 +248,8 @@ struct PhotoTestView: View {
     private let wideGridCols = [GridItem(.adaptive(minimum: 120), spacing: 4)]
     @Environment(\.horizontalSizeClass) private var widthClass
     @Environment(\.topEdgeGap) private var topGap   // iPhone Duo: keeps the top bar off the screen's edge
+    @Environment(\.hudBottomGap) private var hudGap // 20 pt over a tab bar; lower beside the Duo's tab strip
+    @Environment(\.duoOuterDisplay) private var narrow   // iPhone Duo, outer display: 350 pt bars
 
     /// Photos are loading or a run is going: the pickers and the add button wait.
     private var busy: Bool { isRunning || phase != .idle }
@@ -528,7 +530,8 @@ struct PhotoTestView: View {
     }
 
     /// What floats over the bottom of the photos, above the tab bar. The stats HUD is last
-    /// and keeps the place it has in Live (20 pt above the tab bar); the rest stacks on it.
+    /// and keeps the place it has in Live (20 pt above the tab bar, `hudBottomGap`); the rest
+    /// stacks on it.
     private var bottomBars: some View {
         VStack(spacing: 8) {
             if !importNote.isEmpty {
@@ -545,7 +548,7 @@ struct PhotoTestView: View {
                             wholeBody: poseKeypoints == 133)
                     .barColumn()
             }
-            if showHUD { hud.padding(.bottom, 20) }
+            if showHUD { hud.padding(.bottom, hudGap) }
         }
     }
 
@@ -580,18 +583,24 @@ struct PhotoTestView: View {
     /// on an iPhone Air (420 pt wide): model chip 98 + 8 + compute picker 77 = 183 pt, which
     /// leaves 179 pt inside the bar; four 46 pt buttons 8 pt apart need 208, four 38 pt
     /// buttons 6 pt apart need 170. (A bordered button is its label plus 12 pt on each side.)
+    ///
+    /// On the outer display of an iPhone Duo (`narrow`) the bar is 350 pt wide and needs
+    /// about 366 like this: there the box is 10 pt (a 34 pt button), the buttons are 4 pt
+    /// apart, the bar's parts 6 pt, and its side padding is 6 pt.
     private func barIcon(_ name: String) -> some View {
         Image(systemName: name)
             .font(.system(size: 15))
-            .frame(width: 14, height: 20)
+            .frame(width: barIconWidth, height: 20)
     }
+
+    private var barIconWidth: CGFloat { narrow ? 10 : 14 }
 
     /// The save button's label: the icon, or a spinner while images are being saved.
     @ViewBuilder private func saveLabel(_ icon: String) -> some View {
         if exporting {
             ProgressView()
                 .scaleEffect(0.8)
-                .frame(width: 14, height: 20)
+                .frame(width: barIconWidth, height: 20)
         } else {
             barIcon(icon)
         }
@@ -604,7 +613,7 @@ struct PhotoTestView: View {
     }
 
     private var controls: some View {
-        HStack {
+        HStack(spacing: narrow ? 6 : nil) {
             Menu {
                 Picker("Model", selection: $selectedModel) {
                     ForEach(models) { m in
@@ -627,7 +636,7 @@ struct PhotoTestView: View {
             .disabled(busy)
             Spacer(minLength: 0)        // pickers left, buttons right: the bar spans the full width
             // the buttons as one group, 6 pt apart (see `barIcon` for the arithmetic)
-            HStack(spacing: 6) {
+            HStack(spacing: narrow ? 4 : 6) {
                 if !shots.isEmpty {
                     // gallery only: choose photos to save or to take out of the run.
                     // (The pager is left by a swipe down or a pinch; a photo is opened by
@@ -677,7 +686,8 @@ struct PhotoTestView: View {
                 .disabled(busy)
             }
         }
-        .padding(8)
+        .padding(.horizontal, narrow ? 6 : 8)
+        .padding(.vertical, 8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         // as wide as the tab bar and as Live's top bar (`barSideInset`)
         .barColumn()
@@ -732,7 +742,8 @@ struct PhotoTestView: View {
             .buttonStyle(.bordered)
             .disabled(selected.isEmpty)
         }
-        .padding(8)
+        .padding(.horizontal, narrow ? 6 : 8)       // as in `controls`
+        .padding(.vertical, 8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         .barColumn()
         .alert(Text(prompt.title), isPresented: $asking) {

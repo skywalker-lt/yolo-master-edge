@@ -84,6 +84,8 @@ struct LiveView: View {
     @State private var flipTurns: Double = 0      // half-turns of the flip button's arrows
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.topEdgeGap) private var topGap   // iPhone Duo: keeps the top bar off the screen's edge
+    @Environment(\.hudBottomGap) private var hudGap // 20 pt over a tab bar; lower beside the Duo's tab strip
+    @Environment(\.duoOuterDisplay) private var narrow   // iPhone Duo, outer display: 350 pt bars
     private let haptic = UIImpactFeedbackGenerator(style: .medium)
     private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
     private let heavyHaptic = UIImpactFeedbackGenerator(style: .heavy)
@@ -210,7 +212,8 @@ struct LiveView: View {
                     .barColumn(sideInset: 0, width: barMaxWidth + 2 * barSideInset)
                     // with the stats HUD hidden nothing stands between the shutter and the
                     // tab bar: give it the room the HUD's own margin otherwise provides
-                    .padding(.bottom, showHUD ? 8 : 30)
+                    // (30 pt over a tab bar; less where the HUD itself sits lower)
+                    .padding(.bottom, showHUD ? 8 : 10 + hudGap)
                 }
                 if showHUD {
                     StatsHUD(fps: statHz, pre: statPre, inf: statInf,
@@ -224,7 +227,10 @@ struct LiveView: View {
                              fullWidth: true,
                              mask: isSegModel ? statMask : nil)
                         .barColumn()   // as wide as the tab bar; a phone's width on a wide screen
-                        .padding(.bottom, 20)
+                        // 20 pt above the tab bar. Where the tabs are in the strip at the
+                        // side (iPhone Duo) there is none: the HUD goes down to where the
+                        // strip ends, partly into the home indicator's inset (`hudBottomGap`)
+                        .padding(.bottom, hudGap)
                         // its height, for the screen shown without camera access
                         // (`cameraAccessNeeded` centres itself in what the HUD leaves free)
                         .background(GeometryReader { g in
@@ -479,8 +485,13 @@ struct LiveView: View {
             }
     }
 
+    /// On the outer display of an iPhone Duo (`narrow`) the bar is 350 pt wide, 28 pt less
+    /// than on the narrowest phone it was laid out on, and at its usual sizes it needs about
+    /// 372: there the parts stand 6 pt apart instead of 8, the two icon buttons are 4 pt
+    /// narrower each, the play button 14 pt, and the bar's own side padding is 6 pt. On
+    /// every other iPhone each of these is the value it always was.
     private var controls: some View {
-        HStack {
+        HStack(spacing: narrow ? 6 : nil) {
             Menu {
                 Picker("Model", selection: $selectedModel) {
                     ForEach(models) { m in
@@ -513,7 +524,7 @@ struct LiveView: View {
                 // label box so every bordered button comes out the same height
                 Image(systemName: camera.torchOn ? "flashlight.on.fill" : "flashlight.off.fill")
                     .font(.system(size: 15))
-                    .frame(width: 22, height: 20)
+                    .frame(width: narrow ? 18 : 22, height: 20)
             }
             .buttonStyle(.bordered)
             .tint(camera.torchOn ? .yellow : nil)
@@ -522,7 +533,7 @@ struct LiveView: View {
                 withAnimation { showTuning.toggle() }
             } label: {
                 Image(systemName: "slider.horizontal.3")
-                    .frame(width: 22, height: 20)
+                    .frame(width: narrow ? 18 : 22, height: 20)
             }
             .buttonStyle(.bordered)
             Button {
@@ -530,7 +541,7 @@ struct LiveView: View {
                 togglePlay(strong: false)
             } label: {
                 Image(systemName: wantRun && camera.authorized ? "pause.fill" : "play.fill")
-                    .frame(minWidth: 44, minHeight: 20)
+                    .frame(minWidth: narrow ? 30 : 44, minHeight: 20)
             }
             .buttonStyle(.borderedProminent)
             .tint(wantRun && camera.authorized ? .red : .accentColor)
@@ -549,7 +560,8 @@ struct LiveView: View {
                 }
             )
         }
-        .padding(8)
+        .padding(.horizontal, narrow ? 6 : 8)
+        .padding(.vertical, 8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         // as wide as the tab bar, like the tuning panel and the stats HUD (`barSideInset`);
         // no top padding: aligns with the photo tab's bar
