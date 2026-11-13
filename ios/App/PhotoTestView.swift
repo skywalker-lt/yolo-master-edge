@@ -86,8 +86,19 @@ struct PhotoTestView: View {
 
     var body: some View {
         NavigationStack {
+            // The bars - top controls, progress, tuning panel, stats HUD - are exactly as wide
+            // as the tab bar and as the same bars in Live (`barSideInset`), so nothing shifts
+            // sideways when switching between the two tabs. The photos keep their own, narrower
+            // margin. The error text sits ABOVE the bars: under the HUD it pushed the HUD up
+            // from the place it has in Live (20 pt above the tab bar).
             VStack(spacing: 8) {
                 content
+                if !errorText.isEmpty {
+                    Text(errorText).font(.caption2).foregroundStyle(.red)
+                        .lineLimit(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, barSideInset)
+                }
                 if phase != .idle { progressBar }
                 if showTuning {
                     TuningPanel(conf: $conf, iou: nmsFree ? nil : $iou, style: $style,
@@ -95,13 +106,9 @@ struct PhotoTestView: View {
                                 segOverlay: isSeg ? $segOverlay : nil,
                                 pose: poseKeypoints > 0 ? $pose : nil,
                                 wholeBody: poseKeypoints == 133)
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, barSideInset)
                 }
                 if showHUD { hud.padding(.bottom, 20) }
-                if !errorText.isEmpty {
-                    Text(errorText).font(.caption2).foregroundStyle(.red)
-                        .lineLimit(3).padding(.horizontal, 12)
-                }
             }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top) { controls }
@@ -173,7 +180,7 @@ struct PhotoTestView: View {
                         extras: extras, mode: perImage ? .ms : .fps, fullWidth: true,
                         mask: isSeg ? mk : nil)
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, barSideInset)   // as wide as the tab bar, like Live's HUD
     }
 
     // MARK: pieces
@@ -265,7 +272,23 @@ struct PhotoTestView: View {
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 8)
+        .padding(.horizontal, barSideInset)
+    }
+
+    /// Label of an icon button in the top bar. Every button gets the same box, so the bar is
+    /// exactly as tall as Live's (its buttons pin their labels to 20 pt too) and the buttons
+    /// are equal in size.
+    ///
+    /// The box is narrower than Live's 22 pt and the glyph smaller, and the buttons sit 6 pt
+    /// apart: with photos loaded this bar holds FOUR buttons beside the two pickers, and at
+    /// the tab bar's width four Live-sized buttons do not fit. Measured on an iPhone Air
+    /// (420 pt wide): model chip 98 + 8 + compute picker 77 = 183 pt, which leaves 179 pt
+    /// inside the bar; four 46 pt buttons 8 pt apart need 208, four 38 pt buttons 6 pt apart
+    /// need 170. (A bordered button is its label plus 12 pt on each side.)
+    private func barIcon(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 15))
+            .frame(width: 14, height: 20)
     }
 
     private var controls: some View {
@@ -290,51 +313,55 @@ struct PhotoTestView: View {
             }
             .fixedSize()
             .disabled(isRunning)
-            Spacer(minLength: 0)
-            if !images.isEmpty {
-                Button {
-                    lightHaptic.impactOccurred()
-                    lightHaptic.prepare()
-                    withAnimation { viewMode = viewMode == .gallery ? .pager : .gallery }
-                } label: {
-                    Image(systemName: viewMode == .gallery
-                          ? "rectangle.portrait" : "square.grid.3x3")
-                }
-                .buttonStyle(.bordered)
-                // pager: export THIS image; gallery: export the whole batch
-                Button {
-                    lightHaptic.impactOccurred()
-                    lightHaptic.prepare()
-                    exportImages(viewMode == .pager ? [page] : Array(images.indices))
-                } label: {
-                    if exporting {
-                        ProgressView()
-                    } else {
-                        Image(systemName: viewMode == .pager
-                              ? "square.and.arrow.down"
-                              : "square.and.arrow.down.on.square")
+            Spacer(minLength: 0)        // pickers left, buttons right: the bar spans the full width
+            // the buttons as one group, 6 pt apart (see `barIcon` for the arithmetic)
+            HStack(spacing: 6) {
+                if !images.isEmpty {
+                    Button {
+                        lightHaptic.impactOccurred()
+                        lightHaptic.prepare()
+                        withAnimation { viewMode = viewMode == .gallery ? .pager : .gallery }
+                    } label: {
+                        barIcon(viewMode == .gallery ? "rectangle.portrait" : "square.grid.3x3")
                     }
+                    .buttonStyle(.bordered)
+                    // pager: export THIS image; gallery: export the whole batch
+                    Button {
+                        lightHaptic.impactOccurred()
+                        lightHaptic.prepare()
+                        exportImages(viewMode == .pager ? [page] : Array(images.indices))
+                    } label: {
+                        if exporting {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                                .frame(width: 14, height: 20)
+                        } else {
+                            barIcon(viewMode == .pager ? "square.and.arrow.down"
+                                                       : "square.and.arrow.down.on.square")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(exporting || isRunning)
+                }
+                Button {
+                    withAnimation { showTuning.toggle() }
+                } label: {
+                    barIcon("slider.horizontal.3")
                 }
                 .buttonStyle(.bordered)
-                .disabled(exporting || isRunning)
+                // no photoLibrary: argument - the picker runs out of process and the
+                // app needs no photo-library permission to receive the chosen items
+                PhotosPicker(selection: $picks, maxSelectionCount: 100, matching: .images) {
+                    barIcon("photo.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isRunning)
             }
-            Button {
-                withAnimation { showTuning.toggle() }
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-            }
-            .buttonStyle(.bordered)
-            // no photoLibrary: argument - the picker runs out of process and the
-            // app needs no photo-library permission to receive the chosen items
-            PhotosPicker(selection: $picks, maxSelectionCount: 100, matching: .images) {
-                Image(systemName: "photo.badge.plus")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(isRunning)
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 8)
+        // as wide as the tab bar and as Live's top bar (`barSideInset`)
+        .padding(.horizontal, barSideInset)
     }
 
     private func annotated(_ img: CGImage, _ dets: [Detection], _ mask: CGImage?) -> some View {

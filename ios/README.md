@@ -81,8 +81,10 @@ Before every upload:
   switch that removes the finger bones and keeps the hand points; that switch
   shares a line with Show stats HUD. Saved photos and exported images follow
   the same settings (the Kit's `PoseDisplay`).
-  In Live the top controls, the tuning panel and the stats HUD are all as
-  wide as the tab bar (`barSideInset`).
+  In Live and in Photo the top controls, the tuning panel and the stats HUD
+  are all as wide as the tab bar (`barSideInset`), so they keep their edges
+  when switching tabs. Photo's top bar holds four buttons once photos are
+  loaded, so its buttons are narrower than Live's (38 pt, 6 pt apart).
 - **Top-down pose (DWPose)** - `dwpose-t-wholebody` (exported with
   `coreml_export/export_dwpose.py`) does not find people itself. The Kit runs a
   detection model on the frame first and the pose model once per person (up to

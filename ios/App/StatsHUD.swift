@@ -513,8 +513,9 @@ struct ModelChip: View {
     }
 }
 
-/// Side margin of the bars that float over the camera in Live - the top controls, the tuning
-/// panel, the stats HUD - so that all three are exactly as wide as the tab bar under them.
+/// Side margin of the bars in Live and in Photo - the top controls, the tuning panel, the
+/// stats HUD, Photo's progress bar - so that all of them are exactly as wide as the tab bar
+/// under them, and a bar keeps its edges when the user switches between the two tabs.
 /// 21 pt is the margin of the system's floating tab bar, measured on an iPhone Air (iOS 26).
 let barSideInset: CGFloat = 21
 
