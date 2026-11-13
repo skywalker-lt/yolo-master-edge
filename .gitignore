@@ -35,10 +35,25 @@ scripts/make_release.sh
 # model binaries -> shipped as GitHub Release assets, not tracked
 models/
 
+# Model weights are NEVER tracked - in any format, in any folder. They ship as GitHub Release
+# assets. (The old rules covered only models/ and the top of mac/, so
+# mac/Resources/v0.1-seg-N.mlpackage was tracked until 2026-11; a tracked file stays in the
+# history of every clone for good.) Fetch what a build needs from Releases, e.g.
+# https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v0.1-seg-n
+*.mlpackage
+*.mlmodelc
+*.mlmodel
+*.pt
+*.pth
+*.onnx
+*.engine
+*.mnn
+*.tflite
+*.safetensors
+*.ncnn.bin
+
 # Mac/Swift build artifacts
 mac/.build/
-mac/*.mlpackage
-mac/*.mlmodelc
 # local SDK paths (per-machine, not shared)
 gui/sdk-paths.cmd
 tests/ncnn_rawdump
