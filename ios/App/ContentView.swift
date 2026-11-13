@@ -42,7 +42,7 @@ let baseProjects: [Ack] = [
         copyright: "Copyright 2026 Tencent", license: "AGPL-3.0",
         repo: "https://github.com/Tencent/YOLO-Master"),
     Ack(name: "YOLO-Master Edge (this app)",
-        blurb: "The iOS app and the Core ML export toolchain.",
+        blurb: "The source code of this app and the Core ML export toolchain.",
         copyright: "Copyright 2026 Thomas (Ruiheng Li), HKUST", license: "AGPL-3.0",
         repo: "https://github.com/skywalker-lt/yolo-master-edge"),
 ]
@@ -52,6 +52,10 @@ let acknowledgements: [Ack] = [
         blurb: "The YOLO training and inference framework YOLO-Master builds on.",
         copyright: "Copyright 2025 Ultralytics", license: "AGPL-3.0",
         repo: "https://github.com/ultralytics/ultralytics"),
+    Ack(name: "MMPose",
+        blurb: "The RTMW whole-body pose model bundled with this app.",
+        copyright: "Copyright 2018 to 2020 Open-MMLab", license: "Apache-2.0",
+        repo: "https://github.com/open-mmlab/mmpose"),
     Ack(name: "Core ML",
         blurb: "Model conversion and the on-device inference runtime.",
         copyright: "Copyright 2020 to 2023 Apple Inc.", license: "BSD-3-Clause",
@@ -77,12 +81,11 @@ YOLO-Master iOS App runs YOLO-Master models on-device using
 Apple's Core ML. It shares the YOLOMasterKit inference path with
 the macOS tools.
 
-This project is licensed under the GNU Affero General Public
-License, version 3 (AGPL-3.0). See
+The source code of this app is licensed under the GNU Affero
+General Public License, version 3 (AGPL-3.0). See
 <https://www.gnu.org/licenses/> for the full terms.
 
-It builds upon and incorporates the following third-party
-software:
+It builds upon the following third-party projects:
 
   * YOLO-Master - Copyright (C) 2026 Tencent. Licensed under the
     AGPL-3.0. Based on ultralytics.
@@ -90,16 +93,22 @@ software:
   * ultralytics - Copyright (c) 2025 Ultralytics. Licensed under
     the AGPL-3.0.
 
+  * MMPose - Copyright 2018-2020 Open-MMLab. Licensed under the
+    Apache License 2.0. Source of the RTMW whole-body pose
+    model. <https://github.com/open-mmlab/mmpose>
+
   * coremltools - Copyright (c) 2020-2023, Apple Inc. Licensed
     under the BSD-3-Clause License.
 
-Core ML model weights exported and bundled with this app are
-licensed under the AGPL-3.0.
+The models bundled with this app come from YOLO-Master,
+ultralytics and MMPose, and remain under the terms of those
+projects.
 
-USE NOTICE (not a license term): The authors release this app for
-research and personal experience only, and neither intend nor
-support commercial use. This is a statement of intent and does not
-impose additional restrictions beyond the AGPL-3.0.
+USE NOTICE: This app, as distributed with the models it bundles,
+is non-commercial. The authors release it for research and
+personal experience only, and neither intend nor support
+commercial use. This notice does not change the AGPL-3.0 terms of
+the source code.
 
 NO WARRANTY: This program is distributed in the hope that it will
 be useful, but WITHOUT ANY WARRANTY; without even the implied
@@ -293,15 +302,18 @@ struct SettingsView: View {
                 // wide gaps between blocks (22), close lines inside a block.
                 VStack(alignment: .leading, spacing: 22) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("YOLO-Master and Ultralytics are licensed under AGPL-3.0; coremltools under BSD-3-Clause. This app and the Core ML weights it bundles are distributed under AGPL-3.0, and this app complies with those terms.")
+                        // Only the SOURCE CODE is AGPL-3.0. The bundled models are not
+                        // relicensed here: each stays under its own project's terms
+                        // (the RTMW whole-body model comes from MMPose, Apache-2.0).
+                        Text("The source code of this app is licensed under AGPL-3.0. The models it bundles come from the projects below and remain under their terms: YOLO-Master and Ultralytics under AGPL-3.0, MMPose under Apache-2.0. coremltools is licensed under BSD-3-Clause.")
                             .font(.footnote).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("The authors release this app for research and personal experience only, and neither intend nor support any commercial use.")
+                        Text("This app is non-commercial. The authors release it for research and personal experience only, and neither intend nor support any commercial use.")
                             .font(.footnote.bold())
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("This is a statement of the authors' intent. It does not add restrictions to, or otherwise limit, the rights granted under the AGPL-3.0.")
+                        Text("This notice is about the app as distributed, with the models it bundles. It does not change the AGPL-3.0 terms of the source code.")
                             .font(.caption2).foregroundStyle(.tertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
