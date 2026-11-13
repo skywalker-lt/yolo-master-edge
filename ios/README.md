@@ -10,9 +10,12 @@ harness).
 
 ```bash
 brew install xcodegen              # once
-# segmentation model (in git): enough on its own to build and run the app
-cp -R mac/Resources/v0.1-seg-N.mlpackage ios/Models/
-# detection models are NOT in git: export your own with the iOS 17 target
+# No model weights are in git: they are GitHub Release assets.
+# segmentation model: enough on its own to build and run the app
+curl -L -o /tmp/seg.zip \
+    https://github.com/skywalker-lt/yolo-master-edge/releases/download/v0.1-seg-n/v0.1-seg-N.mlpackage.zip
+unzip -q /tmp/seg.zip -d ios/Models/
+# detection models: export your own with the iOS 17 target
 python coreml_export/export_coreml.py --weights YOLO-Master-v0.1-N.pt --imgsz 640 \
     --target ios17 --out ios/Models/v0.1-N.mlpackage
 cd ios && xcodegen                 # -> YOLOMasterIOS.xcodeproj
@@ -25,7 +28,8 @@ the ANE only exist on-device.)
 
 ## Release build (TestFlight / App Store)
 
-A Debug build runs from a fresh clone. A Release build (what Archive produces)
+A Debug build runs from a fresh clone (with no model in `ios/Models/` it opens
+on "No models bundled"). A Release build (what Archive produces)
 also needs the inputs that are not in git, and a `Release inputs guard` build
 phase fails the build with a clear error when one is missing:
 

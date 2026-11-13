@@ -17,6 +17,15 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 MODEL=${MODEL:-$ROOT/mac/Resources/v0.1-seg-N.mlpackage}
+# No model weights are in git. The default is the copy mac/make_app.sh fetches from the
+# v0.1-seg-n release; say how to get it rather than fail on every test with a missing path.
+if [ ! -e "$MODEL" ]; then
+  echo "ERROR: model not found: $MODEL"
+  echo "       Model weights are not in git. Fetch the default with:"
+  echo "       curl -L https://github.com/skywalker-lt/yolo-master-edge/releases/download/v0.1-seg-n/v0.1-seg-N.mlpackage.zip -o m.zip && unzip m.zip -d $ROOT/mac/Resources/"
+  echo "       or pass MODEL=/path/to/model.mlpackage"
+  exit 1
+fi
 COCO500=${COCO500:-}
 COMPUTE=${COMPUTE:-cpuAndGPU}
 OUT=$(mktemp -d /tmp/ymtests.XXXXXX)
