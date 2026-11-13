@@ -68,9 +68,10 @@ Before every upload:
   first reads them: that decoding (100 to 500 ms a photo) used to be counted as
   preprocessing. A file over
   20 MB is not imported and is named in a message. A photo opens with a tap and
-  closes with a pinch or a one-finger swipe down. In the gallery, Select turns
-  taps into a selection (All / None for the lot): save the chosen photos,
-  annotated, or take them out of the run. A save that does not happen shows an
+  closes with a pinch (on a photo that is not zoomed in) or a one-finger swipe
+  down. In the gallery, Select turns taps into a selection (Select all /
+  Deselect for the lot): save the chosen photos, annotated, or take them out
+  of the run; both ask for confirmation first. A save that does not happen shows an
   alert with the reason, and a button to the app's Settings page when Photos
   access is off.
 - **Segmentation** - bundle a seg .mlpackage (e.g. v0.1-seg-N above) and both

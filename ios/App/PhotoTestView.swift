@@ -136,6 +136,25 @@ private struct Job: @unchecked Sendable {
     let keepRaw: Bool
 }
 
+/// The question put to the user before something is done with the selected photos.
+private enum SelectionPrompt {
+    case save(Int)
+    case remove(Int)
+
+    var title: String {
+        switch self {
+        case .save(let n): return n == 1 ? "Save 1 image to Photos?" : "Save \(n) images to Photos?"
+        case .remove(let n): return n == 1 ? "Remove 1 photo from this run?" : "Remove \(n) photos from this run?"
+        }
+    }
+    var message: String {
+        switch self {
+        case .save: return "The annotated images are added to your photo library."
+        case .remove: return "The photos stay in your photo library. To have one back in the run, add it again."
+        }
+    }
+}
+
 /// Why a save to the photo library did not happen, in words for the user.
 private struct SaveFailure {
     let message: String
@@ -212,6 +231,8 @@ struct PhotoTestView: View {
     @State private var exportMsg: String?            // non-nil -> "saved" popup
     @State private var exportToastGen = 0            // auto-dismiss generation
     @State private var saveProblem: SaveFailure?     // non-nil -> alert with the reason
+    @State private var asking = false                // the "save / remove these?" alert is up
+    @State private var prompt = SelectionPrompt.save(0)  // what it asks; kept while it closes
 
     private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
     private let notifyHaptic = UINotificationFeedbackGenerator()
@@ -345,42 +366,63 @@ struct PhotoTestView: View {
             ContentUnavailableView("No photos", systemImage: "photo.on.rectangle.angled",
                                    description: Text("Pick up to 100 images"))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if viewMode == .gallery {
-            ScrollView {
-                LazyVGrid(columns: gridCols, spacing: 4) {
-                    ForEach(shots) { shot in
-                        galleryCell(shot)
-                    }
-                }
-                .padding(.horizontal, 8)
-            }
-            .transition(.scale(scale: 0.92).combined(with: .opacity))
         } else {
-            // No page dots. Back to the gallery: pinch in, or swipe down with one finger (both
-            // in `ZoomableScrollView`).
-            // The pager itself is the whole screen, so a photo that is zoomed in passes behind
-            // the bars. At REST the photo is fitted into what the bars leave free - centred on
-            // the whole screen, its lower edge lay under the stats HUD. This reader is laid out
-            // in the safe area, between the top bar and the bottom group, and tells each page
-            // how far that area is from the edges of the screen; it follows the bars when the
-            // HUD is expanded or hidden or the tuning panel opens.
-            GeometryReader { free in
-                let clear = free.safeAreaInsets
-                TabView(selection: $page) {
-                    ForEach(Array(shots.enumerated()), id: \.element.id) { i, shot in
-                        ZoomableScrollView(onExit: {
-                            withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
-                        }) {
-                            annotated(shot, clear: clear)
-                        }
-                        .ignoresSafeArea()
-                        .tag(i)
-                    }
+            // The gallery is ALWAYS there, and the pager lies over it while a photo is open.
+            // The two used to replace each other, each with a transition, and a gallery that
+            // was being faded in was confined to the safe area until its transition ended:
+            // for a quarter of a second the strips behind the top bar and the stats HUD were
+            // black, then the photos appeared there. Now leaving a photo only takes the pager
+            // away, and the gallery under it is already laid out behind the bars (and is
+            // where it was scrolled to).
+            ZStack {
+                gallery
+                    .allowsHitTesting(viewMode == .gallery)
+                    .accessibilityHidden(viewMode != .gallery)
+                if viewMode == .pager {
+                    pager
+                        .zIndex(1)      // on top of the gallery also while it fades out
+                        .transition(.scale(scale: 1.08).combined(with: .opacity))
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .ignoresSafeArea()
             }
-            .transition(.scale(scale: 1.08).combined(with: .opacity))
+        }
+    }
+
+    private var gallery: some View {
+        ScrollView {
+            LazyVGrid(columns: gridCols, spacing: 4) {
+                ForEach(shots) { shot in
+                    galleryCell(shot)
+                }
+            }
+            .padding(.horizontal, 8)
+        }
+    }
+
+    /// No page dots. Back to the gallery: pinch in on a photo at its resting size, or swipe
+    /// down with one finger (both in `ZoomableScrollView`).
+    /// The pager itself is the whole screen, so a photo that is zoomed in passes behind the
+    /// bars. At REST the photo is fitted into what the bars leave free - centred on the whole
+    /// screen, its lower edge lay under the stats HUD. The reader is laid out in the safe
+    /// area, between the top bar and the bottom group, and tells each page how far that area
+    /// is from the edges of the screen; it follows the bars when the HUD is expanded or
+    /// hidden or the tuning panel opens. The background covers the gallery underneath.
+    private var pager: some View {
+        GeometryReader { free in
+            let clear = free.safeAreaInsets
+            TabView(selection: $page) {
+                ForEach(Array(shots.enumerated()), id: \.element.id) { i, shot in
+                    ZoomableScrollView(onExit: {
+                        withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
+                    }) {
+                        annotated(shot, clear: clear)
+                    }
+                    .ignoresSafeArea()
+                    .tag(i)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .ignoresSafeArea()
+            .background { Color(.systemBackground).ignoresSafeArea() }
         }
     }
 
@@ -629,9 +671,10 @@ struct PhotoTestView: View {
         .padding(.horizontal, barSideInset)
     }
 
-    /// The top bar while selecting: leave, how many are chosen, all / none, save the chosen
-    /// photos (annotated, like every export), take them out of the run. Same box and button
-    /// height as `controls`, so the bar does not change size.
+    /// The top bar while selecting: leave, how many are chosen, Select all / Deselect, save
+    /// the chosen photos (annotated, like every export), take them out of the run. Saving and
+    /// removing ask first, in an alert that says how many photos it is about. Same box and
+    /// button height as `controls`, so the bar does not change size.
     private var selectionBar: some View {
         let all = !shots.isEmpty && selected.count == shots.count
         return HStack(spacing: 6) {
@@ -645,12 +688,13 @@ struct PhotoTestView: View {
             Text(selected.isEmpty ? "Select photos" : "\(selected.count) selected")
                 .font(.subheadline.monospacedDigit())
                 .lineLimit(1)
+                .minimumScaleFactor(0.75)
                 .padding(.leading, 4)
             Spacer(minLength: 0)
             Button {
                 selected = all ? [] : Set(shots.map { $0.id })
             } label: {
-                Text(all ? "None" : "All")
+                Text(all ? "Deselect" : "Select all")
                     .font(.subheadline)
                     .frame(height: 20)
             }
@@ -658,7 +702,8 @@ struct PhotoTestView: View {
             Button {
                 lightHaptic.impactOccurred()
                 lightHaptic.prepare()
-                exportImages(selected)
+                prompt = .save(selected.count)
+                asking = true
             } label: {
                 saveLabel("square.and.arrow.down")
             }
@@ -667,7 +712,8 @@ struct PhotoTestView: View {
             Button(role: .destructive) {
                 lightHaptic.impactOccurred()
                 lightHaptic.prepare()
-                removeSelected()
+                prompt = .remove(selected.count)
+                asking = true
             } label: {
                 barIcon("trash")
             }
@@ -677,6 +723,17 @@ struct PhotoTestView: View {
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, barSideInset)
+        .alert(Text(prompt.title), isPresented: $asking) {
+            switch prompt {
+            case .save:
+                Button("Save") { exportImages(selected) }
+            case .remove:
+                Button("Remove", role: .destructive) { removeSelected() }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(prompt.message)
+        }
     }
 
     /// One page of the pager. The view it is hosted in covers the whole screen; `clear` is how
@@ -1195,14 +1252,21 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
         let host: UIHostingController<Content>
         var onExit: (() -> Void)?
         private var exitFired = false
+        private var pinchFromRest = false   // the zoom in progress began on a photo at its resting size
         init(host: UIHostingController<Content>) { self.host = host }
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { host.view }
 
+        func scrollViewWillBeginZooming(_ sv: UIScrollView, with view: UIView?) {
+            pinchFromRest = sv.zoomScale <= sv.minimumZoomScale * 1.01
+        }
+
         func scrollViewDidZoom(_ sv: UIScrollView) {
-            // bounce region below minimum zoom = the gallery-exit affordance;
-            // only reachable when the pinch started at 1x
-            if !exitFired, sv.zoomScale < sv.minimumZoomScale * 0.85,
+            // bounce region below minimum zoom = the gallery-exit affordance, and ONLY for a
+            // pinch that began on a photo at its resting size. A firm pinch on a zoomed-in
+            // photo also runs through the minimum into the bounce region; that one just
+            // zooms the photo out, it does not close the pager.
+            if !exitFired, pinchFromRest, sv.zoomScale < sv.minimumZoomScale * 0.85,
                sv.pinchGestureRecognizer?.state == .changed {
                 exitFired = true
                 onExit?()
@@ -1212,6 +1276,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
         func scrollViewDidEndZooming(_ sv: UIScrollView, with view: UIView?,
                                      atScale scale: CGFloat) {
             exitFired = false
+            pinchFromRest = false
         }
 
         @objc func handleDoubleTap(_ gr: UITapGestureRecognizer) {
