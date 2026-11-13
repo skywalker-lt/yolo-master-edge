@@ -34,6 +34,9 @@ void ym_map_evaluate(const YmImageEval* images, int n, YmMapResult* out) {
     out->images = r.images; out->map50 = r.map50; out->map5095 = r.map5095;
     out->n_classes = static_cast<int>(r.per_class.size());
     out->per_class = out->n_classes ? static_cast<YmClassAP*>(std::calloc(static_cast<size_t>(out->n_classes), sizeof(YmClassAP))) : nullptr;
+    // same rule as ym_load_yolo_labels below: an allocation that failed reports no classes,
+    // so neither this loop nor the caller's reads go through a null pointer
+    if (!out->per_class) out->n_classes = 0;
     for (int i = 0; i < out->n_classes; ++i) {
         const auto& c = r.per_class[static_cast<size_t>(i)];
         out->per_class[i].cls = c.cls; out->per_class[i].n_gt = c.n_gt; out->per_class[i].n_pred = c.n_pred;
@@ -49,10 +52,23 @@ double ym_round6(double v) { return metrics::round6(v); }
 int ym_load_yolo_labels(const char* path, int img_w, int img_h, YmGtBox** out, int* n) {
     std::vector<metrics::GtBox> boxes;
     const bool ok = metrics::load_yolo_labels(path ? path : "", img_w, img_h, boxes);
-    *n = static_cast<int>(boxes.size());
-    *out = boxes.empty() ? nullptr : static_cast<YmGtBox*>(std::malloc(boxes.size() * sizeof(YmGtBox)));
-    for (size_t i = 0; i < boxes.size(); ++i)
-        (*out)[i] = YmGtBox{boxes[i].x1, boxes[i].y1, boxes[i].x2, boxes[i].y2, boxes[i].cls};
+    // One count for the allocation, the copy and the size reported, and the copy goes through
+    // the pointer that was just checked. Before, the loop wrote through *out, which the line
+    // above it could have set to null: Xcode's analyzer reports that path ("Called C++ object
+    // pointer is null"; it cannot tell that empty() and size() agree), and a malloc that fails
+    // really did leave a null pointer to write through. A failed allocation now reports no
+    // boxes and returns 0.
+    const size_t count = boxes.size();
+    YmGtBox* buf = count ? static_cast<YmGtBox*>(std::malloc(count * sizeof(YmGtBox))) : nullptr;
+    if (count && !buf) {
+        *out = nullptr;
+        *n = 0;
+        return 0;
+    }
+    for (size_t i = 0; i < count; ++i)
+        buf[i] = YmGtBox{boxes[i].x1, boxes[i].y1, boxes[i].x2, boxes[i].y2, boxes[i].cls};
+    *out = buf;
+    *n = static_cast<int>(count);
     return ok ? 1 : 0;
 }
 void ym_gt_free(YmGtBox* boxes) { std::free(boxes); }
