@@ -116,6 +116,7 @@ private struct Shot: Identifiable {
     let image: CGImage
     let name: String
     let type: String
+    let pick: String?                       // the picker's identifier of this photo (nil: it gave none)
     var dets: [Detection] = []
     var mask: CGImage? = nil                // segmentation composite
     var raw: Detector.RawOutput? = nil      // cached forward pass, for the sliders
@@ -201,6 +202,7 @@ struct PhotoTestView: View {
     @AppStorage("allowCPU") private var allowCPU = false
     @State private var style: BoxStyle = .chip
     @State private var picks: [PhotosPickerItem] = []
+    @State private var loadingPicks: Set<String> = []    // identifiers of the photos being loaded
     @State private var shots: [Shot] = []            // the run, in the order the photos were added
     @State private var nextShotID = 0
     @State private var page = 0
@@ -273,7 +275,7 @@ struct PhotoTestView: View {
                         }
                     }
                 }
-                .onChange(of: picks) { _, items in load(items) }
+                .onChange(of: picks) { _, items in syncPicks(items) }
                 .onChange(of: selectedModel) { _, _ in rerunAll() }
                 .onChange(of: compute) { _, _ in rerunAll() }
                 .onChange(of: allowCPU) { _, on in if !on && compute == .cpu { compute = ComputeChoice.deviceDefault } }
@@ -653,16 +655,20 @@ struct PhotoTestView: View {
                     barIcon("slider.horizontal.3")
                 }
                 .buttonStyle(.bordered)
-                // no photoLibrary: argument - the picker runs out of process and the
-                // app needs no photo-library permission to receive the chosen items.
-                // What it returns is ADDED to the run, up to `photoLimit` in all.
+                // The picker runs out of process, and the app needs no photo-library
+                // permission to receive the chosen items. It is given the photo library
+                // only so that its items carry an identifier: with those in `picks`, the
+                // picker opens with the photos of the run already ticked. The identifier is
+                // never used to read the library (that would need read access, which this
+                // app does not ask for) - it is only compared, in `syncPicks`.
                 PhotosPicker(selection: $picks,
-                             maxSelectionCount: max(photoLimit - shots.count, 1),
-                             matching: .images) {
+                             maxSelectionCount: max(photoLimit - shots.filter { $0.pick == nil }.count, 1),
+                             matching: .images,
+                             photoLibrary: .shared()) {
                     barIcon("photo.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(busy || shots.count >= photoLimit)
+                .disabled(busy)
             }
         }
         .padding(8)
@@ -770,14 +776,64 @@ struct PhotoTestView: View {
 
     // MARK: pipeline
 
-    /// Photos chosen in the picker are ADDED to the run. The picker's selection is emptied
-    /// right away, so the next visit starts clean and what it returns is again an addition.
+    /// The picker's selection IS the set of picked photos in the run: it opens with them
+    /// ticked, a photo ticked there joins the run (and only it is inferred), a photo
+    /// unticked there leaves it. Photos are matched by the identifier the picker gives each
+    /// item, so the same photo cannot be in the run twice.
+    /// Called for every change of `picks`, the picker's as well as this view's own tidying
+    /// (`tidyPicks`); when selection and run already agree it does nothing.
+    private func syncPicks(_ items: [PhotosPickerItem]) {
+        let chosen = Set(items.compactMap { $0.itemIdentifier })
+        let gone = Set(shots.filter { shot in
+            guard let pick = shot.pick else { return false }     // not from an identified item: stays
+            return !chosen.contains(pick)
+        }.map { $0.id })
+        if !gone.isEmpty {
+            withAnimation(.easeOut(duration: 0.2)) { dropShots(gone) }
+        }
+        let known = Set(shots.compactMap { $0.pick }).union(loadingPicks)   // in the run, or on the way
+        let fresh = items.filter { item in
+            guard let pick = item.itemIdentifier else { return true }
+            return !known.contains(pick)
+        }
+        load(fresh)
+    }
+
+    /// `picks` brought back to the photos that are in the run: an item that was refused
+    /// (over the size limit), could not be read or came with no identifier is taken out, and
+    /// so is one whose photo was removed with Select. The picker then ticks exactly what is
+    /// in the run the next time it opens.
+    private func tidyPicks() {
+        let inRun = Set(shots.compactMap { $0.pick }).union(loadingPicks)   // not those still loading
+        let kept = picks.filter { item in
+            guard let pick = item.itemIdentifier else { return false }
+            return inRun.contains(pick)
+        }
+        if kept.count != picks.count { picks = kept }
+    }
+
+    /// Photos out of the run, by id. Nothing happens to them in the photo library.
+    private func dropShots(_ ids: Set<Int>) {
+        shots.removeAll { ids.contains($0.id) }
+        selected.subtract(ids)
+        page = min(page, max(shots.count - 1, 0))
+        if shots.isEmpty {
+            importNote = ""
+            selecting = false
+        }
+    }
+
+    /// Loads the photos newly ticked in the picker and adds them to the run.
     /// A file over `photoByteLimit` is not imported, and the user is told which.
     private func load(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
-        picks = []
         let take = Array(items.prefix(max(photoLimit - shots.count, 0)))
-        guard !take.isEmpty else { return }
+        guard !take.isEmpty else {
+            tidyPicks()         // the run is full: what was ticked beyond it is not kept ticked
+            return
+        }
+        let taking = Set(take.compactMap { $0.itemIdentifier })
+        loadingPicks.formUnion(taking)
         phase = .loading
         progress = 0
         progressTotal = take.count
@@ -816,7 +872,8 @@ struct PhotoTestView: View {
                 if bytes > photoByteLimit {
                     tooBig.append("\(name) (\(megabytes(bytes)))")
                 } else if let data, let img = decodedPhoto(data) {
-                    added.append(Shot(id: firstID + idx, image: img, name: name, type: type))
+                    added.append(Shot(id: firstID + idx, image: img, name: name, type: type,
+                                      pick: item.itemIdentifier))
                 } else {
                     unreadable += 1
                 }
@@ -829,6 +886,7 @@ struct PhotoTestView: View {
                 let wasEmpty = shots.isEmpty
                 let firstNew = shots.count
                 shots.append(contentsOf: newShots)
+                loadingPicks.subtract(taking)
                 if !isRunning { phase = .idle }     // a run that started meanwhile owns the bar
                 importNote = note
                 if !newShots.isEmpty {
@@ -839,6 +897,7 @@ struct PhotoTestView: View {
                         page = firstNew         // the pager goes to the first new photo
                     }
                 }
+                tidyPicks()                     // what did not make it is not ticked next time
                 runPending()                    // only the new photos have no result yet
             }
         }
@@ -1033,12 +1092,11 @@ struct PhotoTestView: View {
         guard !selected.isEmpty else { return }
         let gone = selected
         withAnimation(.easeOut(duration: 0.2)) {
-            shots.removeAll { gone.contains($0.id) }
+            dropShots(gone)
             selected = []
             selecting = false
         }
-        page = min(page, max(shots.count - 1, 0))
-        if shots.isEmpty { importNote = "" }
+        tidyPicks()         // they are not ticked the next time the picker opens
     }
 
     /// Export annotated images (as rendered: mask layer + boxes per the current

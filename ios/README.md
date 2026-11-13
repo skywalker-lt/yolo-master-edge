@@ -65,8 +65,12 @@ Before every upload:
   starts by itself once access is given.
 - **Photo tab** - batch detection over a run of up to 100 album images; gallery and
   pager views; conf/IoU sliders retune from cached passes without re-running.
-  Picking photos ADDS them to the run, and only the new ones are inferred (the
-  loaded model is kept; a model or compute change re-runs them all). A freshly
+  The picker opens with the photos of the run ticked: ticking a photo adds it,
+  and only the new ones are inferred (the loaded model is kept; a model or
+  compute change re-runs them all); unticking one takes it out of the run. The
+  picker is given the photo library only so that its items carry identifiers
+  for this; they are compared, never used to read the library, so no read
+  access is asked for. A freshly
   loaded model gets a few untimed warm-up passes, so the first photo's time is
   the model's speed and not Core ML's one-off set-up (seconds on the GPU).
   Photos are decoded while they load, off the main thread, not when the model
