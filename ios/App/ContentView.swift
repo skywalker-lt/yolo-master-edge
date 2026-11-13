@@ -179,6 +179,9 @@ struct SettingsView: View {
                 eraseSection
                 reportSection
             }
+            // a little more room under the last row (Report an issue and its footer), which
+            // otherwise ends close above the tab bar when the list is scrolled to its end
+            .contentMargins(.bottom, 28, for: .scrollContent)
             .navigationTitle("Settings")
             // one importer, two modes: model documents, or (the fallback for a package that
             // Files still shows as a plain folder) a folder. Mixing `.folder` with document
@@ -425,8 +428,10 @@ struct SettingsView: View {
                     HStack {
                         Label("Privacy Policy", systemImage: "hand.raised")
                         Spacer(minLength: 0)
+                        // no colour of its own: it takes the row's, like the title beside it
+                        // (it was tertiary, and looked dimmer than the text)
                         Image(systemName: "arrow.up.right")
-                            .font(.caption).foregroundStyle(.tertiary)
+                            .font(.caption)
                     }
                 }
             }
@@ -680,8 +685,10 @@ struct SettingsView: View {
                     HStack {
                         Label("Report an issue", systemImage: "exclamationmark.bubble")
                         Spacer(minLength: 0)
+                        // no colour of its own: it takes the row's, like the title beside it
+                        // (it was tertiary, and looked dimmer than the text)
                         Image(systemName: "arrow.up.right")
-                            .font(.caption).foregroundStyle(.tertiary)
+                            .font(.caption)
                     }
                 }
             } footer: {
