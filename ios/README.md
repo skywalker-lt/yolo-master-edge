@@ -58,6 +58,11 @@ Before every upload:
   Core ML's own placement (`MLComputeUnits.all`): it decides which parts of the
   model run on the Neural Engine, GPU and CPU. It was labelled "ANE" up to
   1.1.0 build 1; saved benchmark history with that label still loads.
+  Without camera access nothing runs: the play button is disabled and shows
+  play, the pickers stay usable, and the stats HUD reads N/A. The screen says
+  "Camera access required", at the place Photo's "No photos" has, with an Open
+  Settings button that goes to this app's page in the Settings app. The run
+  starts by itself once access is given.
 - **Photo tab** - batch detection over a run of up to 100 album images; gallery and
   pager views; conf/IoU sliders retune from cached passes without re-running.
   Picking photos ADDS them to the run, and only the new ones are inferred (the

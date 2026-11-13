@@ -66,6 +66,7 @@ struct LiveView: View {
     @State private var classNames: [String] = cocoNames
     @State private var showTuning = false
     @State private var showHUD = true
+    @State private var hudHeight: CGFloat = 0     // the stats HUD with its bottom margin, as laid out
     @State private var style: BoxStyle = .chip
     @StateObject private var tuning = Tuning()
     @State private var zoomBase: CGFloat = 1  // display zoom factor at gesture start
@@ -152,8 +153,7 @@ struct LiveView: View {
                         .onEnded { v in zoomBase = camera.setZoom(zoomBase * v.magnification) }
                 )
             } else {
-                ContentUnavailableView("Camera access required",
-                                       systemImage: "camera.fill")
+                cameraAccessNeeded
             }
             Color.black
                 .opacity(shutterFlash ? 1 : 0)
@@ -220,6 +220,13 @@ struct LiveView: View {
                              mask: isSegModel ? statMask : nil)
                         .padding(.horizontal, barSideInset)   // as wide as the tab bar
                         .padding(.bottom, 20)
+                        // its height, for the screen shown without camera access
+                        // (`cameraAccessNeeded` centres itself in what the HUD leaves free)
+                        .background(GeometryReader { g in
+                            Color.clear
+                                .onAppear { hudHeight = g.size.height }
+                                .onChange(of: g.size.height) { _, h in hudHeight = h }
+                        })
                 }
             }
         }
@@ -249,6 +256,17 @@ struct LiveView: View {
         }
         .onChange(of: allowCPU) { _, on in if !on && compute == .cpu { compute = ComputeChoice.deviceDefault } }
         .onChange(of: selectedModel) { _, _ in loadError = nil }   // the message was about the previous model
+        // Without camera access there are no frames, so nothing can run: the loop is not
+        // started (`startLoop`), and it starts here the moment access is there - at launch the
+        // answer arrives a moment after the tab appears, and on first use after the user's tap
+        // on Allow. It used to start regardless and sit at 0 FPS with the pause glyph showing.
+        .onChange(of: camera.authorized) { _, allowed in
+            if allowed {
+                if wantRun, visible { startLoop() }
+            } else {
+                suspendLoop()
+            }
+        }
         .onAppear {
             visible = true
             if !allowCPU && compute == .cpu { compute = ComputeChoice.deviceDefault }
@@ -426,6 +444,35 @@ struct LiveView: View {
         }
     }
 
+    /// What Live shows without camera access: what is missing, and a button that opens this
+    /// app's page in the Settings app, where the Camera switch is.
+    ///
+    /// It sits where Photo's "No photos" sits, so nothing jumps when switching tabs. Photo
+    /// centres its message between the top bar and the stats HUD, which there are safe-area
+    /// insets. Here the HUD is drawn over the screen instead, so the same room is made with a
+    /// clear inset of the HUD's height. The message is the same kind of block as Photo's -
+    /// symbol, title, one line - and the button hangs BELOW that block (an overlay with its
+    /// alignment moved) instead of being part of it: as part of it, it would make the block
+    /// taller and push the text up.
+    private var cameraAccessNeeded: some View {
+        ContentUnavailableView("Camera access required", systemImage: "camera.fill",
+                               description: Text("Allow camera access to run live detection"))
+            .fixedSize(horizontal: false, vertical: true)
+            .overlay(alignment: .bottom) {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .alignmentGuide(.bottom) { d in d[.top] - 8 }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .safeAreaInset(edge: .bottom) {
+                Color.clear.frame(height: showHUD ? hudHeight : 0)
+            }
+    }
+
     private var controls: some View {
         HStack {
             Menu {
@@ -440,14 +487,16 @@ struct LiveView: View {
                 ModelChip(model: selectedModel)
             }
             .fixedSize()
-            .disabled(wantRun)          // pause inference before switching (mac GUI rule)
+            // pause inference before switching (mac GUI rule). Without camera access nothing
+            // runs and the play button is off, so the pickers must not stay locked.
+            .disabled(wantRun && camera.authorized)
             Picker("Compute", selection: $compute) {
                 ForEach(ComputeChoice.available(allowCPU: allowCPU)) { c in
                     Text(c.rawValue).lineLimit(1).fixedSize().tag(c)
                 }
             }
             .fixedSize()
-            .disabled(wantRun)
+            .disabled(wantRun && camera.authorized)
             Spacer(minLength: 0)        // pickers left, buttons right: the bar spans the full width
             Button {
                 lightHaptic.impactOccurred()
@@ -474,12 +523,14 @@ struct LiveView: View {
                 if longPressFired { longPressFired = false; return }
                 togglePlay(strong: false)
             } label: {
-                Image(systemName: wantRun ? "pause.fill" : "play.fill")
+                Image(systemName: wantRun && camera.authorized ? "pause.fill" : "play.fill")
                     .frame(minWidth: 44, minHeight: 20)
             }
             .buttonStyle(.borderedProminent)
-            .tint(wantRun ? .red : .accentColor)
-            .disabled(selectedModel == nil)
+            .tint(wantRun && camera.authorized ? .red : .accentColor)
+            // no camera access: the button does nothing at all (the long press below is
+            // stopped in `togglePlay`), and the stats HUD reads N/A because nothing runs
+            .disabled(selectedModel == nil || !camera.authorized)
             .simultaneousGesture(
                 LongPressGesture(minimumDuration: 0.4).onEnded { _ in
                     longPressFired = true
@@ -550,7 +601,8 @@ struct LiveView: View {
     }
 
     private func startLoop() {
-        guard let model = selectedModel, !running else { return }
+        // no camera access, no frames: nothing to run (see the camera.authorized handler)
+        guard camera.authorized, let model = selectedModel, !running else { return }
         running = true
         keepAwake(true)
         loadingModel = true
@@ -821,6 +873,8 @@ struct LiveView: View {
     /// Play/pause with haptics: medium on tap, heavy full-intensity on the
     /// force/long press path.
     private func togglePlay(strong: Bool) {
+        // the long-press gesture sits outside the button's disabled state: stop it here too
+        guard camera.authorized, selectedModel != nil else { return }
         if strong {
             heavyHaptic.impactOccurred(intensity: 1.0)
             heavyHaptic.prepare()
