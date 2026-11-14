@@ -380,6 +380,24 @@ extension BundledModel {
     var facts: ModelFacts { ModelFacts.of(self) }
     var kind: ModelKind { facts.kind }
 
+    /// What decides which controls the tuning panel offers - the mask overlay picker, the pose
+    /// rows, the IoU lever - known WITHOUT loading the model (`ModelFacts`). The panel shows
+    /// the controls of the model that has just been PICKED: it used to take them from the
+    /// detector that was loaded last, so after a change of model it went on showing the
+    /// previous model's controls until the new one had been loaded (in Live: until play was
+    /// tapped again). Where only the file name is known (a package not compiled yet) a pose
+    /// model counts 17 keypoints and a whole-body one 133; the loaded detector has the last word.
+    var tuningTraits: (segment: Bool, nmsFree: Bool, keypoints: Int) {
+        let f = facts
+        let keypoints: Int
+        switch f.kind {
+        case .pose: keypoints = f.keypoints > 0 ? f.keypoints : 17
+        case .wholeBody: keypoints = f.keypoints > 0 ? f.keypoints : 133
+        case .detection, .segmentation: keypoints = 0
+        }
+        return (segment: f.kind == .segmentation, nmsFree: f.end2end, keypoints: keypoints)
+    }
+
     /// Imported in Settings (false: shipped inside the app).
     var isImported: Bool { url.path.hasPrefix(BundledModel.customModelsDir.path) }
 

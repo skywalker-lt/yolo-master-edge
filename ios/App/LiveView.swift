@@ -272,7 +272,20 @@ struct LiveView: View {
             .padding(.top, topGap)      // 0 except on an iPhone Duo (`screenEdgeAware`)
         }
         .onChange(of: allowCPU) { _, on in if !on && compute == .cpu { compute = ComputeChoice.deviceDefault } }
-        .onChange(of: selectedModel) { _, _ in loadError = nil }   // the message was about the previous model
+        .onChange(of: selectedModel) { _, picked in
+            loadError = nil     // the message was about the previous model
+            // The tuning panel (and the HUD's mask row) are the picked model's at once. The
+            // three values used to change only when a Detector had been loaded, and a model
+            // can only be picked while paused: an open panel kept the previous model's
+            // controls until play was tapped. What the model's files say is enough to choose
+            // the controls (`tuningTraits`); the loaded Detector still has the last word
+            // (`startLoop`). Nothing is drawn while paused, so no overlay is redrawn by this.
+            if let traits = picked?.tuningTraits {
+                isSegModel = traits.segment
+                isNMSFree = traits.nmsFree
+                poseKeypoints = traits.keypoints
+            }
+        }
         // Without camera access there are no frames, so nothing can run: the loop is not
         // started (`startLoop`), and it starts here the moment access is there - at launch the
         // answer arrives a moment after the tab appears, and on first use after the user's tap

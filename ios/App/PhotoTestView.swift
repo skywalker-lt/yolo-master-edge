@@ -552,11 +552,12 @@ struct PhotoTestView: View {
             if !errorText.isEmpty { noticeBox(errorText) }
             if phase != .idle { progressBar }
             if showTuning {
-                TuningPanel(conf: $conf, iou: nmsFree ? nil : $iou, style: $style,
+                let traits = panelTraits
+                TuningPanel(conf: $conf, iou: traits.nmsFree ? nil : $iou, style: $style,
                             hudVisible: $showHUD,
-                            segOverlay: isSeg ? $segOverlay : nil,
-                            pose: poseKeypoints > 0 ? $pose : nil,
-                            wholeBody: poseKeypoints == 133)
+                            segOverlay: traits.segment ? $segOverlay : nil,
+                            pose: traits.keypoints > 0 ? $pose : nil,
+                            wholeBody: traits.keypoints == 133)
                     .barColumn()
             }
             if showHUD { hud.padding(.bottom, hudGap) }
@@ -1105,6 +1106,20 @@ struct PhotoTestView: View {
             next[k].done = false
         }
         shots = next
+    }
+
+    /// Which controls the tuning panel offers. They are the SELECTED model's from the moment
+    /// it is picked. `isSeg`, `nmsFree` and `poseKeypoints` belong to the model that is
+    /// LOADED and decide how the results on screen are drawn; they change only when the new
+    /// model has been loaded (`adopt`) - seconds later, or not at all while there is no photo
+    /// to run it on - and the panel used to wait for them. While the loaded model is not the
+    /// selected one, the panel goes by what the selected model's files say (`tuningTraits`);
+    /// the drawing is untouched and stays the loaded model's.
+    private var panelTraits: (segment: Bool, nmsFree: Bool, keypoints: Int) {
+        if let picked = selectedModel, lastDet == nil || detModel != picked {
+            return picked.tuningTraits
+        }
+        return (segment: isSeg, nmsFree: nmsFree, keypoints: poseKeypoints)
     }
 
     /// A pose model set to show the skeleton only: no person boxes, no labels - in the

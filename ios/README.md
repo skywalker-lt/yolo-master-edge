@@ -108,7 +108,10 @@ Before every upload:
   and the skeleton rules live in the Kit (`Detection.keypoints`, `PoseSkeleton`).
   A 133-keypoint COCO-WholeBody model draws the body skeleton plus feet, finger
   bones and the 68 face points (those at half size).
-  With a pose model running, the tuning panel adds pose controls in both tabs:
+  The tuning panel offers the controls of the model that is selected, from the
+  moment it is picked (they are chosen from the model's metadata, without
+  waiting for it to be loaded): an open panel changes with the model.
+  With a pose model selected, the tuning panel adds pose controls in both tabs:
   a Skeleton / Boxes / Both switch (Skeleton drops the person boxes and their
   labels, and hides the box-style row, which has nothing to style then), a
   `kpt` slider for the keypoint visibility to draw from (0.50 is the model's
