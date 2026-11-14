@@ -74,7 +74,15 @@ Before every upload:
   Settings button that goes to this app's page in the Settings app. The run
   starts by itself once access is given.
 - **Photo tab** - batch detection over a run of up to 100 album images; gallery and
-  pager views; conf/IoU sliders retune from cached passes without re-running.
+  pager views. The conf and IoU sliders act at once on every photo of a run of
+  any size: each photo keeps the boxes its pass found above 5%, before NMS, and
+  the sliders filter those again without running the model. (Up to 1.1.0 build
+  2 they decoded the model's whole output again, which was kept only for runs
+  of up to 40 photos, 20 for segmentation; in a larger run they did nothing.)
+  Segmentation masks follow the sliders at once in runs of up to 40 photos;
+  in larger ones the photos are run again when the slider comes to rest. A
+  `box` slider, in Photo only, makes the box lines thicker and the labels
+  larger together (0.5x to 2.5x); saved images follow it.
   The picker opens with the photos of the run ticked: ticking a photo adds it,
   and only the new ones are inferred (the loaded model is kept; a model or
   compute change re-runs them all); unticking one takes it out of the run. The
@@ -92,9 +100,12 @@ Before every upload:
   the copy the app keeps, shows and saves is at most 2048 pixels on its
   longer side. A photo opens with a tap and
   closes with a pinch (on a photo that is not zoomed in) or a one-finger swipe
-  down. In the gallery, Select turns taps into a selection (Select all /
+  down. The open photo has a save button in the top bar. In the gallery,
+  Select turns taps into a selection (Select all /
   Deselect for the lot): save the chosen photos, annotated, or take them out
-  of the run; both ask for confirmation first. A save that does not happen shows an
+  of the run; both ask for confirmation first. The gallery has no other save
+  button (the one that saved the whole run at a tap was removed after 1.1.0
+  build 2). A save that does not happen shows an
   alert with the reason, and a button to the app's Settings page when Photos
   access is off.
 - **Segmentation** - bundle a seg .mlpackage (e.g. v0.1-seg-N above) and both
@@ -123,9 +134,9 @@ Before every upload:
   the same settings (the Kit's `PoseDisplay`).
   In Live and in Photo the top controls, the tuning panel and the stats HUD
   are all as wide as the tab bar (`barSideInset`), so they keep their edges
-  when switching tabs. Photo's top bar holds four buttons in the gallery
-  (select, save, tuning, add), so its buttons are narrower than Live's (38 pt,
-  6 pt apart). In Photo, as in Live, the bars float over the content on a
+  when switching tabs. Photo's top bar was sized for four buttons (select,
+  save, tuning, add) and now holds three (select or save, tuning, add); its
+  buttons keep that size, narrower than Live's (38 pt, 6 pt apart). In Photo, as in Live, the bars float over the content on a
   translucent material: the gallery scrolls under them. The pager's photo is
   fitted between them, so nothing covers it at rest, and passes behind them
   when it is zoomed in.

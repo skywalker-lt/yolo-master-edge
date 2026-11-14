@@ -735,6 +735,11 @@ struct OnOffButton: View {
 /// styles are hidden in skeleton mode, where no box is drawn.
 /// Order: the pickers, then the switches together on one line (hand skeleton, stats HUD),
 /// then the sliders.
+///
+/// `boxScale` (Photo only: Live does not pass it) adds a "box" lever that makes the box
+/// lines thicker or thinner and the labels larger or smaller together, from half to two and
+/// a half times their size - the same range as the skeleton's `size`. It is hidden in
+/// skeleton mode, where neither a box nor a label is drawn.
 struct TuningPanel: View {
     @Binding var conf: Double
     var iou: Binding<Double>? = nil
@@ -743,6 +748,7 @@ struct TuningPanel: View {
     var segOverlay: Binding<SegOverlay>? = nil   // non-nil only for seg models
     var pose: Binding<PoseDisplay>? = nil        // non-nil only for pose models
     var wholeBody = false                        // the pose model reports 133 keypoints
+    var boxScale: Binding<CGFloat>? = nil        // non-nil only in Photo: box thickness and label size
 
     /// A pose model showing skeletons only: nothing the box styles would change is drawn.
     private var skeletonOnly: Bool { pose?.wrappedValue.overlay == .skeleton }
@@ -813,6 +819,14 @@ struct TuningPanel: View {
                     Text("IoU").font(.caption).frame(width: 34, alignment: .leading)
                     Slider(value: iou, in: 0.1...0.9)
                     Text(String(format: "%.2f", iou.wrappedValue)).font(.caption.monospacedDigit()).frame(width: 34)
+                }
+            }
+            if let boxScale, !skeletonOnly {
+                HStack {
+                    Text("box").font(.caption).frame(width: 34, alignment: .leading)
+                    Slider(value: boxScale, in: 0.5...2.5)
+                    Text(String(format: "%.1fx", Double(boxScale.wrappedValue)))
+                        .font(.caption.monospacedDigit()).frame(width: 34)
                 }
             }
             if let pose, pose.wrappedValue.drawsSkeleton {

@@ -207,10 +207,13 @@ func trackColor(_ id: Int) -> CGColor {
 /// `masks` (segmentation) are composited under the boxes; pass `drawBoxes: false` to render masks only.
 /// `pose` says how the skeletons of a pose model are drawn (`PoseDisplay`); for its skeleton-only
 /// mode the caller also passes `drawBoxes: false` and `label: .off`.
+/// `boxScale` makes every box line that many times as thick and every label that many times as
+/// large (the iOS app's "box" lever). The boxes' shape and the skeleton, which has its own size
+/// in `pose`, do not change with it; at 1, the default, the image is what it always was.
 public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
                      style: BoxStyle = .hud, label: LabelMode = .full,
                      masks: [MaskBitmap] = [], drawBoxes: Bool = true,
-                     pose: PoseDisplay = PoseDisplay()) -> CGImage? {
+                     pose: PoseDisplay = PoseDisplay(), boxScale: CGFloat = 1) -> CGImage? {
     let w = image.width, h = image.height
     guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                               space: CGColorSpaceCreateDeviceRGB(),
@@ -229,6 +232,7 @@ public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
         ctx.restoreGState()
     }
     let lw = max(CGFloat(2), CGFloat(w) / 640)
+    let bw = lw * boxScale      // what the box lines and the label's place are measured in
     // pose skeletons go on last, over the boxes and labels (no-op for detections without keypoints)
     func drawPoses() {
         guard pose.drawsSkeleton else { return }
@@ -238,7 +242,7 @@ public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
     }
     if !drawBoxes && label == .off { drawPoses(); return ctx.makeImage() }   // masks-only, no labels
     ctx.setLineJoin(.round); ctx.setLineCap(.round)
-    let baseFont = max(CGFloat(12), CGFloat(w) / 95)
+    let baseFont = max(CGFloat(12), CGFloat(w) / 95) * boxScale
     for d in dets {
         // tracked detections are coloured by id (the C++ draw_tracks palette rule), so one object
         // keeps its colour across frames regardless of class
@@ -250,18 +254,18 @@ public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
         if drawBoxes {
             switch style {
             case .solid:                                    // clean rounded rectangle
-                ctx.addPath(rpath); ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.2); ctx.strokePath()
+                ctx.addPath(rpath); ctx.setStrokeColor(color); ctx.setLineWidth(bw * 1.2); ctx.strokePath()
             case .neon:                                     // glowing rounded rectangle
                 ctx.saveGState()
-                ctx.setShadow(offset: .zero, blur: lw * 5, color: color.copy(alpha: 0.95) ?? color)
-                ctx.addPath(rpath); ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.3); ctx.strokePath()
+                ctx.setShadow(offset: .zero, blur: bw * 5, color: color.copy(alpha: 0.95) ?? color)
+                ctx.addPath(rpath); ctx.setStrokeColor(color); ctx.setLineWidth(bw * 1.3); ctx.strokePath()
                 ctx.addPath(rpath); ctx.strokePath()        // second pass = denser glow
                 ctx.restoreGState()
             case .hud:                                      // faint fill + thin outline + corner brackets
                 ctx.addRect(box); ctx.setFillColor(color.copy(alpha: 0.08) ?? color); ctx.fillPath()
-                ctx.addRect(box); ctx.setStrokeColor(color.copy(alpha: 0.35) ?? color); ctx.setLineWidth(lw * 0.6); ctx.strokePath()
+                ctx.addRect(box); ctx.setStrokeColor(color.copy(alpha: 0.35) ?? color); ctx.setLineWidth(bw * 0.6); ctx.strokePath()
                 let arm = min(min(box.width, box.height) * 0.28, lw * 22)
-                ctx.setStrokeColor(color); ctx.setLineWidth(lw * 1.4)
+                ctx.setStrokeColor(color); ctx.setLineWidth(bw * 1.4)
                 for (cx, cy, sx, sy) in [(box.minX, box.minY, 1.0, 1.0), (box.maxX, box.minY, -1.0, 1.0),
                                          (box.minX, box.maxY, 1.0, -1.0), (box.maxX, box.maxY, -1.0, -1.0)] {
                     ctx.move(to: CGPoint(x: cx + arm * CGFloat(sx), y: cy))
@@ -284,10 +288,10 @@ public func annotate(_ image: CGImage, _ dets: [Detection], names: [String],
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): labelTextColor(on: color)])
         let line = CTLineCreateWithAttributedString(attr)
         let tw = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-        let padX = fontSize * 0.5, chipH = fontSize + 6, chipW = tw + padX * 2
-        var chipY = box.maxY - lw / 2
+        let padX = fontSize * 0.5, chipH = fontSize + 6 * boxScale, chipW = tw + padX * 2
+        var chipY = box.maxY - bw / 2
         if chipY + chipH > CGFloat(h) { chipY = box.maxY - chipH }
-        let chip = CGRect(x: box.minX - lw / 2, y: chipY, width: chipW, height: chipH)
+        let chip = CGRect(x: box.minX - bw / 2, y: chipY, width: chipW, height: chipH)
         let chipPath = CGPath(roundedRect: chip, cornerWidth: chipH * 0.28, cornerHeight: chipH * 0.28, transform: nil)
         ctx.addPath(chipPath); ctx.setFillColor(color.copy(alpha: minMode ? 0.55 : 0.72) ?? color); ctx.fillPath()
         ctx.textPosition = CGPoint(x: chip.minX + padX, y: chipY + (chipH - fontSize) / 2 + fontSize * 0.2)

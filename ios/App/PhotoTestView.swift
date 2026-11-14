@@ -1,6 +1,7 @@
 // Batch photo detection: up to 100 images in a run, gallery (3-up grid) or pager view,
 // macOS-style phase progress (Loading/iCloud -> Inference), per-image stage
-// averages + img/s dial. Slider retunes re-decode cached passes - no re-runs.
+// averages + img/s dial. The conf / IoU levers filter the boxes kept from each photo's pass
+// again - no re-runs, except for the masks of a large segmentation run.
 // Photos are ADDED to the run (only the new ones are inferred) and leave it through
 // Select in the gallery, which also saves a chosen set.
 import CoreML
@@ -25,6 +26,28 @@ private let photoByteLimit = 50_000_000
 private func megabytes(_ bytes: Int) -> String {
     String(format: "%.1f MB", Double(bytes) / 1_000_000)
 }
+
+/// The conf lever's lower end (`TuningPanel`). Every photo keeps the boxes its pass found
+/// above this score, before NMS, and the levers filter THOSE again (`Detector.nms`) - the use
+/// the Kit's `candidates` is made for. A few hundred small values per photo, so every photo
+/// of a run of any size keeps them.
+/// Up to 1.1.0 build 2 the levers decoded the model's whole output tensor again, and those
+/// tensors (3 to 7 MB each) were kept only while the run had at most 40 photos, 20 for a
+/// segmentation model. In a larger run none was kept and the levers did nothing at all, in
+/// the gallery and in the pager alike, with nothing to say so.
+private let candidateFloor: Float = 0.05
+
+/// At most this many boxes are kept per photo, the highest-scoring ones. NMS keeps 300 at
+/// most, so only a photo with thousands of overlapping boxes above 5% could tell the
+/// difference; the cap is there for memory (a whole-body pose box carries 133 keypoints).
+private let candidateCap = 3000
+
+/// A segmentation model's masks are rendered from the prototypes of its pass (about 3 MB a
+/// photo). Runs of up to this many photos keep them, and the levers redo the masks from
+/// them at once. In a larger run none is kept: there the boxes still follow the levers at
+/// once, and the masks are redone by running the photos again when the lever has come to
+/// rest (`remaskByPass`).
+private let protoLimit = 40
 
 /// The image the run works on, from a picked photo's bytes: upright (EXIF applied), at most
 /// 2048 pixels on its longer side, and DECODED here, while photos are loading.
@@ -130,13 +153,20 @@ private struct Shot: Identifiable {
     let pick: String?                       // the picker's identifier of this photo (nil: it gave none)
     var dets: [Detection] = []
     var mask: CGImage? = nil                // segmentation composite
-    var raw: Detector.RawOutput? = nil      // cached forward pass, for the sliders
+    var cands: [Detection]? = nil           // the boxes of its pass before NMS: what the levers filter
+    var protos: Detector.RawOutput? = nil   // segmentation, small runs: what its masks are rendered from
+    var passConf: Float = 0                 // the levers as they stood for its pass: `mask` is of these
+    var passIoU: CGFloat = 0
     var pre = 0.0                           // stage times of its pass, ms
     var inf = 0.0
     var dec = 0.0
     var maskMs = 0.0
     var wall = 0.0                          // seconds its pass took in the run loop
     var done = false                        // has a result from the model that is loaded now
+    var stale = false                       // has one, but its mask is of other thresholds: gets a new pass
+
+    /// The run loop owes this photo a pass.
+    var waiting: Bool { !done || stale }
 }
 
 /// What one pass of the run loop needs, read on the main actor right before the pass.
@@ -145,7 +175,19 @@ private struct Job: @unchecked Sendable {
     let image: CGImage
     let conf: Float
     let iou: CGFloat
-    let keepRaw: Bool
+    let keepProtos: Bool
+}
+
+/// What one pass of the run loop brings back.
+private struct Pass: @unchecked Sendable {
+    let dets: [Detection]
+    let mask: CGImage?
+    let pool: [Detection]               // the boxes above `candidateFloor`, before NMS
+    let protos: Detector.RawOutput?     // nil unless the job asked for them
+    let pre: Double                     // stage times, ms
+    let inf: Double
+    let dec: Double
+    let maskMs: Double
 }
 
 /// The question put to the user before something is done with the selected photos.
@@ -240,6 +282,9 @@ struct PhotoTestView: View {
     @State private var nmsFree = false               // end2end model: IoU lever hidden
     @State private var classNames: [String] = cocoNames
     @State private var retuneGen = 0                 // drops stale async mask renders
+    @State private var maskTask: Task<Void, Never>?  // the levers' mask re-render that is alive
+    @State private var settleTask: Task<Void, Never>?    // waits for the levers to rest (`settle`)
+    @State private var boxScale: CGFloat = 1         // the "box" lever: box thickness and label size
     @State private var exporting = false
     @State private var exportMsg: String?            // non-nil -> "saved" popup
     @State private var exportToastGen = 0            // auto-dismiss generation
@@ -477,7 +522,7 @@ struct PhotoTestView: View {
                     DetOverlay.draw(ctx, shot.dets, scale: scale, ox: ox, oy: oy,
                                     style: style, names: classNames,
                                     boxes: !(isSeg && segOverlay == .masks) && !skeletonOnly,
-                                    labels: !skeletonOnly, pose: pose)
+                                    labels: !skeletonOnly, pose: pose, boxScale: boxScale)
                 }
             }
             .overlay(alignment: .bottomTrailing) {
@@ -557,7 +602,8 @@ struct PhotoTestView: View {
                             hudVisible: $showHUD,
                             segOverlay: traits.segment ? $segOverlay : nil,
                             pose: traits.keypoints > 0 ? $pose : nil,
-                            wholeBody: traits.keypoints == 133)
+                            wholeBody: traits.keypoints == 133,
+                            boxScale: $boxScale)
                     .barColumn()
             }
             if showHUD { hud.padding(.bottom, hudGap) }
@@ -590,11 +636,14 @@ struct PhotoTestView: View {
     /// are equal in size.
     ///
     /// The box is narrower than Live's 22 pt and the glyph smaller, and the buttons sit 6 pt
-    /// apart: in the gallery this bar holds FOUR buttons beside the two pickers (select, save,
-    /// tuning, add), and at the tab bar's width four Live-sized buttons do not fit. Measured
-    /// on an iPhone Air (420 pt wide): model chip 98 + 8 + compute picker 77 = 183 pt, which
-    /// leaves 179 pt inside the bar; four 46 pt buttons 8 pt apart need 208, four 38 pt
-    /// buttons 6 pt apart need 170. (A bordered button is its label plus 12 pt on each side.)
+    /// apart. That was sized for FOUR buttons beside the two pickers (select, save, tuning,
+    /// add), which the gallery's bar held up to 1.1.0 build 2: at the tab bar's width four
+    /// Live-sized buttons do not fit. Measured on an iPhone Air (420 pt wide): model chip 98
+    /// + 8 + compute picker 77 = 183 pt, which leaves 179 pt inside the bar; four 46 pt
+    /// buttons 8 pt apart need 208, four 38 pt buttons 6 pt apart need 170. (A bordered button
+    /// is its label plus 12 pt on each side.) The bar now holds three - select, tuning, add in
+    /// the gallery; save, tuning, add in the pager - and they keep this size, so the buttons
+    /// that remain are where and as large as they were.
     ///
     /// On the outer display of an iPhone Duo (`narrow`) the bar is 350 pt wide and needs
     /// about 366 like this: there the box is 10 pt (a 34 pt button), the buttons are 4 pt
@@ -663,18 +712,21 @@ struct PhotoTestView: View {
                             barIcon("checkmark.circle")
                         }
                         .buttonStyle(.bordered)
+                    } else {
+                        // pager: save THIS image. The gallery has no save button of its own
+                        // (it had one that saved the whole run at a tap, beside Select, up to
+                        // 1.1.0 build 2): there a set of photos - or all of them, with Select
+                        // all - is saved through Select, which asks first.
+                        Button {
+                            lightHaptic.impactOccurred()
+                            lightHaptic.prepare()
+                            exportImages(exportTargets)
+                        } label: {
+                            saveLabel("square.and.arrow.down")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(exporting || busy)
                     }
-                    // pager: export THIS image; gallery: export the whole batch
-                    Button {
-                        lightHaptic.impactOccurred()
-                        lightHaptic.prepare()
-                        exportImages(exportTargets)
-                    } label: {
-                        saveLabel(viewMode == .pager ? "square.and.arrow.down"
-                                                     : "square.and.arrow.down.on.square")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(exporting || busy)
                 }
                 Button {
                     withAnimation { showTuning.toggle() }
@@ -797,7 +849,7 @@ struct PhotoTestView: View {
                     DetOverlay.draw(ctx, shot.dets, scale: scale, ox: 0, oy: 0, style: style,
                                     names: classNames,
                                     boxes: !(isSeg && segOverlay == .masks) && !skeletonOnly,
-                                    labels: !skeletonOnly, pose: pose)
+                                    labels: !skeletonOnly, pose: pose, boxScale: boxScale)
                 }
                 .frame(width: w, height: h)
             }
@@ -938,14 +990,16 @@ struct PhotoTestView: View {
     }
 
     /// The model or the compute unit changed: every photo needs a result from the new one.
-    /// The cached passes go at once, so the sliders cannot re-decode the previous model's
-    /// output over what the new run is filling in.
+    /// What the levers work on goes at once, so they cannot filter the previous model's
+    /// boxes over what the new run is filling in.
     private func rerunAll() {
         guard !shots.isEmpty else { return }
         var next = shots
         for k in next.indices {
             next[k].done = false
-            next[k].raw = nil
+            next[k].stale = false
+            next[k].cands = nil
+            next[k].protos = nil
         }
         shots = next
         runPending()        // a loop that is running notices the change itself and restarts
@@ -957,15 +1011,15 @@ struct PhotoTestView: View {
     /// the next photo without a result - so a photo removed meanwhile is simply never asked
     /// for - and it stops as soon as the model on screen is no longer the one it holds.
     private func runPending() {
-        guard !isRunning, let m = selectedModel, shots.contains(where: { !$0.done }) else { return }
+        guard !isRunning, let m = selectedModel, shots.contains(where: { $0.waiting }) else { return }
         let choice = compute
         let loaded: Detector? = (detModel == m && detCompute == choice) ? lastDet : nil
         isRunning = true
         errorText = ""
         progress = 0
-        progressTotal = shots.filter { !$0.done }.count
+        progressTotal = shots.filter { $0.waiting }.count
         phase = loaded == nil ? .loadingModel : .inferring
-        let warm = shots.first(where: { !$0.done })?.image      // for the warm-up passes below
+        let warm = shots.first(where: { $0.waiting })?.image    // for the warm-up passes below
         // the user is waiting for this: not the default priority, where work that only has
         // to get done some time may be scheduled ahead of it
         Task.detached(priority: .userInitiated) {
@@ -986,47 +1040,30 @@ struct PhotoTestView: View {
                 while true {
                     let job: Job? = await MainActor.run { nextJob(model: m, compute: choice, det: det) }
                     guard let job else { break }
-                    let step: (Detector.RawOutput, [Detection], CGImage?,
-                               Double, Double, Double, Double) =
-                        try autoreleasepool {
-                            let a = CFAbsoluteTimeGetCurrent()
-                            let raw = try det.forward(job.image)
-                            let b = CFAbsoluteTimeGetCurrent()
-                            let d = det.decode(raw, conf: job.conf, iou: det.nmsThreshold(lever: job.iou))
-                            let c = CFAbsoluteTimeGetCurrent()
-                            // masks render for EVERY image, cached raw or not -
-                            // beyond the cache cap they just stay at run-time
-                            // conf/iou (same as the boxes there)
-                            let mk = det.isSegment
-                                ? det.maskOverlay(d, raw, maxSide: 1024) : nil
-                            let e = CFAbsoluteTimeGetCurrent()
-                            return (raw, d, mk, (b - a) * 1000 - raw.inferMs,
-                                    raw.inferMs, (c - b) * 1000, (e - c) * 1000)
-                        }
+                    let pass: Pass = try autoreleasepool {
+                        let a = CFAbsoluteTimeGetCurrent()
+                        let raw = try det.forward(job.image)
+                        let b = CFAbsoluteTimeGetCurrent()
+                        let d = det.decode(raw, conf: job.conf, iou: det.nmsThreshold(lever: job.iou))
+                        let c = CFAbsoluteTimeGetCurrent()
+                        // masks render for EVERY image
+                        let mk = det.isSegment
+                            ? det.maskOverlay(d, raw, maxSide: 1024) : nil
+                        let e = CFAbsoluteTimeGetCurrent()
+                        // for the levers, after the timed stages: the boxes down to the conf
+                        // lever's lower end, and the prototypes when the run is small enough
+                        let pool = Array(det.candidates(raw, confFloor: candidateFloor).prefix(candidateCap))
+                        return Pass(dets: d, mask: mk, pool: pool,
+                                    protos: job.keepProtos ? raw.maskOnly() : nil,
+                                    pre: (b - a) * 1000 - raw.inferMs, inf: raw.inferMs,
+                                    dec: (c - b) * 1000, maskMs: (e - c) * 1000)
+                    }
                     // this photo's share of the run's wall time: from the end of the previous
                     // pass to the end of this one, so the shares add up to the whole loop
                     let now = CFAbsoluteTimeGetCurrent()
                     let wall = now - mark
                     mark = now
-                    let (raw, d, mk, pPreV, pInfV, pDecV, pMaskV) = step
-                    let jobID = job.id
-                    let kept: Detector.RawOutput? = job.keepRaw ? raw : nil
-                    await MainActor.run {
-                        progress += 1
-                        // by id, not by position: the photo may have moved up, or be gone
-                        guard let k = shots.firstIndex(where: { $0.id == jobID }) else { return }
-                        var s = shots[k]
-                        s.dets = d
-                        s.mask = mk
-                        s.raw = kept
-                        s.pre = pPreV
-                        s.inf = pInfV
-                        s.dec = pDecV
-                        s.maskMs = pMaskV
-                        s.wall = wall
-                        s.done = true
-                        shots[k] = s
-                    }
+                    await MainActor.run { take(pass, of: job, wall: wall) }
                 }
                 await MainActor.run { finishRun() }
             } catch {
@@ -1035,6 +1072,31 @@ struct PhotoTestView: View {
                 await MainActor.run { failRun(text, loadFailed: loadFailed) }
             }
         }
+    }
+
+    /// A pass has come back: the photo gets its result and what the levers need of it.
+    private func take(_ pass: Pass, of job: Job, wall: Double) {
+        progress += 1
+        // by id, not by position: the photo may have moved up, or be gone
+        guard let k = shots.firstIndex(where: { $0.id == job.id }) else { return }
+        var s = shots[k]
+        s.dets = pass.dets
+        s.mask = pass.mask
+        s.cands = pass.pool
+        s.protos = pass.protos
+        s.passConf = job.conf
+        s.passIoU = job.iou
+        s.pre = pass.pre
+        s.inf = pass.inf
+        s.dec = pass.dec
+        s.maskMs = pass.maskMs
+        s.wall = wall
+        s.done = true
+        s.stale = false
+        shots[k] = s
+        // a lever moved while this photo was with the model: its boxes are filtered again
+        // like every other photo's, and its mask is redone
+        if job.conf != Float(conf) || job.iou != CGFloat(iou) { retune() }
     }
 
     /// A model has just been loaded for the run. What is known about it is set here - before
@@ -1053,8 +1115,10 @@ struct PhotoTestView: View {
         for k in next.indices {
             next[k].dets = []
             next[k].mask = nil
-            next[k].raw = nil
+            next[k].cands = nil
+            next[k].protos = nil
             next[k].done = false
+            next[k].stale = false
         }
         shots = next
         progress = 0
@@ -1062,22 +1126,24 @@ struct PhotoTestView: View {
         phase = .inferring
     }
 
-    /// The next photo without a result, with the thresholds as they are right now; nil when
-    /// there is none, or when another model or unit has been chosen since this loop started.
+    /// The next photo that is owed a pass, with the thresholds as they are right now; nil
+    /// when there is none, or when another model or unit has been chosen since this loop
+    /// started. The photo that is open in the pager goes first: it is the one being looked at.
     private func nextJob(model: BundledModel, compute choice: ComputeChoice, det: Detector) -> Job? {
-        guard selectedModel == model, compute == choice,
-              let shot = shots.first(where: { !$0.done }) else { return nil }
-        // cache raw passes for slider retune only on modest runs: 100 tensors x ~3MB is a
-        // jetsam invitation, and seg raws also carry the proto tensor - roughly half the
-        // headroom. Past the cap NONE is kept (a retune that reaches some photos and not
-        // others would leave the gallery at two thresholds).
-        let keep = shots.count <= (det.isSegment ? 20 : 40)
-        if !keep, shots.contains(where: { $0.raw != nil }) {
+        guard selectedModel == model, compute == choice else { return nil }
+        var open: Shot? = nil
+        if viewMode == .pager, shots.indices.contains(page), shots[page].waiting { open = shots[page] }
+        guard let shot = open ?? shots.first(where: { $0.waiting }) else { return nil }
+        // mask prototypes are kept on modest runs only (`protoLimit`): 100 of them would be
+        // some 300 MB on top of the photos. Past the limit NONE is kept, also not those kept
+        // so far, so every mask of the run is redone the same way.
+        let keep = det.isSegment && shots.count <= protoLimit
+        if !keep, shots.contains(where: { $0.protos != nil }) {
             var next = shots
-            for k in next.indices { next[k].raw = nil }
+            for k in next.indices { next[k].protos = nil }
             shots = next
         }
-        return Job(id: shot.id, image: shot.image, conf: Float(conf), iou: CGFloat(iou), keepRaw: keep)
+        return Job(id: shot.id, image: shot.image, conf: Float(conf), iou: CGFloat(iou), keepProtos: keep)
     }
 
     private func finishRun() {
@@ -1102,8 +1168,10 @@ struct PhotoTestView: View {
         for k in next.indices {
             next[k].dets = []
             next[k].mask = nil
-            next[k].raw = nil
+            next[k].cands = nil
+            next[k].protos = nil
             next[k].done = false
+            next[k].stale = false
         }
         shots = next
     }
@@ -1126,12 +1194,11 @@ struct PhotoTestView: View {
     /// gallery, the pager and the exported images alike.
     private var skeletonOnly: Bool { poseKeypoints > 0 && pose.overlay == .skeleton }
 
-    /// What the save button of the normal top bar saves: the pager's photo, or the whole run.
+    /// What the save button of the normal top bar saves: the photo that is open. The button
+    /// is in the pager only; in the gallery photos are saved through Select.
     private var exportTargets: Set<Int> {
-        if viewMode == .pager {
-            return shots.indices.contains(page) ? [shots[page].id] : []
-        }
-        return Set(shots.map { $0.id })
+        guard viewMode == .pager, shots.indices.contains(page) else { return [] }
+        return [shots[page].id]
     }
 
     /// Takes the selected photos out of the run. They are not touched in the photo library
@@ -1160,6 +1227,7 @@ struct PhotoTestView: View {
         let poseNow = pose
         let names = classNames
         let kitStyle = style.kitStyle
+        let boxNow = boxScale       // the saved image follows the "box" lever like the screen
         Task.detached(priority: .userInitiated) {
             var uis: [UIImage] = []
             for s in chosen {
@@ -1167,7 +1235,7 @@ struct PhotoTestView: View {
                     let cg = composeExport(s.image, dets: s.dets, mask: s.mask,
                                            drawMask: drawMask, drawBoxes: drawBoxes,
                                            names: names, style: kitStyle,
-                                           label: labelMode, pose: poseNow)
+                                           label: labelMode, pose: poseNow, boxScale: boxNow)
                     uis.append(UIImage(cgImage: cg))
                 }
             }
@@ -1226,46 +1294,111 @@ struct PhotoTestView: View {
         }
     }
 
-    /// Slider retune: decode-only over the cached forward passes. Boxes update
-    /// synchronously (cheap); seg mask re-renders go off-main with a generation
-    /// token so slider drags never hitch and stale renders are dropped.
-    /// A cached pass always belongs to the loaded model (`adopt` and `rerunAll` drop them),
-    /// and a photo still waiting in a run has none: it is decoded with the thresholds of
-    /// the moment its turn comes.
+    /// A lever moved: every photo's boxes are filtered again from the boxes its pass kept
+    /// (`Shot.cands`, `Detector.nms`) - at once, on the main actor, for a run of any size.
+    /// A photo that is still waiting for the loaded model has none: it gets the thresholds
+    /// of the moment its turn comes.
+    /// Segmentation masks follow: from the prototypes where the photo holds them
+    /// (`remask`), by a new pass once the lever rests where it does not (`settle`).
     private func retune() {
-        guard let det = lastDet, shots.contains(where: { $0.raw != nil }) else { return }
+        guard let det = lastDet else { return }
         let confNow = Float(conf)
         let iouNow = det.nmsThreshold(lever: CGFloat(iou))
         var next = shots
-        var redone: [(Int, Detector.RawOutput, [Detection])] = []
+        var held: [(Int, Detector.RawOutput, [Detection])] = []   // masks to render from prototypes
+        var byPass = false          // masks only a new pass can redo
+        var touched = false
         for k in next.indices {
-            guard let raw = next[k].raw else { continue }
-            let d = det.decode(raw, conf: confNow, iou: iouNow)
+            guard let pool = next[k].cands else { continue }
+            let d = Detector.nms(pool, conf: confNow, iou: iouNow)
             next[k].dets = d
-            redone.append((next[k].id, raw, d))
+            touched = true
+            guard det.isSegment else { continue }
+            if let protos = next[k].protos {
+                held.append((next[k].id, protos, d))
+            } else {
+                byPass = true
+            }
         }
+        guard touched else { return }
         shots = next
         guard det.isSegment else { return }
+        remask(held, with: det)
+        if byPass { settle() }
+    }
+
+    /// Renders the masks of `todo` again, off the main actor, ONE render task at a time: a
+    /// new lever step cancels the task of the step before. (Each step used to start a task
+    /// of its own that rendered every photo to the end, its result thrown away if it was
+    /// stale - a drag queued dozens of them and the masks of the last step came seconds
+    /// late.) The photo that is open in the pager is rendered first, and each mask is shown
+    /// as soon as it is ready; the others wait a moment, so that while the lever is moving
+    /// only that first photo is rendered per step.
+    private func remask(_ todo: [(Int, Detector.RawOutput, [Detection])], with det: Detector) {
         retuneGen += 1
         let gen = retuneGen
-        let todo = redone
-        Task.detached(priority: .userInitiated) {
-            var masks: [(Int, Detector.RawOutput, CGImage?)] = []
-            for (id, raw, d) in todo {
-                autoreleasepool { masks.append((id, raw, det.maskOverlay(d, raw, maxSide: 1024))) }
-            }
-            let rendered = masks
-            await MainActor.run {
-                guard gen == retuneGen else { return }
-                var next = shots
-                for (id, raw, mk) in rendered {
-                    // by id, and only while the photo still holds the pass the mask is from
-                    if let k = next.firstIndex(where: { $0.id == id }), next[k].raw === raw {
-                        next[k].mask = mk
-                    }
+        maskTask?.cancel()
+        maskTask = nil
+        guard !todo.isEmpty else { return }
+        var order = todo
+        if viewMode == .pager, shots.indices.contains(page) {
+            let openID = shots[page].id
+            if let i = order.firstIndex(where: { $0.0 == openID }) { order.swapAt(0, i) }
+        }
+        let list = order
+        maskTask = Task.detached(priority: .userInitiated) {
+            for (n, item) in list.enumerated() {
+                if Task.isCancelled { return }
+                let (id, protos, dets) = item
+                let mk: CGImage? = autoreleasepool { det.maskOverlay(dets, protos, maxSide: 1024) }
+                await MainActor.run {
+                    // by id, and only while this is still the latest step and the photo
+                    // still holds the pass the mask is from
+                    guard gen == retuneGen, let k = shots.firstIndex(where: { $0.id == id }),
+                          shots[k].protos === protos else { return }
+                    shots[k].mask = mk
                 }
-                shots = next
+                if n == 0 { try? await Task.sleep(nanoseconds: 80_000_000) }
             }
+        }
+    }
+
+    /// Waits until the levers have been still for a third of a second, then has the masks
+    /// that only the model can redo redone (`remaskByPass`). Every lever step starts the
+    /// wait again, so nothing is run while a lever is being dragged.
+    private func settle() {
+        settleTask?.cancel()
+        settleTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            remaskByPass()
+        }
+    }
+
+    /// The levers have come to rest. A segmentation photo that holds no prototypes (a run of
+    /// more than `protoLimit` photos) can get the mask of the new thresholds only from the
+    /// model: each such photo whose mask is of other thresholds is run again. Its boxes are
+    /// right already, and it keeps what it shows until its turn comes; the stats HUD keeps
+    /// counting it. A loop that is alive takes these photos as it goes.
+    private func remaskByPass() {
+        guard let det = lastDet, det.isSegment else { return }
+        let confNow = Float(conf)
+        let leverNow = CGFloat(iou)
+        var next = shots
+        var any = false
+        for k in next.indices where next[k].done && next[k].cands != nil && next[k].protos == nil {
+            if next[k].passConf != confNow || next[k].passIoU != leverNow {
+                next[k].stale = true
+                any = true
+            }
+        }
+        guard any else { return }
+        shots = next
+        if isRunning {
+            progress = 0        // the bar counts what is waiting now
+            progressTotal = shots.filter { $0.waiting }.count
+        } else {
+            runPending()
         }
     }
 }
@@ -1277,7 +1410,7 @@ struct PhotoTestView: View {
 private func composeExport(_ img: CGImage, dets: [Detection], mask: CGImage?,
                            drawMask: Bool, drawBoxes: Bool,
                            names: [String], style: YOLOMasterKit.BoxStyle,
-                           label: LabelMode, pose: PoseDisplay) -> CGImage {
+                           label: LabelMode, pose: PoseDisplay, boxScale: CGFloat) -> CGImage {
     var out = img
     if drawMask, let mask,
        let ctx = CGContext(data: nil, width: img.width, height: img.height,
@@ -1292,7 +1425,7 @@ private func composeExport(_ img: CGImage, dets: [Detection], mask: CGImage?,
     }
     if !dets.isEmpty {
         out = annotate(out, dets, names: names, style: style,
-                       label: label, drawBoxes: drawBoxes, pose: pose) ?? out
+                       label: label, drawBoxes: drawBoxes, pose: pose, boxScale: boxScale) ?? out
     }
     return out
 }
