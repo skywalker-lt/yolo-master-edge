@@ -785,6 +785,45 @@ public final class Detector {
             return RawOutput(y: tiny, proto: p, scaleX: scaleX, scaleY: scaleY, padX: padX, padY: padY,
                              origW: origW, origH: origH, inferMs: inferMs, preMs: preMs, preGpuMs: preGpuMs)
         }
+
+        /// `maskOnly()` with the prototypes stored as 16-bit floats: half the memory (1.6 MB
+        /// instead of 3.3 MB at 640), for a caller that keeps one of these for every image of
+        /// a long run. `maskOverlay` and `maskImage` read 16-bit prototypes already (a model
+        /// may put them out that way), and a mask drawn from them differs from the 32-bit one
+        /// by a half float's rounding at most. When the prototypes are 16-bit as they come, or
+        /// laid out in a way this does not convert, the result is `maskOnly()`'s: the
+        /// prototypes as the model put them out. nil for non-seg outputs.
+        public func maskOnlyCompact() -> RawOutput? {
+            guard let p = proto else { return nil }
+            guard p.dataType == .float32, p.shape.count == 4 else { return maskOnly() }
+            let cm = p.shape[1].intValue, mh = p.shape[2].intValue, mw = p.shape[3].intValue
+            let s1 = p.strides[1].intValue, s2 = p.strides[2].intValue, s3 = p.strides[3].intValue
+            guard cm > 0, mh > 0, mw > 0, s3 == 1, s2 >= mw,
+                  let half = try? MLMultiArray(shape: [1, NSNumber(value: cm), NSNumber(value: mh), NSNumber(value: mw)],
+                                               dataType: .float16),
+                  let tiny = try? MLMultiArray(shape: [1], dataType: .float32) else { return maskOnly() }
+            let h1 = half.strides[1].intValue, h2 = half.strides[2].intValue, h3 = half.strides[3].intValue
+            guard h3 == 1, h2 >= mw else { return maskOnly() }
+            let out = half.dataPointer
+            var converted = true
+            p.withUnsafeBufferPointer(ofType: Float32.self) { buf in
+                guard let pp = buf.baseAddress else { converted = false; return }
+                for k in 0..<cm {       // a plane per call; `rowBytes` is each array's own row stride
+                    var src = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: UnsafeRawPointer(pp + k * s1)),
+                                            height: vImagePixelCount(mh), width: vImagePixelCount(mw),
+                                            rowBytes: s2 * 4)
+                    var dst = vImage_Buffer(data: out + k * h1 * 2,
+                                            height: vImagePixelCount(mh), width: vImagePixelCount(mw),
+                                            rowBytes: h2 * 2)
+                    if vImageConvert_PlanarFtoPlanar16F(&src, &dst, vImage_Flags(kvImageNoFlags)) != kvImageNoError {
+                        converted = false
+                    }
+                }
+            }
+            guard converted else { return maskOnly() }
+            return RawOutput(y: tiny, proto: half, scaleX: scaleX, scaleY: scaleY, padX: padX, padY: padY,
+                             origW: origW, origH: origH, inferMs: inferMs, preMs: preMs, preGpuMs: preGpuMs)
+        }
     }
 
     /// Core ML forward pass only (letterbox → predict). Cache the result and re-`decode`.

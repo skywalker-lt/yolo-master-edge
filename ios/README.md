@@ -79,8 +79,11 @@ Before every upload:
   the sliders filter those again without running the model. (Up to 1.1.0 build
   2 they decoded the model's whole output again, which was kept only for runs
   of up to 40 photos, 20 for segmentation; in a larger run they did nothing.)
-  Segmentation masks follow the sliders at once in runs of up to 40 photos;
-  in larger ones the photos are run again when the slider comes to rest. A
+  Segmentation masks follow the sliders the same way, in a run of any size:
+  every photo keeps the mask prototypes of its pass (16-bit, about 1.6 MB a
+  photo at 640) and its masks are drawn again from them in the background -
+  the open photo first, then the gallery cells on screen, then the rest. A
+  slider never runs the model. A
   `box` slider, in Photo only, makes the box lines thicker and the labels
   larger together (0.5x to 2.5x); saved images follow it.
   The picker opens with the photos of the run ticked: ticking a photo adds it,
@@ -94,8 +97,12 @@ Before every upload:
   Photos are decoded while they load, off the main thread, not when the model
   first reads them: that decoding (100 to 500 ms a photo) used to be counted as
   preprocessing. A file over
-  50 MB is not imported and is named in a message (20 MB up to 1.1.0 build
-  2). A high-resolution photo is treated like any other: the model sees the
+  50 MB is not imported (20 MB up to 1.1.0 build 2); a message lists such
+  files by the name the picker hands each one over with, extension included,
+  and its size. That name is the one the photo carries in the library - for a
+  picture another app saved there it can be that app's own, a hash for
+  instance. The library's record of the name is not read: that needs read
+  access, which the app does not ask for. A high-resolution photo is treated like any other: the model sees the
   whole picture scaled into its own input size, in one pass, never in tiles;
   the copy the app keeps, shows and saves is at most 2048 pixels on its
   longer side. A photo opens with a tap and
