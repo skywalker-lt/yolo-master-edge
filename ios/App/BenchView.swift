@@ -327,7 +327,7 @@ struct BenchView: View {
             }
             .fixedSize()
             Spacer(minLength: 0)
-            Text("x").font(.caption).foregroundStyle(.secondary)
+            Text("on").font(.caption).foregroundStyle(.secondary)
             Menu {
                 ForEach(ComputeChoice.allCases) { c in
                     Toggle(c.rawValue, isOn: Binding(
@@ -518,7 +518,9 @@ struct BenchView: View {
     private func modelCard(_ mid: String) -> some View {
         let rows = results.filter { $0.modelId == mid }.sorted { $0.coldMedian < $1.coldMedian }
         let title = rows.first?.fullName ?? mid
-        let fastestUnit = rows.first?.compute
+        // "fastest <unit>" compares units, so it needs two rows: with one unit selected (or
+        // only one measured so far) the tag named the only unit there was
+        let fastestUnit = rows.count > 1 ? rows.first?.compute : nil
         let expanded = expandedCards.contains(mid)
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
