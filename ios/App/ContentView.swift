@@ -373,6 +373,14 @@ struct SettingsView: View {
 
     /// Text-only credit, full width: name and what it is, then the licence
     /// chip beside the copyright line, then the repo link. No icons or logos.
+    ///
+    /// The link MUST keep its `.buttonStyle(.borderless)`. All five credits are in ONE Form
+    /// row (the disclosure's content), and a Form row whose buttons have the default style
+    /// is itself the button: a tap anywhere in it - on any link, or on plain text - went
+    /// to the row's first link, so every credit opened github.com/Tencent/YOLO-Master
+    /// (reported 2026-11-16). With an explicit style each link takes only its own taps and
+    /// the row takes none; the About card's chips have always had one, which is why they
+    /// worked.
     private func ackRow(_ a: Ack) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             VStack(alignment: .leading, spacing: 4) {
@@ -401,6 +409,7 @@ struct SettingsView: View {
                     }
                     .font(.caption)
                 }
+                .buttonStyle(.borderless)   // see above: without it every credit opens the first one's repo
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
