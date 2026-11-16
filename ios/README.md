@@ -68,6 +68,12 @@ Before every upload:
   Core ML's own placement (`MLComputeUnits.all`): it decides which parts of the
   model run on the Neural Engine, GPU and CPU. It was labelled "ANE" up to
   1.1.0 build 1; saved benchmark history with that label still loads.
+  Every tab starts on Auto, on every device and for every model. (Up to 1.1.0
+  build 2 an iPhone 15 Pro / Pro Max or older started on GPU, because the first
+  Neural Engine compile of a model is slow on those chips. Measured on an
+  iPhone 14 Pro Max and a 15 Pro Max, over 90% of the models run 1.5 to 2 times
+  faster on Auto than on GPU; the first load of each model on Auto takes
+  longer there, and GPU is still in the picker.)
   Without camera access nothing runs: the play button is disabled and shows
   play, the pickers stay usable, and the stats HUD reads N/A. The screen says
   "Camera access required", at the place Photo's "No photos" has, with an Open

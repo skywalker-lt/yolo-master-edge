@@ -478,11 +478,17 @@ enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    /// Per-device default. The first-time Neural Engine compile that Auto
-    /// triggers for these fragmented MoE+attention models is painfully slow on
-    /// A17-and-earlier silicon (<= iPhone 15 Pro, hardware id "iPhoneN,M" with
-    /// N <= 16), so those devices default to GPU (fast Metal compile); iPhone 16
-    /// and newer default to Auto. An iPad also defaults to Auto.
+    /// The unit every tab starts on: Auto, on every device and for every model.
+    ///
+    /// Up to 1.1.0 build 2 an iPhone 15 Pro / Pro Max or older (hardware id "iPhoneN,M"
+    /// with N <= 16) started on GPU instead, because the first Neural Engine compile that
+    /// Auto triggers for the fragmented MoE+attention models is slow on A17-and-earlier
+    /// silicon. That made the same model start on different units on different phones,
+    /// and it was the slower unit: measured by the repo owner on an iPhone 14 Pro Max and
+    /// a 15 Pro Max (2026-11), over 90% of the models run 1.5 to 2 times faster on Auto
+    /// than on GPU. The cost of Auto there is a longer first load of each model ("Loading
+    /// the model (Auto)"); GPU stays one tap away in the picker. Do not bring a
+    /// per-device or a per-model default back.
     ///
     /// The SIMULATOR starts on CPU. It has no Neural Engine and no real GPU, and on Auto an
     /// iPad simulator returned no detection at all for photos full of people (three
@@ -493,8 +499,7 @@ enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
         #if targetEnvironment(simulator)
         return .cpu
         #else
-        guard let major = iPhoneHardwareGeneration else { return .auto }
-        return major <= 16 ? .gpu : .auto
+        return .auto
         #endif
     }
 }
