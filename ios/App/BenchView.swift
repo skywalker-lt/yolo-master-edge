@@ -132,6 +132,9 @@ struct BenchView: View {
     // cold run: the models to measure. Kept as the ones the user switched OFF, so every
     // model is selected by default and one imported later joins the run without a tap.
     @State private var benchExcluded: Set<String> = []
+    // cold run: the compute units to measure. All three at first, which is what the run
+    // always did; the user can switch units off in `coldConfig` (CPU cells are the slow ones).
+    @State private var benchUnits: Set<ComputeChoice> = Set(ComputeChoice.allCases)
     // sustained target + settings
     @State private var selectedModel: BundledModel?
     @State private var selectedCompute: ComputeChoice = ComputeChoice.deviceDefault
@@ -161,7 +164,7 @@ struct BenchView: View {
                 // vertically centered, matching the Photo tab's "No photos" empty state
                 ContentUnavailableView("No benchmarks yet",
                     systemImage: "speedometer",
-                    description: Text("Run a cold pass across the selected models and every compute unit."))
+                    description: Text("Run a cold pass across the selected models and compute units."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -261,7 +264,7 @@ struct BenchView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(models.isEmpty || (mode == .sustained && selectedModel == nil)
-                              || (mode == .cold && benchModels.isEmpty))
+                              || (mode == .cold && (benchModels.isEmpty || benchUnits.isEmpty)))
                 }
             }
             // sustained target + duration are ALWAYS visible in sustained mode
@@ -278,9 +281,24 @@ struct BenchView: View {
     /// The models the cold run measures: all of them unless switched off in `coldConfig`.
     private var benchModels: [BundledModel] { models.filter { !benchExcluded.contains($0.id) } }
 
-    /// Cold run: which models to measure. A menu of switches, one per model with its type
-    /// icon, all on by default; it stays open while models are ticked. Every selected model
-    /// is measured on every compute unit.
+    /// The units the cold run measures, in the order Auto, GPU, CPU: all three unless
+    /// switched off in `coldConfig`.
+    private var benchUnitList: [ComputeChoice] { ComputeChoice.allCases.filter { benchUnits.contains($0) } }
+
+    /// What the unit menu reads: "All 3 units", the chosen units by name ("Auto + GPU"),
+    /// or "No units" (the play button is disabled then).
+    private var benchUnitsLabel: String {
+        let chosen = benchUnitList
+        if chosen.count == ComputeChoice.allCases.count { return "All \(chosen.count) units" }
+        return chosen.isEmpty ? "No units" : chosen.map(\.rawValue).joined(separator: " + ")
+    }
+
+    /// Cold run: which models to measure and on which compute units. Two menus of switches
+    /// that stay open while items are ticked: one per model with its type icon, all on by
+    /// default, and one per unit, all on by default. Every selected model is measured on
+    /// every selected unit. (Up to 1.1.0 build 2 the units could not be chosen: the run was
+    /// always models x all three, and a line of text said so.) CPU is offered here whatever
+    /// "Allow CPU inference" says, as it always was measured.
     private var coldConfig: some View {
         let chosen = benchModels.count
         return HStack {
@@ -309,8 +327,23 @@ struct BenchView: View {
             }
             .fixedSize()
             Spacer(minLength: 0)
-            Text("x \(ComputeChoice.allCases.count) compute units")
-                .font(.caption).foregroundStyle(.secondary)
+            Text("x").font(.caption).foregroundStyle(.secondary)
+            Menu {
+                ForEach(ComputeChoice.allCases) { c in
+                    Toggle(c.rawValue, isOn: Binding(
+                        get: { benchUnits.contains(c) },
+                        set: { on in
+                            if on { benchUnits.insert(c) } else { benchUnits.remove(c) }
+                        }))
+                    .menuActionDismissBehavior(.disabled)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(benchUnitsLabel).lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                }
+            }
+            .fixedSize()
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -669,9 +702,9 @@ struct BenchView: View {
     private func runCold() {
         let warmN = warmup, iterN = iters
         let chosen = benchModels          // the selection as it stands when the run starts
+        let units = benchUnitList         // ditto for the units, in the order Auto, GPU, CPU
         loopTask = Task.detached(priority: .userInitiated) {
             let img = testImage()
-            let units = ComputeChoice.allCases
             let total = chosen.count * units.count
             var done = 0
             for m in chosen {

@@ -239,9 +239,13 @@ Before every upload:
   format and minimum iOS, operation count, size on disk, origin, and what
   the exporter stamped (source checkpoint, keypoint score).
 - **Bench tab** - the criterion harness:
-  - *cold run*: the selected models x every compute unit, 50-iter median +
-    p90 after warmup. The model menu is a list of switches, all on by default
-    (a model imported later is on too); it stays open while models are ticked;
+  - *cold run*: the selected models x the selected compute units, 50-iter
+    median + p90 after warmup. The model menu is a list of switches, all on by
+    default (a model imported later is on too); it stays open while models are
+    ticked. The unit menu beside it has a switch for Auto, GPU and CPU, all on
+    by default, and reads "All 3 units" or the chosen ones ("Auto + GPU");
+    with no unit or no model ticked the run cannot be started. (Up to 1.1.0
+    build 2 every run measured all three units.);
   - *sustained pass*: N-minute loop reporting the last-quarter median - the
     thermal steady state. Flagship phones throttle; a real-time claim needs
     both numbers (methodology carried over from the Orin work);
