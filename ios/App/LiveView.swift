@@ -8,6 +8,10 @@ import YOLOMasterKit
 
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    /// The camera this is the preview of. It is told the layer, which on an iPad it turns
+    /// with the interface (`CameraController.followsInterface`); it does nothing with it
+    /// on an iPhone.
+    var controller: CameraController? = nil
     /// Tap callback with BOTH spaces: capture-device point (for focus) and
     /// layer point (for drawing the focus indicator).
     var onTap: ((CGPoint, CGPoint) -> Void)? = nil
@@ -15,6 +19,7 @@ struct CameraPreview: UIViewRepresentable {
         let v = PreviewView()
         v.videoPreviewLayer.session = session
         v.videoPreviewLayer.videoGravity = .resizeAspectFill
+        controller?.previewLayer = v.videoPreviewLayer
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.tapped(_:)))
         v.addGestureRecognizer(tap)
@@ -61,9 +66,12 @@ struct LiveView: View {
     @State private var statAgeMs: Double = 0    // frame age at delivery (pipeline latency)
     @State private var maskImage: CGImage?          // seg: per-frame composite overlay
     @State private var isSegModel = false           // set once the running Detector loads
+    @State private var isNMSFree = false            // ditto: end2end model, IoU lever hidden
+    @State private var poseKeypoints = 0            // ditto: keypoints per person of a pose model (17, 133), 0 for any other
     @State private var classNames: [String] = cocoNames
     @State private var showTuning = false
     @State private var showHUD = true
+    @State private var hudHeight: CGFloat = 0     // the stats HUD with its bottom margin, as laid out
     @State private var style: BoxStyle = .chip
     @StateObject private var tuning = Tuning()
     @State private var zoomBase: CGFloat = 1  // display zoom factor at gesture start
@@ -74,16 +82,28 @@ struct LiveView: View {
     @State private var lensExpanded = false   // zoom chip expanded to lens buttons
     @State private var lensCollapse: Task<Void, Never>?
     @State private var lensRect: CGRect = .zero   // global frame of the lens picker
+    @State private var frameMirrored = false      // `detections` came from a front-camera frame
+    @State private var switchingCamera = false    // a back/front flip is in flight
+    @State private var flipAngle: Double = 0      // preview turn about its vertical axis during a flip
+    @State private var flipCover: Double = 0      // black cover that hides the camera cut mid-flip
+    @State private var flipTurns: Double = 0      // half-turns of the flip button's arrows
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.topEdgeGap) private var topGap   // iPhone Duo: keeps the top bar off the screen's edge
+    @Environment(\.hudBottomGap) private var hudGap // 20 pt over a tab bar; lower beside the Duo's tab strip
+    @Environment(\.duoOuterDisplay) private var narrow   // iPhone Duo, outer display: 350 pt bars
     private let haptic = UIImpactFeedbackGenerator(style: .medium)
     private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
     private let heavyHaptic = UIImpactFeedbackGenerator(style: .heavy)
+    private let firmHaptic = UIImpactFeedbackGenerator(style: .rigid)   // camera flip
     @State private var longPressFired = false  // swallow the tap that follows a long press
     @State private var loadingModel = false   // Detector init in flight (compile + unit load)
+    @State private var loadError: String?     // why the selected model could not be loaded
     @State private var running = false        // loop actually alive
     @State private var wantRun = true         // the user's intent - survives tab
                                               // switches and app backgrounding;
                                               // true at launch = cold-start auto-run
     @State private var loopTask: Task<Void, Never>?
+    @State private var visible = false        // Live is the tab on screen
 
     var body: some View {
         ZStack {
@@ -107,7 +127,7 @@ struct LiveView: View {
                 // full-screen, safe area ignored together, or boxes shear by
                 // the notch/home-bar insets
                 ZStack {
-                    CameraPreview(session: camera.session) { dp, lp in
+                    CameraPreview(session: camera.session, controller: camera) { dp, lp in
                         // dead zone: taps on or near the lens picker are zoom
                         // interaction, never focus selection (the preview is
                         // full-screen, so its coords equal global coords)
@@ -129,6 +149,11 @@ struct LiveView: View {
                             .transition(.opacity)
                     }
                 }
+                // camera flip: preview and overlay turn together about the
+                // vertical axis; black behind them so the turning edges never
+                // show the system background
+                .rotation3DEffect(.degrees(flipAngle), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+                .background(Color.black)
                 .ignoresSafeArea()
                 .gesture(
                     MagnifyGesture()
@@ -136,17 +161,22 @@ struct LiveView: View {
                         .onEnded { v in zoomBase = camera.setZoom(zoomBase * v.magnification) }
                 )
             } else {
-                ContentUnavailableView("Camera access required",
-                                       systemImage: "camera.fill")
+                cameraAccessNeeded
             }
             Color.black
                 .opacity(shutterFlash ? 1 : 0)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
+            // camera flip cover: fully black at the flip's midpoint, which is
+            // when the camera is swapped underneath
+            Color.black
+                .opacity(flipCover)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
             if loadingModel {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("Loading the model to \(compute.rawValue)")
+                    Text("Loading the model (\(compute.rawValue))")
                 }
                 .font(.caption)
                 .padding(14)
@@ -157,23 +187,38 @@ struct LiveView: View {
                 if camera.authorized, !models.isEmpty {
                     lensControl
                         .padding(.bottom, 6)
-                    Button { captureFrame() } label: {
-                        ZStack {
-                            Circle().stroke(.white.opacity(0.9), lineWidth: 3)
-                                .frame(width: 58, height: 58)
-                            if capturing {
-                                ProgressView()
-                                    .tint(.white)
-                                    .scaleEffect(1.4)
-                            } else {
-                                Circle().fill(.white)
-                                    .frame(width: 46, height: 46)
+                    // shutter centred, camera flip to its right (camera-app layout)
+                    ZStack {
+                        Button { captureFrame() } label: {
+                            ZStack {
+                                Circle().stroke(.white.opacity(0.9), lineWidth: 3)
+                                    .frame(width: 58, height: 58)
+                                if capturing {
+                                    ProgressView()
+                                        .tint(.white)
+                                        .scaleEffect(1.4)
+                                } else {
+                                    Circle().fill(.white)
+                                        .frame(width: 46, height: 46)
+                                }
                             }
                         }
+                        .buttonStyle(ShutterStyle())
+                        .disabled(capturing || switchingCamera)
+                        HStack {
+                            Spacer()
+                            flipButton
+                        }
+                        .padding(.trailing, 44)
                     }
-                    .buttonStyle(ShutterStyle())
-                    .disabled(capturing)
-                    .padding(.bottom, 8)
+                    // on a wide screen (iPhone Duo, inner display) the row is as wide as the
+                    // bars with their margins - a phone's width - so the flip button stays
+                    // beside the shutter instead of going to the far edge of the screen
+                    .barColumn(sideInset: 0, width: barMaxWidth + 2 * barSideInset)
+                    // with the stats HUD hidden nothing stands between the shutter and the
+                    // tab bar: give it the room the HUD's own margin otherwise provides
+                    // (30 pt over a tab bar; less where the HUD itself sits lower)
+                    .padding(.bottom, showHUD ? 8 : 10 + hudGap)
                 }
                 if showHUD {
                     StatsHUD(fps: statHz, pre: statPre, inf: statInf,
@@ -184,8 +229,20 @@ struct LiveView: View {
                                     ("loop", String(format: "%.1f fps", statLoopHz)),
                                     ("frame age", String(format: "%.0f ms", statAgeMs))]
                                  : [],
+                             fullWidth: true,
                              mask: isSegModel ? statMask : nil)
-                        .padding(.bottom, 20)
+                        .barColumn()   // as wide as the tab bar; a phone's width on a wide screen
+                        // 20 pt above the tab bar. Where the tabs are in the strip at the
+                        // side (iPhone Duo) there is none: the HUD goes down to where the
+                        // strip ends, partly into the home indicator's inset (`hudBottomGap`)
+                        .padding(.bottom, hudGap)
+                        // its height, for the screen shown without camera access
+                        // (`cameraAccessNeeded` centres itself in what the HUD leaves free)
+                        .background(GeometryReader { g in
+                            Color.clear
+                                .onAppear { hudHeight = g.size.height }
+                                .onChange(of: g.size.height) { _, h in hudHeight = h }
+                        })
                 }
             }
         }
@@ -193,49 +250,96 @@ struct LiveView: View {
             // same vertical anchor as the photo tab's top bar
             VStack(spacing: 8) {
                 controls
+                if let loadError {
+                    Text(loadError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .barColumn()
+                }
                 if showTuning {
-                    TuningPanel(conf: $tuning.conf, iou: $tuning.iou, style: $style,
+                    TuningPanel(conf: $tuning.conf, iou: isNMSFree ? nil : $tuning.iou, style: $style,
                                 hudVisible: $showHUD,
-                                segOverlay: isSegModel ? $tuning.segOverlay : nil)
-                        .padding(.horizontal)
+                                segOverlay: isSegModel ? $tuning.segOverlay : nil,
+                                pose: poseKeypoints > 0 ? $tuning.pose : nil,
+                                wholeBody: poseKeypoints == 133)
+                        .barColumn()
                 }
             }
+            .padding(.top, topGap)      // 0 except on an iPhone Duo (`screenEdgeAware`)
         }
         .onChange(of: allowCPU) { _, on in if !on && compute == .cpu { compute = ComputeChoice.deviceDefault } }
+        .onChange(of: selectedModel) { _, picked in
+            loadError = nil     // the message was about the previous model
+            // The tuning panel (and the HUD's mask row) are the picked model's at once. The
+            // three values used to change only when a Detector had been loaded, and a model
+            // can only be picked while paused: an open panel kept the previous model's
+            // controls until play was tapped. What the model's files say is enough to choose
+            // the controls (`tuningTraits`); the loaded Detector still has the last word
+            // (`startLoop`). Nothing is drawn while paused, so no overlay is redrawn by this.
+            if let traits = picked?.tuningTraits {
+                isSegModel = traits.segment
+                isNMSFree = traits.nmsFree
+                poseKeypoints = traits.keypoints
+            }
+        }
+        // Without camera access there are no frames, so nothing can run: the loop is not
+        // started (`startLoop`), and it starts here the moment access is there - at launch the
+        // answer arrives a moment after the tab appears, and on first use after the user's tap
+        // on Allow. It used to start regardless and sit at 0 FPS with the pause glyph showing.
+        .onChange(of: camera.authorized) { _, allowed in
+            if allowed {
+                if wantRun, visible { startLoop() }
+            } else {
+                suspendLoop()
+            }
+        }
         .onAppear {
+            visible = true
             if !allowCPU && compute == .cpu { compute = ComputeChoice.deviceDefault }
             camera.start()
             haptic.prepare()
             lightHaptic.prepare()
             heavyHaptic.prepare()
-            // first performChanges spins up the photo-library connection (seconds
-            // on a cold start) - warm it here instead of on the first shutter tap
-            if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .authorized {
-                Task.detached(priority: .utility) {
-                    try? await PHPhotoLibrary.shared().performChanges {}
+            firmHaptic.prepare()
+            // NO photo-library warm-up here. There used to be an EMPTY
+            // performChanges {} to spin up the Photos connection ahead of the first
+            // shutter tap. A change request that creates nothing is not an add-only
+            // request: PhotoKit asks for read-write access for it, and this app
+            // declares no NSPhotoLibraryUsageDescription (it only ever adds), so iOS
+            // aborted the app (termination reason TCC) - on EVERY launch from the
+            // moment saving photos had been allowed, on a phone that had never
+            // answered a read-write prompt. Only ever call performChanges with a
+            // creation request inside; the first save pays the connection start-up.
+            // Read the model list EVERY time the tab appears, not only at launch: a
+            // model imported or deleted in Settings since then has to enter (or
+            // leave) the menu - it used to stay invisible until the app was
+            // relaunched. discover() only lists files, nothing is compiled; it
+            // stays off the main thread, behind the Initializing card at launch.
+            Task.detached(priority: .userInitiated) {
+                let found = BundledModel.discover()
+                await MainActor.run {
+                    if found != models { models = found }
+                    initializing = false
+                    let keep = BundledModel.reselect(selectedModel, in: found)
+                    if keep != selectedModel { selectedModel = keep }
+                    // cold-start auto-run, auto-resume on tab return - unless the tab
+                    // was left again while the list was being read
+                    if wantRun, visible { startLoop() }
                 }
-            }
-            if models.isEmpty {
-                // discovery compiles bundled packages on first launch - keep it
-                // off the main thread, behind the Initializing card
-                Task.detached(priority: .userInitiated) {
-                    let found = BundledModel.discover()
-                    await MainActor.run {
-                        models = found
-                        initializing = false
-                        if selectedModel == nil {
-                            selectedModel = BundledModel.preferred(in: found)
-                        }
-                        if wantRun { startLoop() }     // cold-start auto-run
-                    }
-                }
-            } else if wantRun {
-                startLoop()                            // auto-resume on tab return
             }
         }
-        .onDisappear { suspendLoop(); camera.stop() }  // pause, intent preserved
+        .onDisappear { visible = false; suspendLoop(); camera.stop() }  // pause, intent preserved
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                // Only when Live is the tab on screen. This handler runs whichever tab is
+                // showing: coming back from the Home screen on Photo, Bench or Settings
+                // used to restart the camera and the detection loop behind that tab - and
+                // would now hold the screen awake there as well (see keepAwake).
+                guard visible else { return }
                 camera.start()
                 if wantRun { startLoop() }             // auto-resume from background
             } else {
@@ -307,30 +411,128 @@ struct LiveView: View {
         }
     }
 
+    /// Back/front camera toggle, to the right of the shutter. The two arrows
+    /// make a half-turn on every flip (the glyph looks the same after 180
+    /// degrees, so it always comes to rest upright).
+    private var flipButton: some View {
+        Button { flipCamera() } label: {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.primary)
+                .rotationEffect(.degrees(flipTurns * 180))
+                .frame(width: 46, height: 46)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(ShutterStyle())
+        .disabled(switchingCamera || capturing)
+        .accessibilityLabel(camera.isFront ? "Switch to the back camera"
+                                           : "Switch to the front camera")
+    }
+
+    /// Flip between the back and the front camera.
+    /// Feel: a firm (rigid, full-strength) haptic on the tap; the preview turns
+    /// away about its vertical axis while a black cover fades in; the camera is
+    /// swapped behind the cover; the new preview turns in from the opposite
+    /// side and a second firm haptic lands with it. With Reduce Motion on, the
+    /// turn is skipped and only the fade remains.
+    private func flipCamera() {
+        guard !switchingCamera, !capturing else { return }
+        switchingCamera = true
+        firmHaptic.impactOccurred(intensity: 1.0)
+        firmHaptic.prepare()
+        lensCollapse?.cancel()
+        let turnOut = reduceMotion ? 0.12 : 0.2
+        withAnimation(.easeIn(duration: turnOut)) {
+            if !reduceMotion { flipAngle = 90 }
+            flipCover = 1
+            lensExpanded = false
+            focusVisible = false
+        }
+        withAnimation(.spring(duration: 0.55, bounce: 0.3)) { flipTurns += 1 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + turnOut) {
+            // hidden now: wipe the outgoing camera's overlay and swap underneath
+            detections = []
+            maskImage = nil
+            camera.switchCamera { switched in
+                if switched { zoomBase = 1 }
+                // jump to the far side with animations off (invisible: edge-on
+                // and covered), then turn in on the next runloop pass so the
+                // jump is committed before the animated change starts
+                var jump = Transaction()
+                jump.disablesAnimations = true
+                withTransaction(jump) { if !reduceMotion { flipAngle = -90 } }
+                DispatchQueue.main.async {
+                    withAnimation(.spring(duration: 0.42, bounce: 0.2)) { flipAngle = 0 }
+                    withAnimation(.easeOut(duration: 0.3)) { flipCover = 0 }
+                    if switched {
+                        firmHaptic.impactOccurred(intensity: 0.8)
+                        firmHaptic.prepare()
+                    }
+                    switchingCamera = false
+                }
+            }
+        }
+    }
+
+    /// What Live shows without camera access: what is missing, and a button that opens this
+    /// app's page in the Settings app, where the Camera switch is.
+    ///
+    /// It sits where Photo's "No photos" sits, so nothing jumps when switching tabs. Photo
+    /// centres its message between the top bar and the stats HUD, which there are safe-area
+    /// insets. Here the HUD is drawn over the screen instead, so the same room is made with a
+    /// clear inset of the HUD's height. The message is the same kind of block as Photo's -
+    /// symbol, title, one line - and the button hangs BELOW that block (an overlay with its
+    /// alignment moved) instead of being part of it: as part of it, it would make the block
+    /// taller and push the text up.
+    private var cameraAccessNeeded: some View {
+        ContentUnavailableView("Camera access required", systemImage: "camera.fill",
+                               description: Text("Allow camera access to run live detection"))
+            .fixedSize(horizontal: false, vertical: true)
+            .overlay(alignment: .bottom) {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .alignmentGuide(.bottom) { d in d[.top] - 8 }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .safeAreaInset(edge: .bottom) {
+                Color.clear.frame(height: showHUD ? hudHeight : 0)
+            }
+    }
+
+    /// On the outer display of an iPhone Duo (`narrow`) the bar is 350 pt wide, 28 pt less
+    /// than on the narrowest phone it was laid out on, and at its usual sizes it needs about
+    /// 372: there the parts stand 6 pt apart instead of 8, the two icon buttons are 4 pt
+    /// narrower each, the play button 14 pt, and the bar's own side padding is 6 pt. On
+    /// every other iPhone each of these is the value it always was.
     private var controls: some View {
-        HStack {
+        HStack(spacing: narrow ? 6 : nil) {
             Menu {
                 Picker("Model", selection: $selectedModel) {
                     ForEach(models) { m in
-                        Text(m.fullName).tag(Optional(m))
+                        // the model's type as an icon beside its name
+                        Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }
+                            .tag(Optional(m))
                     }
                 }
             } label: {
-                HStack(spacing: 3) {
-                    Text(selectedModel?.shortID ?? "Model").lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2)
-                }
+                ModelChip(model: selectedModel)
             }
             .fixedSize()
-            .disabled(wantRun)          // pause inference before switching (mac GUI rule)
+            // pause inference before switching (mac GUI rule). Without camera access nothing
+            // runs and the play button is off, so the pickers must not stay locked.
+            .disabled(wantRun && camera.authorized)
             Picker("Compute", selection: $compute) {
                 ForEach(ComputeChoice.available(allowCPU: allowCPU)) { c in
                     Text(c.rawValue).lineLimit(1).fixedSize().tag(c)
                 }
             }
             .fixedSize()
-            .disabled(wantRun)
+            .disabled(wantRun && camera.authorized)
+            Spacer(minLength: 0)        // pickers left, buttons right: the bar spans the full width
             Button {
                 lightHaptic.impactOccurred()
                 lightHaptic.prepare()
@@ -340,27 +542,30 @@ struct LiveView: View {
                 // label box so every bordered button comes out the same height
                 Image(systemName: camera.torchOn ? "flashlight.on.fill" : "flashlight.off.fill")
                     .font(.system(size: 15))
-                    .frame(width: 22, height: 20)
+                    .frame(width: narrow ? 18 : 22, height: 20)
             }
             .buttonStyle(.bordered)
             .tint(camera.torchOn ? .yellow : nil)
+            .disabled(camera.isFront || !camera.hasTorch)   // the front camera has no torch, nor have most iPads
             Button {
                 withAnimation { showTuning.toggle() }
             } label: {
                 Image(systemName: "slider.horizontal.3")
-                    .frame(width: 22, height: 20)
+                    .frame(width: narrow ? 18 : 22, height: 20)
             }
             .buttonStyle(.bordered)
             Button {
                 if longPressFired { longPressFired = false; return }
                 togglePlay(strong: false)
             } label: {
-                Image(systemName: wantRun ? "pause.fill" : "play.fill")
-                    .frame(minWidth: 44, minHeight: 20)
+                Image(systemName: wantRun && camera.authorized ? "pause.fill" : "play.fill")
+                    .frame(minWidth: narrow ? 30 : 44, minHeight: 20)
             }
             .buttonStyle(.borderedProminent)
-            .tint(wantRun ? .red : .accentColor)
-            .disabled(selectedModel == nil)
+            .tint(wantRun && camera.authorized ? .red : .accentColor)
+            // no camera access: the button does nothing at all (the long press below is
+            // stopped in `togglePlay`), and the stats HUD reads N/A because nothing runs
+            .disabled(selectedModel == nil || !camera.authorized)
             .simultaneousGesture(
                 LongPressGesture(minimumDuration: 0.4).onEnded { _ in
                     longPressFired = true
@@ -373,9 +578,12 @@ struct LiveView: View {
                 }
             )
         }
-        .padding(8)
+        .padding(.horizontal, narrow ? 6 : 8)
+        .padding(.vertical, 8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal)   // no top padding: aligns with the photo tab's bar
+        // as wide as the tab bar, like the tuning panel and the stats HUD (`barSideInset`);
+        // no top padding: aligns with the photo tab's bar
+        .barColumn()
     }
 
     private var overlay: some View {
@@ -391,40 +599,86 @@ struct LiveView: View {
                 // mask composite is camera-frame-sized: same rect as the frame
                 // itself under aspect-fill, drawn beneath the boxes/labels
                 if let mask = maskImage {
-                    ctx.draw(Image(decorative: mask, scale: 1),
-                             in: CGRect(x: ox, y: oy, width: frameSize.width * scale,
-                                        height: frameSize.height * scale))
+                    let frameRect = CGRect(x: ox, y: oy, width: frameSize.width * scale,
+                                           height: frameSize.height * scale)
+                    if frameMirrored {
+                        // front camera: the preview is a mirror image, the frame
+                        // (and so the mask) is not - flip the mask about the
+                        // frame's vertical centre line: x -> minX + maxX - x
+                        var flipped = ctx
+                        flipped.translateBy(x: frameRect.minX + frameRect.maxX, y: 0)
+                        flipped.scaleBy(x: -1, y: 1)
+                        flipped.draw(Image(decorative: mask, scale: 1), in: frameRect)
+                    } else {
+                        ctx.draw(Image(decorative: mask, scale: 1), in: frameRect)
+                    }
                 }
                 DetOverlay.draw(ctx, detections, scale: scale, ox: ox, oy: oy, style: style,
                                 names: classNames,
-                                boxes: !(isSegModel && tuning.segOverlay == .masks))
+                                boxes: !(isSegModel && tuning.segOverlay == .masks) && !skeletonOnly,
+                                labels: !skeletonOnly,
+                                mirrorWidth: frameMirrored ? frameSize.width : nil,
+                                pose: tuning.pose)
             }
         }
         .allowsHitTesting(false)
     }
 
+    /// A pose model set to show the skeleton only: no person boxes, no labels - on screen and
+    /// in a saved photo alike.
+    private var skeletonOnly: Bool { poseKeypoints > 0 && tuning.pose.overlay == .skeleton }
+
+    /// Hold the screen awake while the camera is detecting: a viewfinder that dims and locks
+    /// after 30 seconds without a touch is no use for watching detections. Released whenever
+    /// the loop stops - pause, another tab, the Home screen, a model that fails to load - so
+    /// the phone sleeps on its normal timer everywhere else. Main thread only.
+    private func keepAwake(_ on: Bool) {
+        UIApplication.shared.isIdleTimerDisabled = on
+    }
+
     private func startLoop() {
-        guard let model = selectedModel, !running else { return }
+        // no camera access, no frames: nothing to run (see the camera.authorized handler)
+        guard camera.authorized, let model = selectedModel, !running else { return }
         running = true
+        keepAwake(true)
         loadingModel = true
         let mode = compute.mode
         let tuningRef = tuning      // plain class ref: detached-safe, no wrapper
         let cameraRef = camera
+        loadError = nil
         loopTask = Task.detached(priority: .userInitiated) {
-            guard let url = try? model.compiledURL(),
-                  let det = try? Detector(modelURL: url, compute: mode) else {
-                await MainActor.run { running = false; loadingModel = false }
+            let det: Detector
+            do {
+                det = try model.makeDetector(compute: mode)
+            } catch {
+                // A model that cannot be loaded (a damaged package, or one that is not a
+                // detector the Kit can decode): say why and go back to the paused state.
+                // It used to look like a hung run - pause glyph, pickers greyed out,
+                // nothing drawn, no message.
+                let why = error.localizedDescription
+                await MainActor.run {
+                    running = false
+                    keepAwake(false)
+                    loadingModel = false
+                    wantRun = false
+                    loadError = "\(model.fullName) could not be loaded. \(why)"
+                }
                 return
             }
             let seg = det.isSegment
+            let nmsFree = det.end2end
             let names = det.classNames
-            await MainActor.run { isSegModel = seg; classNames = names; loadingModel = false }
+            let kpts = det.isPose ? det.keypointCount : 0
+            await MainActor.run {
+                isSegModel = seg; isNMSFree = nmsFree; classNames = names; loadingModel = false
+                poseKeypoints = kpts
+            }
             var uiTicks = 0
             var uiWindowStart = CFAbsoluteTimeGetCurrent()
             var uiHz = 0.0
             var lastFrameID: UInt64 = 0
             while !Task.isCancelled {
-                guard let (pb, fid) = cameraRef.grabLatest() else {
+                guard let (pb, fid, front, turn) = cameraRef.grabLatest() else {
                     try? await Task.sleep(nanoseconds: 20_000_000); continue
                 }
                 if fid == lastFrameID {                    // stale frame - don't reprocess
@@ -432,7 +686,8 @@ struct LiveView: View {
                 }
                 lastFrameID = fid
                 let confNow = Float(tuningRef.conf)
-                let iouNow = CGFloat(tuningRef.iou)
+                // an NMS-free model ignores the (hidden) IoU lever
+                let iouNow = det.nmsThreshold(lever: CGFloat(tuningRef.iou))
                 let t0 = CFAbsoluteTimeGetCurrent()
                 // autoreleasepool per frame: without it, autoreleased CoreML/CG
                 // transients accumulate on the cooperative thread until jetsam
@@ -440,8 +695,24 @@ struct LiveView: View {
                 // masks only when wanted this frame: boxes-only mode skips the
                 // whole SGEMM+composite, and the stage bar drops to ~0
                 let segNow = seg && tuningRef.segOverlay != .boxes
+                // The detector and the overlay both work on an UPRIGHT frame.
+                // The back camera delivers one. The front camera's frames
+                // arrive in the sensor's landscape orientation (the capture
+                // pipeline does not rotate them on device), so a sideways
+                // buffer is turned upright here, whichever camera it is from.
+                // Its cost lands in the preprocess bar.
+                // `turn` comes with the frame and says how far (`grabLatest`): on an
+                // iPhone 0 for an upright buffer and a quarter-turn for a sideways one,
+                // as before; on an iPad whatever the interface's direction asks for.
+                let sideways = turn == 90 || turn == 270    // width and height swap
                 let frame: ([Detection], CGImage?, Double, Double, Double, Double)? = autoreleasepool {
-                    guard let raw = try? det.forward(pb) else { return nil }
+                    let forwarded: Detector.RawOutput?
+                    if turn != 0 {
+                        forwarded = uprightFrame(pb, turn: turn).flatMap { try? det.forward($0) }
+                    } else {
+                        forwarded = try? det.forward(pb)
+                    }
+                    guard let raw = forwarded else { return nil }
                     let t1 = CFAbsoluteTimeGetCurrent()
                     let d = det.decode(raw, conf: confNow, iou: iouNow)
                     let t2 = CFAbsoluteTimeGetCurrent()
@@ -464,8 +735,12 @@ struct LiveView: View {
                 let camHz = cameraRef.deliveryRate()
                 let ageMs = cameraRef.frameAgeMs()
 
-                let w = CGFloat(CVPixelBufferGetWidth(pb))
-                let h = CGFloat(CVPixelBufferGetHeight(pb))
+                // size of the UPRIGHT frame the detections are in: a sideways
+                // buffer's width and height swap when it is turned
+                let bw = CGFloat(CVPixelBufferGetWidth(pb))
+                let bh = CGFloat(CVPixelBufferGetHeight(pb))
+                let w = sideways ? bh : bw
+                let h = sideways ? bw : bh
                 // fire-and-forget: NEVER block the inference loop on the main
                 // thread - a busy render loop otherwise throttles detection to
                 // its leftover scheduling gaps
@@ -474,8 +749,13 @@ struct LiveView: View {
                 let e2eFPS = 1000.0 / max(preMS + infMS + decMS + maskMS, 0.1)
                 Task { @MainActor in
                     guard running else { return }   // zombie frame after pause: drop
+                    // a result from the camera we have just switched away from
+                    // must not repaint the cleared overlay (it stayed frozen
+                    // on screen when the new camera delivered nothing)
+                    guard front == cameraRef.isFront else { return }
                     detections = dets
                     maskImage = mask
+                    frameMirrored = front           // travels WITH its detections
                     statPre = preMS
                     statInf = infMS
                     statDec = decMS
@@ -514,17 +794,31 @@ struct LiveView: View {
         let dets = detections
         let mask = maskImage
         let drawMask = isSegModel && tuning.segOverlay != .boxes
-        let drawBoxes = !(isSegModel && tuning.segOverlay == .masks)
+        let drawBoxes = !(isSegModel && tuning.segOverlay == .masks) && !skeletonOnly
+        // the saved photo shows what the screen shows: same pose settings, and in
+        // skeleton-only mode neither person boxes nor labels
+        let labelMode: LabelMode = skeletonOnly ? .off : .full
+        let poseNow = tuning.pose
         let names = classNames
         let fSize = frameSize
         let kitStyle = style.kitStyle
-        let fallback = camera.grabLatest().flatMap { Detector.cgImage(from: $0.0) }
+        let front = camera.isFront
+        let fallback = camera.grabLatest().flatMap { uprightFrame($0.0, turn: $0.3) }
+        let cameraRef = camera
         let t0 = CFAbsoluteTimeGetCurrent()
-        camera.capturePhoto { photo in
+        camera.capturePhoto { shot in
             Task.detached(priority: .userInitiated) {
                 var base: CGImage? = nil
                 var s: CGFloat = 1
-                if let photo {
+                // The detections are in an upright frame. A still that was not
+                // rotated by the capture pipeline (iPhone: one that comes back
+                // LANDSCAPE, the front camera; iPad: every still) is turned the
+                // same way as its video frames.
+                let still = shot.flatMap { (img: CGImage) -> CGImage? in
+                    turned(img, by: cameraRef.uprightTurn(width: img.width, height: img.height,
+                                                          front: front))
+                }
+                if let photo = still {
                     // photo sensor FOV is wider than the 16:9 video FOV the
                     // detections live in - crop to the centered video-aspect
                     // region, then overlay coords map by one scale factor
@@ -548,12 +842,8 @@ struct LiveView: View {
                     await rearmShutter(t0)
                     return
                 }
-                let scaled = s == 1 ? dets : dets.map {
-                    Detection(cls: $0.cls, score: $0.score,
-                              rect: CGRect(x: $0.rect.minX * s, y: $0.rect.minY * s,
-                                           width: $0.rect.width * s, height: $0.rect.height * s),
-                              maskCoeffs: $0.maskCoeffs)
-                }
+                // boxes AND pose keypoints scale onto the larger still
+                let scaled = s == 1 ? dets : dets.map { $0.scaled(by: s) }
                 if drawMask, let mask,
                    let ctx = CGContext(data: nil, width: img.width, height: img.height,
                                        bitsPerComponent: 8, bytesPerRow: 0,
@@ -567,7 +857,7 @@ struct LiveView: View {
                 }
                 if !scaled.isEmpty {
                     img = annotate(img, scaled, names: names, style: kitStyle,
-                                   label: .full, drawBoxes: drawBoxes) ?? img
+                                   label: labelMode, drawBoxes: drawBoxes, pose: poseNow) ?? img
                 }
                 let ui = UIImage(cgImage: img)
                 if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
@@ -596,6 +886,7 @@ struct LiveView: View {
     /// lifecycle pauses auto-resume.
     private func suspendLoop() {
         running = false
+        keepAwake(false)
         loadingModel = false
         loopTask?.cancel()
         loopTask = nil
@@ -622,6 +913,8 @@ struct LiveView: View {
     /// Play/pause with haptics: medium on tap, heavy full-intensity on the
     /// force/long press path.
     private func togglePlay(strong: Bool) {
+        // the long-press gesture sits outside the button's disabled state: stop it here too
+        guard camera.authorized, selectedModel != nil else { return }
         if strong {
             heavyHaptic.impactOccurred(intensity: 1.0)
             heavyHaptic.prepare()
@@ -632,6 +925,70 @@ struct LiveView: View {
         if wantRun { wantRun = false; stopLoop() }
         else { wantRun = true; startLoop() }
     }
+}
+
+/// `image` turned a quarter-turn, as a new bitmap (width and height swap).
+///
+/// Needed because a camera's sensor is mounted landscape: when the capture
+/// pipeline does not rotate a frame, it arrives lying on its side. Which way
+/// it has to turn depends on the phone's sensor, not only on front or back:
+/// `CameraController.sidewaysTurnIsClockwise(front:)` decides.
+///
+/// Core Graphics is y-up, so a positive angle is counter-clockwise on screen.
+/// The translation moves the turned image back into the positive quadrant:
+///   counter-clockwise: (x, y) -> (h - y, x)   the right edge becomes the top
+///   clockwise:         (x, y) -> (y, w - x)   the left edge becomes the top
+private func quarterTurned(_ image: CGImage, clockwise: Bool) -> CGImage? {
+    let w = image.width, h = image.height
+    guard let ctx = CGContext(data: nil, width: h, height: w, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+                                  | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+    ctx.interpolationQuality = .none      // an exact quarter-turn maps pixel to pixel
+    if clockwise {
+        ctx.translateBy(x: 0, y: CGFloat(w))
+        ctx.rotate(by: -.pi / 2)
+    } else {
+        ctx.translateBy(x: CGFloat(h), y: 0)
+        ctx.rotate(by: .pi / 2)
+    }
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+    return ctx.makeImage()
+}
+
+/// `image` turned upside down, as a new bitmap of the same size: (x, y) -> (w - x, h - y).
+/// Only an iPad asks for it, held with its camera at the bottom.
+private func halfTurned(_ image: CGImage) -> CGImage? {
+    let w = image.width, h = image.height
+    guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+                                  | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+    ctx.interpolationQuality = .none
+    ctx.translateBy(x: CGFloat(w), y: CGFloat(h))
+    ctx.rotate(by: .pi)
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+    return ctx.makeImage()
+}
+
+/// `image` turned by `turn` degrees clockwise - 0, 90, 180 or 270, what
+/// `CameraController.grabLatest` and `uprightTurn` answer. 0 is the image itself.
+private func turned(_ image: CGImage, by turn: Int) -> CGImage? {
+    switch turn {
+    case 90: return quarterTurned(image, clockwise: true)
+    case 270: return quarterTurned(image, clockwise: false)
+    case 180: return halfTurned(image)
+    default: return image
+    }
+}
+
+/// An upright image of a camera frame for the detector: the frame turned by `turn`
+/// (`CameraController.grabLatest`). On an iPhone that is a quarter-turn for a landscape
+/// frame - the sensor's own orientation, see `quarterTurned` - and nothing for a portrait
+/// one, which is wrapped as it is.
+private func uprightFrame(_ pb: CVPixelBuffer, turn: Int) -> CGImage? {
+    guard let cg = Detector.cgImage(from: pb) else { return nil }
+    return turned(cg, by: turn)
 }
 
 /// Camera-app shutter feel: quick shrink while pressed.

@@ -1,6 +1,7 @@
 // Shared stats HUD: FPS tachometer (smooth color ramp), per-stage latency bars
 // (green -> orange as a stage misbehaves), detection count, thermal state.
 import SwiftUI
+import UIKit
 import YOLOMasterKit
 
 // MARK: - color ramps
@@ -65,6 +66,7 @@ struct StatsHUD: View {
     var fullWidth: Bool = false
     var mask: Double? = nil    // seg mask-compose ms; nil hides the bar (det models)
 
+    @Environment(\.duoOuterDisplay) private var narrow   // iPhone Duo, outer display
     @State private var thermal = ProcessInfo.processInfo.thermalState
     @State private var expanded = false   // tap toggles the detailed-stats section
     @State private var rowWidth: CGFloat = 0   // measured main-row width: the expanded
@@ -152,12 +154,15 @@ struct StatsHUD: View {
             // compact stage bars only while collapsed - the expanded view has
             // the same stages as named detail rows, no duplication
             if !expanded {
+                // 90 pt of bar make the row 356 pt, the card 376 - more than the 350 pt a
+                // bar has on the outer display of an iPhone Duo, where the bars are 60 pt
+                let bar: CGFloat = narrow ? 60 : 90
                 VStack(alignment: .leading, spacing: 5) {
-                    StageBar(icon: "aspectratio", ms: pre)                       // preprocess
-                    StageBar(icon: "cpu", ms: inf)                               // inference
-                    StageBar(icon: "rectangle.dashed", ms: dec)                  // decode
-                    if let mask {
-                        StageBar(icon: "person.and.background.dotted", ms: mask) // mask compose
+                    StageBar(icon: "aspectratio", ms: pre, barWidth: bar)        // preprocess
+                    StageBar(icon: "cpu", ms: inf, barWidth: bar)                // inference
+                    StageBar(icon: "rectangle.dashed", ms: dec, barWidth: bar)   // decode
+                    if let mask {                                                // mask compose
+                        StageBar(icon: "person.and.background.dotted", ms: mask, barWidth: bar)
                     }
                 }
             }
@@ -202,6 +207,7 @@ struct StageBar: View {
     let icon: String   // SF Symbol naming the stage
     let ms: Double
     var color: Color? = nil   // override the stage-color ramp (bench uses msColor bands)
+    var barWidth: CGFloat = 90     // the stats HUD shortens it where its card must be narrower
     private let fullScale = 50.0   // bar saturates at 50ms
 
     var body: some View {
@@ -217,10 +223,12 @@ struct StageBar: View {
                         .frame(width: max(3, min(ms / fullScale, 1) * g.size.width))
                 }
             }
-            .frame(width: 90, height: 6)
+            .frame(width: barWidth, height: 6)
             .animation(.easeOut(duration: 0.15), value: ms)
             Text(String(format: "%4.1f", ms))
                 .font(.caption2.monospacedDigit())
+                .lineLimit(1)                   // a four-digit time shrinks; it used to wrap
+                .minimumScaleFactor(0.6)        // onto a second line ("9075." / "2")
                 .frame(width: 36, alignment: .trailing)
         }
     }
@@ -405,20 +413,355 @@ struct CrossShape: Shape {
     }
 }
 
+/// The model-type icons, drawn to ONE size.
+///
+/// SF Symbols are not designed to a common size: at the same point size a viewfinder or a
+/// square fills its box while a figure is a narrow glyph of capital-letter height, so in a
+/// menu the pose icon came out visibly smaller than the others - and a menu ignores the size
+/// modifiers of an `Image(systemName:)`, it only shows a bitmap at the size it has. So each
+/// symbol is rendered once, the box its ink occupies is measured, and that ink is scaled to
+/// a set extent (the longer of its width and height) and centred in the same square.
+/// The result is a template image: it takes the text colour like a symbol does.
+///
+/// Equal extents do not look equal: the viewfinder is four corners around an empty square and
+/// reads large, the figure is mostly thin limbs and reads small. So the extents are tuned by
+/// eye per kind (`extent`): the figure fills the square, the viewfinder is drawn smaller.
+enum ModelIcon {
+    /// The square every icon is drawn into, in points.
+    private static let side: CGFloat = 24
+    private static var cache: [String: UIImage] = [:]   // by symbol name; main thread only
+
+    /// The extent, in points, the ink of `kind`'s icon is scaled to. Seen on device at one
+    /// common extent (21): the pose figure looked too small and the detection viewfinder too
+    /// large beside the other two.
+    private static func extent(_ kind: ModelKind) -> CGFloat {
+        switch kind {
+        case .detection: return 17
+        case .pose: return 24
+        case .segmentation, .wholeBody: return 21
+        }
+    }
+
+    /// The icon of `kind` at its tuned size (the plain symbol if it cannot be drawn).
+    static func image(_ kind: ModelKind) -> Image {
+        if let drawn = normalized(kind.icon, ink: extent(kind)) {
+            return Image(uiImage: drawn).renderingMode(.template)
+        }
+        return Image(systemName: kind.icon)
+    }
+
+    private static func normalized(_ symbol: String, ink: CGFloat) -> UIImage? {
+        if let hit = cache[symbol] { return hit }
+        guard let drawn = draw(symbol, ink: ink) else { return nil }
+        cache[symbol] = drawn
+        return drawn
+    }
+
+    private static func draw(_ symbol: String, ink: CGFloat) -> UIImage? {
+        // 1. the symbol, large and black, into a bitmap that can be read back
+        let config = UIImage.SymbolConfiguration(pointSize: 96, weight: .regular)
+        guard let glyph = UIImage(systemName: symbol, withConfiguration: config)?
+            .withTintColor(.black, renderingMode: .alwaysOriginal) else { return nil }
+        let w = Int(glyph.size.width.rounded(.up)), h = Int(glyph.size.height.rounded(.up))
+        guard w > 0, h > 0,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.translateBy(x: 0, y: CGFloat(h))     // UIKit draws from the top-left corner
+        ctx.scaleBy(x: 1, y: -1)
+        UIGraphicsPushContext(ctx)
+        glyph.draw(in: CGRect(x: 0, y: 0, width: glyph.size.width, height: glyph.size.height))
+        UIGraphicsPopContext()
+        // 2. the box its ink occupies (rows run top to bottom in memory, as in the CGImage)
+        guard let data = ctx.data else { return nil }
+        let bytes = data.assumingMemoryBound(to: UInt8.self)
+        let rowBytes = ctx.bytesPerRow
+        var minX = w, minY = h, maxX = -1, maxY = -1
+        for y in 0..<h {
+            for x in 0..<w where bytes[y * rowBytes + x * 4 + 3] > 16 {
+                if x < minX { minX = x }
+                if x > maxX { maxX = x }
+                if y < minY { minY = y }
+                if y > maxY { maxY = y }
+            }
+        }
+        guard maxX >= minX, maxY >= minY,
+              let inked = ctx.makeImage()?.cropping(to: CGRect(x: minX, y: minY,
+                                                                width: maxX - minX + 1,
+                                                                height: maxY - minY + 1)) else { return nil }
+        // 3. that ink at the common extent, centred in the common square
+        let scale = ink / CGFloat(max(inked.width, inked.height))
+        let size = CGSize(width: CGFloat(inked.width) * scale, height: CGFloat(inked.height) * scale)
+        let canvas = CGSize(width: side, height: side)
+        let out = UIGraphicsImageRenderer(size: canvas).image { _ in
+            UIImage(cgImage: inked).draw(in: CGRect(x: (side - size.width) / 2,
+                                                    y: (side - size.height) / 2,
+                                                    width: size.width, height: size.height))
+        }
+        return out.withRenderingMode(.alwaysTemplate)
+    }
+}
+
+/// The collapsed label of a model picker: the model's type as an icon, its short name, the
+/// menu chevrons. Live, Photo and Bench share it; the menu rows show the same icon beside
+/// the full name (`Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }`).
+struct ModelChip: View {
+    let model: BundledModel?
+    var body: some View {
+        HStack(spacing: 4) {
+            if let model {
+                ModelIcon.image(model.kind)
+                    .resizable().scaledToFit()
+                    .frame(width: 17, height: 17)
+            }
+            Text(model?.shortID ?? "Model").lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down").font(.caption2)
+        }
+    }
+}
+
+/// Side margin of the bars in Live and in Photo - the top controls, the tuning panel, the
+/// stats HUD, Photo's progress bar - so that all of them are exactly as wide as the tab bar
+/// under them, and a bar keeps its edges when the user switches between the two tabs.
+/// 21 pt is the margin of the system's floating tab bar, measured on an iPhone Air (iOS 26).
+let barSideInset: CGFloat = 21
+
+// MARK: - wide screens (iPhone Duo)
+
+/// The widest a bar of Live or Photo gets where the screen is much wider than a phone held
+/// upright: the inner display of an iPhone Duo (951 pt held open like a book, 669 pt turned),
+/// which is the only place this app is given a REGULAR horizontal size class - it is
+/// portrait-only, and every other iPhone held upright is compact. There the bars keep the
+/// width they have on the widest ordinary iPhone (440 pt less the two margins) and sit
+/// centred, while the camera picture, the gallery and the open photo use the whole screen.
+/// Stretched from edge to edge the bars were mostly empty: the pickers at one end, the
+/// buttons 600 pt away at the other, the flip button far from the shutter.
+let barMaxWidth: CGFloat = 398
+
+/// The widest the Bench tab's top bar and result cards get on that display. Wider than
+/// `barMaxWidth`: the cards are tables.
+let benchMaxWidth: CGFloat = 600
+
+/// The least distance between a bar at the top of a tab and the top edge of the screen. On
+/// an iPhone Duo with its tabs in the strip at the side there is no status bar over the
+/// content, the safe area starts at the very edge, and a bar placed at its top touched it.
+let minTopMargin: CGFloat = 16
+
+/// Side margin of the bars of Live and Photo on the OUTER display of an iPhone Duo. Its
+/// tabs are in a strip at the side there, which leaves the tab 382 pt of the screen's 466,
+/// and the bars as they are on a phone do not fit into that: the stats HUD needs 376 pt, the
+/// top bars about 370, so at `barSideInset` they overflowed, ended 3 pt from the screen's
+/// left edge and made the whole tab 419 pt wide. With this margin a bar is 350 pt wide and
+/// what is in it is made to fit (`duoOuterDisplay`). 16 pt is also what a top bar keeps from
+/// the top edge (`minTopMargin`).
+let outerBarSideInset: CGFloat = 16
+
+/// Where the stats HUD ends above the bottom edge of the screen while the tabs are in the
+/// strip at the side (an iPhone Duo: its outer display, and its inner display held open
+/// like a book). There is no tab bar under the HUD then, and 20 pt above the home
+/// indicator's inset it stood 55 pt above the edge. 24 pt is where the strip itself ends,
+/// measured on screenshots of the simulator, so the two end on one line.
+/// An iPad at a regular width has no tab bar under the HUD either - its tabs are in the
+/// bar above the content - and gets the same distance.
+let sideStripBottomMargin: CGFloat = 24
+
+/// The stats HUD's distance from the bottom of the safe area on every iPhone with its tab
+/// bar at the bottom: 20 pt above the tab bar.
+let hudBottomPadding: CGFloat = 20
+
+/// A bar with its side margins: used in place of `.padding(.horizontal, sideInset)`.
+/// With a compact width that padding is all it is (a frame with no limit takes the size of
+/// what is in it), so nothing moves on an ordinary iPhone.
+/// With a regular width the bar is no wider than `width`; the stack or the safe-area inset
+/// it is in centres it.
+/// On the outer display of an iPhone Duo (`duoOuterDisplay`) a bar of Live or Photo - one
+/// that names no margin of its own - gets `outerBarSideInset`, and every bar reports the
+/// width it was offered whatever is in it: should something in a bar still be too wide, it
+/// sticks out of that one bar and no longer widens the tab around it.
+private struct BarColumn: ViewModifier {
+    let sideInset: CGFloat?     // nil: the margin of a bar of Live or Photo
+    let width: CGFloat
+    @Environment(\.horizontalSizeClass) private var widthClass
+    @Environment(\.duoOuterDisplay) private var narrow
+
+    func body(content: Content) -> some View {
+        let inset = sideInset ?? (narrow ? outerBarSideInset : barSideInset)
+        content
+            .padding(.horizontal, inset)
+            .frame(minWidth: narrow ? 0 : nil,
+                   maxWidth: widthClass == .regular ? width + 2 * inset
+                                                    : (narrow ? CGFloat.infinity : nil))
+    }
+}
+
+extension View {
+    func barColumn(sideInset: CGFloat? = nil, width: CGFloat = barMaxWidth) -> some View {
+        modifier(BarColumn(sideInset: sideInset, width: width))
+    }
+}
+
+private struct TopEdgeGapKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+private struct DuoOuterDisplayKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private struct HUDBottomGapKey: EnvironmentKey {
+    static let defaultValue: CGFloat = hudBottomPadding
+}
+
+extension EnvironmentValues {
+    /// What a tab's top bar adds above itself to keep `minTopMargin` from the screen's edge
+    /// (`screenEdgeAware`). 0 wherever the system's own top inset is already that large.
+    var topEdgeGap: CGFloat {
+        get { self[TopEdgeGapKey.self] }
+        set { self[TopEdgeGapKey.self] = newValue }
+    }
+
+    /// True on the outer display of an iPhone Duo: a compact width with the tabs in the
+    /// strip at the side (`screenEdgeAware`). The bars of Live and Photo are narrower there
+    /// than on any phone, and what is in them is spaced and sized to fit. False on every
+    /// other iPhone, where nothing reads differently.
+    var duoOuterDisplay: Bool {
+        get { self[DuoOuterDisplayKey.self] }
+        set { self[DuoOuterDisplayKey.self] = newValue }
+    }
+
+    /// The stats HUD's bottom padding, measured from the bottom of the safe area
+    /// (`screenEdgeAware`): `hudBottomPadding` over a tab bar, and what puts the HUD
+    /// `sideStripBottomMargin` above the screen's edge while the tabs are in the strip at
+    /// the side - a negative number where the home indicator's inset is larger than that.
+    var hudBottomGap: CGFloat {
+        get { self[HUDBottomGapKey.self] }
+        set { self[HUDBottomGapKey.self] = newValue }
+    }
+}
+
+/// Measures the system's safe area around a tab - outside the tab's own bars, which are
+/// safe-area insets further in - and hands the tab `topEdgeGap`, `hudBottomGap` and
+/// `duoOuterDisplay`.
+///
+/// All three differ from their defaults only on an iPhone Duo - on its inner display
+/// (regular width) or beside the strip its tabs are in (a safe-area inset at the side,
+/// which an ordinary iPhone held upright does not have) - and, for the HUD, on an iPad at a
+/// regular width. An ordinary iPhone always gets the defaults, also if a first measurement
+/// taken before the window has its insets should read 0.
+private struct ScreenEdgeAware: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var widthClass
+    @State private var insets: EdgeInsets?      // nil until measured
+
+    /// The tabs are in the strip at the side of the screen, not in a bar at its bottom.
+    private var besideStrip: Bool {
+        guard let insets else { return false }
+        return insets.leading > 0 || insets.trailing > 0
+    }
+
+    private var gap: CGFloat {
+        guard let insets else { return 0 }
+        guard widthClass == .regular || besideStrip else { return 0 }
+        return max(0, minTopMargin - insets.top)
+    }
+
+    /// Nothing of the tabs is under the content: they are in the strip at the side (iPhone
+    /// Duo), or in the bar above the content (an iPad at a regular width; in a narrow window
+    /// its tab bar is at the bottom like a phone's).
+    private var noTabBarBelow: Bool {
+        besideStrip || (runsOnPad && widthClass == .regular)
+    }
+
+    private var hudGap: CGFloat {
+        guard let insets, noTabBarBelow else { return hudBottomPadding }
+        return min(hudBottomPadding, sideStripBottomMargin - insets.bottom)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.topEdgeGap, gap)
+            .environment(\.hudBottomGap, hudGap)
+            .environment(\.duoOuterDisplay, besideStrip && widthClass != .regular)
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { insets = g.safeAreaInsets }
+                    .onChange(of: g.safeAreaInsets) { _, now in insets = now }
+            })
+    }
+}
+
+extension View {
+    /// For the root of a tab whose top bar floats at the top of the safe area.
+    func screenEdgeAware() -> some View { modifier(ScreenEdgeAware()) }
+}
+
+/// An on/off choice drawn as a button of its own: a capsule filled with the accent colour
+/// (blue), white text, while on; a quiet grey capsule while off. The whole-body part row is
+/// four of them side by side, equal in width, with clear gaps between them.
+/// (Two earlier attempts at that row did not look right on device: system toggle buttons -
+/// blue text in dim capsules, packed tight - and a look-alike of the segmented pickers.)
+struct OnOffButton: View {
+    let title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { isOn.toggle() }
+        } label: {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .foregroundStyle(isOn ? Color.white : Color.primary)
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, minHeight: 32)
+                .background(isOn ? Color.accentColor : Color(.tertiarySystemFill), in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
 /// conf / IoU tuning sliders + box style - the detection knobs, one panel.
+/// `iou` is nil for an NMS-free model: no NMS runs on its output, so there is no lever to show.
+///
+/// A pose model adds its own overlay controls (`pose` non-nil): skeleton / boxes / both, the
+/// keypoint visibility to draw from ("kpt") and the joint and limb size. A whole-body model
+/// (`wholeBody`, the 133-keypoint layout) also gets a Body / Feet / Face / Hands row - four
+/// separate buttons, blue while their group is drawn (`OnOffButton`), because 68 face
+/// points and 42 hand points are often more than the picture needs - and a
+/// "Hand skeleton" switch that takes the finger bones away and leaves the hand points.
+/// The skeleton controls are hidden in boxes mode, where no skeleton is drawn, and the box
+/// styles are hidden in skeleton mode, where no box is drawn.
+/// Order: the pickers, then the switches together on one line (hand skeleton, stats HUD),
+/// then the sliders.
+///
+/// `boxScale` (Photo only: Live does not pass it) adds a "box" lever that makes the box
+/// lines thicker or thinner and the labels larger or smaller together, from half to two and
+/// a half times their size - the same range as the skeleton's `size`. It is hidden in
+/// skeleton mode, where neither a box nor a label is drawn.
 struct TuningPanel: View {
     @Binding var conf: Double
-    @Binding var iou: Double
+    var iou: Binding<Double>? = nil
     var style: Binding<BoxStyle>? = nil
     var hudVisible: Binding<Bool>? = nil
     var segOverlay: Binding<SegOverlay>? = nil   // non-nil only for seg models
+    var pose: Binding<PoseDisplay>? = nil        // non-nil only for pose models
+    var wholeBody = false                        // the pose model reports 133 keypoints
+    var boxScale: Binding<CGFloat>? = nil        // non-nil only in Photo: box thickness and label size
+
+    /// A pose model showing skeletons only: nothing the box styles would change is drawn.
+    private var skeletonOnly: Bool { pose?.wrappedValue.overlay == .skeleton }
+
+    /// The finger-bones switch: offered for a whole-body model while its hands are drawn.
+    private var handLines: Binding<Bool>? {
+        guard let pose, wholeBody, pose.wrappedValue.drawsSkeleton, pose.wrappedValue.hands else { return nil }
+        return pose.handLines
+    }
+
     var body: some View {
-        VStack(spacing: 6) {
-            if let hudVisible {
-                Toggle("Show stats HUD", isOn: hudVisible)
-                    .font(.caption)
-            }
-            if let style {
+        VStack(spacing: 8) {
+            if let style, !skeletonOnly {
                 Picker("Style", selection: style) {
                     ForEach(BoxStyle.allCases) { s in
                         Text(s.label).lineLimit(1).fixedSize().tag(s)
@@ -434,15 +777,71 @@ struct TuningPanel: View {
                 }
                 .pickerStyle(.segmented)
             }
+            if let pose {
+                Picker("Pose overlay", selection: pose.overlay) {
+                    ForEach(PoseOverlay.allCases, id: \.self) { o in
+                        Text(o.rawValue.capitalized).lineLimit(1).fixedSize().tag(o)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if wholeBody && pose.wrappedValue.drawsSkeleton {
+                    HStack(spacing: 8) {
+                        OnOffButton(title: "Body", isOn: pose.body)
+                        OnOffButton(title: "Feet", isOn: pose.feet)
+                        OnOffButton(title: "Face", isOn: pose.face)
+                        OnOffButton(title: "Hands", isOn: pose.hands)
+                    }
+                }
+            }
+            // the switches together, one line: hand skeleton (off: the finger bones go, the
+            // 21 points of each hand stay) on the left when it applies, the stats HUD on the
+            // right - its switch stays at the panel's edge whether or not the other is shown
+            if handLines != nil || hudVisible != nil {
+                HStack(spacing: 18) {
+                    if let handLines {
+                        Toggle("Hand skeleton", isOn: handLines)
+                    }
+                    if let hudVisible {
+                        Toggle("Show stats HUD", isOn: hudVisible)
+                    }
+                }
+                .font(.caption)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            }
             HStack {
                 Text("conf").font(.caption).frame(width: 34, alignment: .leading)
                 Slider(value: $conf, in: 0.05...0.9)
                 Text(String(format: "%.2f", conf)).font(.caption.monospacedDigit()).frame(width: 34)
             }
-            HStack {
-                Text("IoU").font(.caption).frame(width: 34, alignment: .leading)
-                Slider(value: $iou, in: 0.1...0.9)
-                Text(String(format: "%.2f", iou)).font(.caption.monospacedDigit()).frame(width: 34)
+            if let iou {
+                HStack {
+                    Text("IoU").font(.caption).frame(width: 34, alignment: .leading)
+                    Slider(value: iou, in: 0.1...0.9)
+                    Text(String(format: "%.2f", iou.wrappedValue)).font(.caption.monospacedDigit()).frame(width: 34)
+                }
+            }
+            if let boxScale, !skeletonOnly {
+                HStack {
+                    Text("box").font(.caption).frame(width: 34, alignment: .leading)
+                    Slider(value: boxScale, in: 0.5...2.5)
+                    Text(String(format: "%.1fx", Double(boxScale.wrappedValue)))
+                        .font(.caption.monospacedDigit()).frame(width: 34)
+                }
+            }
+            if let pose, pose.wrappedValue.drawsSkeleton {
+                HStack {
+                    Text("kpt").font(.caption).frame(width: 34, alignment: .leading)
+                    Slider(value: pose.minConfidence, in: 0.05...0.95)
+                    Text(String(format: "%.2f", pose.wrappedValue.minConfidence))
+                        .font(.caption.monospacedDigit()).frame(width: 34)
+                }
+                HStack {
+                    Text("size").font(.caption).frame(width: 34, alignment: .leading)
+                    Slider(value: pose.size, in: 0.5...2.5)
+                    Text(String(format: "%.1fx", Double(pose.wrappedValue.size)))
+                        .font(.caption.monospacedDigit()).frame(width: 34)
+                }
             }
         }
         .padding(10)
@@ -456,4 +855,5 @@ final class Tuning: ObservableObject {
     @Published var conf: Double = 0.25
     @Published var iou: Double = 0.5
     @Published var segOverlay: SegOverlay = .both   // masks / boxes / both (mac default)
+    @Published var pose = PoseDisplay()             // pose models: what of the skeleton is drawn
 }

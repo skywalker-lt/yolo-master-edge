@@ -11,13 +11,18 @@ Environment
 Conversion runs on Linux (coremltools; only *prediction* needs macOS). Use an isolated env:
 
     conda create -n cmlexport python=3.11 -y
-    pip install torch==2.5.1 torchvision==0.20.1 coremltools==9.0
+    pip install torch==2.5.1 torchvision==0.20.1 coremltools==9.0 "numpy<2.3"
 
 Then install the ultralytics build that MATCHES the checkpoint:
   * YOLO-Master checkpoints  ->  the fork:   pip install -e /path/to/YOLO-Master --no-deps
   * stock YOLO checkpoints   ->  stock:      pip install ultralytics==8.3.240
 Mixing them fails at trace time (e.g. stock yolov12's AAttn vs the fork's -> 'has no attribute qkv').
-torch 2.11 also breaks coremltools' torch frontend (aten::Int) — pin torch 2.5.
+torch 2.11 also breaks coremltools' torch frontend (aten::Int) — pin torch 2.5. numpy 2.4 breaks it
+the same way ("only 0-dimensional arrays can be converted to Python scalars") — pin numpy < 2.3.
+
+Pose models (a head with kpt_shape, e.g. yolo26n-pose) are detected automatically: task=pose and
+kpt_shape are stamped, and the keypoints ride in the detection tensor after the class scores.
+--anchors exports an end2end checkpoint (YOLO26, YOLOv10) in the classic anchors layout.
 
 Why the MoE tricks below (no-ops for plain models, required for YOLO-Master MoE)
 ------------------------------------------------------------------------------
@@ -128,7 +133,10 @@ def _patch_ane_safe_moe() -> list[str]:
     shared(x) + sum_i w_i * expert_i(x) with w = p * mask / sum(p * mask) and the mask from
     `_ane_topk_mask`: identical weights away from fp16 ties, no integer op anywhere.
     """
-    import ultralytics.nn.modules.moe.modules as M
+    try:
+        import ultralytics.nn.modules.moe.modules as M
+    except ImportError:
+        return []        # stock ultralytics has no MoE modules: nothing to patch
     notes = []
 
     def improved_forward(self, x):
@@ -205,7 +213,8 @@ def _deploy_target(name: str):
 
 
 def export(weights: str, imgsz: int, out: str, target: str = "macos13",
-           merge_lora_dir: str | None = None, yolov12_aattn: bool = False, ane_safe_moe: bool = True) -> dict:
+           merge_lora_dir: str | None = None, yolov12_aattn: bool = False, ane_safe_moe: bool = True,
+           anchors: bool = False) -> dict:
     if yolov12_aattn:
         _patch_yolov12_aattn()
     if ane_safe_moe:
@@ -219,6 +228,20 @@ def export(weights: str, imgsz: int, out: str, target: str = "macos13",
     names = [ym.names[i] for i in sorted(ym.names)] if getattr(ym, "names", None) else []
     for note in _repair_legacy_checkpoint(model):
         print(f"[compat] {note}")
+
+    # ---- head layout ----
+    # An end2end head (YOLO26, YOLOv10) emits [1, max_det, 6(+kpts)] after an in-graph top-k. The app
+    # runs that layout on the CPU only (the top-k / gather tail does not compile for the GPU). With
+    # --anchors the same checkpoint is exported through its one-to-many head in the classic
+    # [1, 4+nc(+kpts), anchors] layout, NMS in the app, which runs on the GPU and the Neural Engine.
+    head = model.model[-1]
+    if anchors and getattr(head, "end2end", False):
+        head.end2end = False
+        print("[layout] end2end head exported in the anchors layout (NMS in the app)")
+    e2e = bool(getattr(head, "end2end", False))
+    # pose head: kpt_shape = [keypoints, values per keypoint] (17, 3 for COCO: x, y, visibility)
+    kpt_shape = [int(v) for v in (getattr(head, "kpt_shape", None) or [])]
+    nk = kpt_shape[0] * kpt_shape[1] if len(kpt_shape) == 2 else 0
 
     for m in model.modules():                      # Detect/Segment head -> single concatenated tensor
         if hasattr(m, "export"): m.export = True
@@ -254,22 +277,31 @@ def export(weights: str, imgsz: int, out: str, target: str = "macos13",
         out_name, task = det[0], "segment"
         meta["proto"] = proto[0]
         meta["nm"] = str(proto[1][1])
-    else:
-        out_name, task = outs[0][0], "detect"
+    else:                                          # one tensor: detection, or pose (boxes + keypoints)
+        out_name, task = outs[0][0], ("pose" if nk else "detect")
     meta["task"] = task
     meta["output"] = out_name
     meta["imgsz"] = str(imgsz)
-    meta["moe_export"] = "ane_safe_rank" if ane_safe_moe else "topk_gather"
+    if any("moe" in type(mod).__name__.lower() for mod in model.modules()):   # only models that HAVE a MoE block
+        meta["moe_export"] = "ane_safe_rank" if ane_safe_moe else "topk_gather"
     meta["precision"] = "fp16"                     # ML program default compute precision (weights and activations)
+    meta["end2end"] = "true" if e2e else "false"   # authoritative for the app (it only guesses from the shape otherwise)
+    if nk:
+        meta["kpt_shape"] = f"{kpt_shape[0]},{kpt_shape[1]}"
     if names: meta["names"] = ",".join(names)
     mlmodel.save(out)
 
     # ---- validate the emitted spec ----
     det_shape = next((s for n, s in outs if n == out_name), None)
-    nc = (det_shape[1] - 4 - int(meta.get("nm", 0))) if det_shape else None
-    if names and nc is not None and nc != len(names):
-        raise RuntimeError(f"class-count mismatch: output implies nc={nc} but {len(names)} names")
-    return {"out": out, "task": task, "output": out_name, "shapes": outs, "classes": len(names), "imgsz": imgsz}
+    if det_shape and e2e:                          # [1, max_det, 6 + keypoint values]
+        if det_shape[2] != 6 + nk:
+            raise RuntimeError(f"end2end output has {det_shape[2]} values per row, expected {6 + nk}")
+    elif det_shape:                                # [1, 4 + nc + mask coeffs + keypoint values, anchors]
+        nc = det_shape[1] - 4 - int(meta.get("nm", 0)) - nk
+        if names and nc != len(names):
+            raise RuntimeError(f"class-count mismatch: output implies nc={nc} but {len(names)} names")
+    return {"out": out, "task": task, "output": out_name, "shapes": outs, "classes": len(names), "imgsz": imgsz,
+            "end2end": e2e, "kpt_shape": kpt_shape}
 
 
 if __name__ == "__main__":
@@ -285,12 +317,15 @@ if __name__ == "__main__":
                     help="monkeypatch stock ultralytics' AAttn with sunsmarterjie/yolov12's qk+v variant")
     ap.add_argument("--no-ane-safe-moe", action="store_true",
                     help="keep the stock topk + gather MoE export (router segments run on the CPU under the ANE)")
+    ap.add_argument("--anchors", action="store_true",
+                    help="export an end2end head (YOLO26, YOLOv10) in the classic anchors layout with NMS in the "
+                         "app, so the model runs on the GPU / Neural Engine instead of CPU only")
     a = ap.parse_args()
     try:
         r = export(a.weights, a.imgsz, a.out, target=a.target, merge_lora_dir=a.merge_lora_dir,
-                   yolov12_aattn=a.yolov12_aattn, ane_safe_moe=not a.no_ane_safe_moe)
+                   yolov12_aattn=a.yolov12_aattn, ane_safe_moe=not a.no_ane_safe_moe, anchors=a.anchors)
         print(f"OK  {r['out']}  task={r['task']}  output={r['output']}  classes={r['classes']}  "
-              f"imgsz={r['imgsz']}  shapes={r['shapes']}")
+              f"imgsz={r['imgsz']}  end2end={r['end2end']}  kpt_shape={r['kpt_shape']}  shapes={r['shapes']}")
     except Exception as e:  # noqa: BLE001
         print(f"FAIL {a.weights}: {type(e).__name__}: {e}")
         traceback.print_exc()

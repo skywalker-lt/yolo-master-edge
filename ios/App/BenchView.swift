@@ -83,7 +83,7 @@ final class BenchHistory: ObservableObject {
 /// Thermal-state colour shared by the tach and the history rows.
 func benchUnitIcon(_ c: ComputeChoice) -> String {
     switch c {
-    case .ane: return "bolt.fill"
+    case .auto: return "bolt.fill"
     case .gpu: return "square.stack.3d.up.fill"
     case .cpu: return "cpu"
     }
@@ -126,8 +126,15 @@ struct BenchView: View {
     @State private var runThermalStart = 0
     @State private var runThermalPeak = 0
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.topEdgeGap) private var topGap   // iPhone Duo: keeps the top bar off the screen's edge
     @State private var showSettings = false
     @State private var expandedCards: Set<String> = []
+    // cold run: the models to measure. Kept as the ones the user switched OFF, so every
+    // model is selected by default and one imported later joins the run without a tap.
+    @State private var benchExcluded: Set<String> = []
+    // cold run: the compute units to measure. All three at first, which is what the run
+    // always did; the user can switch units off in `coldConfig` (CPU cells are the slow ones).
+    @State private var benchUnits: Set<ComputeChoice> = Set(ComputeChoice.allCases)
     // sustained target + settings
     @State private var selectedModel: BundledModel?
     @State private var selectedCompute: ComputeChoice = ComputeChoice.deviceDefault
@@ -157,7 +164,7 @@ struct BenchView: View {
                 // vertically centered, matching the Photo tab's "No photos" empty state
                 ContentUnavailableView("No benchmarks yet",
                     systemImage: "speedometer",
-                    description: Text("Run a cold pass across every model and compute unit."))
+                    description: Text("Run a cold pass across the selected models and compute units."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -167,7 +174,10 @@ struct BenchView: View {
                         if mode == .cold, let hero = fastest { heroCard(hero) }
                         ForEach(modelsWithResults, id: \.self) { modelCard($0) }
                     }
-                    .padding(.horizontal, 10)
+                    // a wide screen (iPhone Duo, inner display): the cards keep a readable
+                    // width and sit centred; everywhere else this is the 10 pt margin only
+                    .barColumn(sideInset: 10, width: benchMaxWidth)
+                    .frame(maxWidth: .infinity)
                     .padding(.bottom, 24)
                 }
             }
@@ -177,15 +187,20 @@ struct BenchView: View {
                     .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { exportMsg = nil } }
             }
         }
-        .safeAreaInset(edge: .top) { topBar }
+        .safeAreaInset(edge: .top) { topBar.padding(.top, topGap) }   // 0 except on an iPhone Duo
         .onAppear {
             lightHaptic.prepare(); medHaptic.prepare(); notifyHaptic.prepare()
-            guard models.isEmpty else { return }
+            // every time the tab appears (not only the first), so a model imported or
+            // deleted in Settings enters or leaves the list - but never under a run in
+            // progress, which is iterating over the list it started with
+            guard !running else { return }
             Task.detached {
                 let found = BundledModel.discover()
                 await MainActor.run {
-                    models = found
-                    if selectedModel == nil { selectedModel = BundledModel.preferred(in: found) }
+                    guard !running else { return }
+                    if found != models { models = found }
+                    let keep = BundledModel.reselect(selectedModel, in: found)
+                    if keep != selectedModel { selectedModel = keep }
                 }
             }
         }
@@ -248,18 +263,91 @@ struct BenchView: View {
                         Image(systemName: "play.fill").frame(minWidth: 40)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(models.isEmpty || (mode == .sustained && selectedModel == nil))
+                    .disabled(models.isEmpty || (mode == .sustained && selectedModel == nil)
+                              || (mode == .cold && (benchModels.isEmpty || benchUnits.isEmpty)))
                 }
             }
             // sustained target + duration are ALWAYS visible in sustained mode
             // (not hidden behind the gear); the gear holds advanced iters/warmup
-            if mode == .sustained { sustainedConfig }
+            if mode == .sustained { sustainedConfig } else { coldConfig }
             if showSettings { advancedSettings }
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding(.horizontal, 10)
+        .barColumn(sideInset: 10, width: benchMaxWidth)
         .onChange(of: mode) { _, _ in lightHaptic.impactOccurred(); lightHaptic.prepare() }
+    }
+
+    /// The models the cold run measures: all of them unless switched off in `coldConfig`.
+    private var benchModels: [BundledModel] { models.filter { !benchExcluded.contains($0.id) } }
+
+    /// The units the cold run measures, in the order Auto, GPU, CPU: all three unless
+    /// switched off in `coldConfig`.
+    private var benchUnitList: [ComputeChoice] { ComputeChoice.allCases.filter { benchUnits.contains($0) } }
+
+    /// What the unit menu reads: "All 3 units", the chosen units by name ("Auto + GPU"),
+    /// or "No units" (the play button is disabled then).
+    private var benchUnitsLabel: String {
+        let chosen = benchUnitList
+        if chosen.count == ComputeChoice.allCases.count { return "All \(chosen.count) units" }
+        return chosen.isEmpty ? "No units" : chosen.map(\.rawValue).joined(separator: " + ")
+    }
+
+    /// Cold run: which models to measure and on which compute units. Two menus of switches
+    /// that stay open while items are ticked: one per model with its type icon, all on by
+    /// default, and one per unit, all on by default. Every selected model is measured on
+    /// every selected unit. (Up to 1.1.0 build 2 the units could not be chosen: the run was
+    /// always models x all three, and a line of text said so.) CPU is offered here whatever
+    /// "Allow CPU inference" says, as it always was measured.
+    private var coldConfig: some View {
+        let chosen = benchModels.count
+        return HStack {
+            Menu {
+                Button(chosen == models.count ? "Deselect all" : "Select all") {
+                    benchExcluded = chosen == models.count ? Set(models.map(\.id)) : []
+                }
+                .menuActionDismissBehavior(.disabled)
+                Divider()
+                ForEach(models) { m in
+                    Toggle(isOn: Binding(
+                        get: { !benchExcluded.contains(m.id) },
+                        set: { on in
+                            if on { benchExcluded.remove(m.id) } else { benchExcluded.insert(m.id) }
+                        })) {
+                        Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }
+                    }
+                    .menuActionDismissBehavior(.disabled)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(chosen == models.count ? "All \(models.count) models"
+                         : "\(chosen) of \(models.count) models").lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                }
+            }
+            .fixedSize()
+            Spacer(minLength: 0)
+            Text("on").font(.caption).foregroundStyle(.secondary)
+            Menu {
+                ForEach(ComputeChoice.allCases) { c in
+                    Toggle(c.rawValue, isOn: Binding(
+                        get: { benchUnits.contains(c) },
+                        set: { on in
+                            if on { benchUnits.insert(c) } else { benchUnits.remove(c) }
+                        }))
+                    .menuActionDismissBehavior(.disabled)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(benchUnitsLabel).lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                }
+            }
+            .fixedSize()
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .disabled(running || models.isEmpty)
     }
 
     private var sustainedConfig: some View {
@@ -267,13 +355,13 @@ struct BenchView: View {
             HStack {
                 Menu {
                     Picker("Model", selection: $selectedModel) {
-                        ForEach(models) { m in Text(m.fullName).tag(Optional(m)) }
+                        ForEach(models) { m in
+                            Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }
+                                .tag(Optional(m))
+                        }
                     }
                 } label: {
-                    HStack(spacing: 3) {
-                        Text(selectedModel?.shortID ?? "Model").lineLimit(1)
-                        Image(systemName: "chevron.up.chevron.down").font(.caption2)
-                    }
+                    ModelChip(model: selectedModel)
                 }
                 .fixedSize()
                 Picker("Unit", selection: $selectedCompute) {
@@ -384,7 +472,7 @@ struct BenchView: View {
         case .loadingModel(let m, let u):
             HStack(spacing: 8) {
                 ProgressView()
-                Text("Loading \(m) to \(u)").font(.caption)
+                Text("Loading \(m) @ \(u)").font(.caption)
             }
         case .benchmarking(let m, let u, let d, let t):
             VStack(alignment: .leading, spacing: 4) {
@@ -430,7 +518,9 @@ struct BenchView: View {
     private func modelCard(_ mid: String) -> some View {
         let rows = results.filter { $0.modelId == mid }.sorted { $0.coldMedian < $1.coldMedian }
         let title = rows.first?.fullName ?? mid
-        let fastestUnit = rows.first?.compute
+        // "fastest <unit>" compares units, so it needs two rows: with one unit selected (or
+        // only one measured so far) the tag named the only unit there was
+        let fastestUnit = rows.count > 1 ? rows.first?.compute : nil
         let expanded = expandedCards.contains(mid)
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -502,7 +592,7 @@ struct BenchView: View {
     }
     private func unitIcon(_ c: ComputeChoice) -> String {
         switch c {
-        case .ane: return "bolt.fill"
+        case .auto: return "bolt.fill"
         case .gpu: return "square.stack.3d.up.fill"
         case .cpu: return "cpu"
         }
@@ -613,18 +703,18 @@ struct BenchView: View {
 
     private func runCold() {
         let warmN = warmup, iterN = iters
+        let chosen = benchModels          // the selection as it stands when the run starts
+        let units = benchUnitList         // ditto for the units, in the order Auto, GPU, CPU
         loopTask = Task.detached(priority: .userInitiated) {
             let img = testImage()
-            let units = ComputeChoice.allCases
-            let total = models.count * units.count
+            let total = chosen.count * units.count
             var done = 0
-            for m in models {
+            for m in chosen {
                 for c in units {
                     if control.cancelled { return }
                     if !(await pauseGate()) { return }
                     await MainActor.run { phase = .loadingModel(m.fullName, c.rawValue) }
-                    guard let url = try? m.compiledURL(),
-                          let det = try? Detector(modelURL: url, compute: c.mode) else {
+                    guard let det = try? m.makeDetector(compute: c.mode) else {
                         done += 1; continue
                     }
                     await MainActor.run { phase = .benchmarking(m.fullName, c.rawValue, done, total) }
@@ -661,8 +751,7 @@ struct BenchView: View {
         loopTask = Task.detached(priority: .userInitiated) {
             let img = testImage()
             await MainActor.run { phase = .loadingModel(m.fullName, c.rawValue) }
-            guard let url = try? m.compiledURL(),
-                          let det = try? Detector(modelURL: url, compute: c.mode) else {
+            guard let det = try? m.makeDetector(compute: c.mode) else {
                 await MainActor.run { running = false; phase = .idle }; return
             }
             // cold baseline

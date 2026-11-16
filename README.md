@@ -200,7 +200,7 @@ Drop your Core ML models into directory `ios/Models/`, set your signing team ID 
 
 The app has no internet connection. No data leaves the device, and we don't collect anything. See PRIVACY.md for detailed terms. 
 
-The app is licensed under AGPL-3.0, consistent with YOLO-Master and Ultralytics; coremltools is BSD-3-Clause. It is released for research and personal experience only, and any direct commercial use of this app is prohibited. 
+The source code of the app is licensed under AGPL-3.0, consistent with YOLO-Master and Ultralytics; coremltools is BSD-3-Clause. The models bundled with the App Store build remain under the terms of their own projects; among them is the RTMW whole-body pose model from [MMPose](https://github.com/open-mmlab/mmpose) (Apache-2.0). The app is non-commercial: it is released for research and personal experience only, and any direct commercial use of this app is prohibited. 
 
 ---
 

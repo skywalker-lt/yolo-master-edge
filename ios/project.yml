@@ -1,4 +1,8 @@
-# XcodeGen spec for the YOLO-Master iOS app.
+# XcodeGen spec for the iOS app, YOLO-Master Edge.
+# The app's NAME is YOLO-Master Edge (CFBundleDisplayName / CFBundleName below, and the
+# texts in App/). The project, target and bundle identifier keep "YOLOMasterIOS": they
+# are not shown to users, and a new bundle identifier would be a new app to App Store
+# Connect and TestFlight.
 #   brew install xcodegen && cd ios && xcodegen   ->  YOLOMasterIOS.xcodeproj
 # The inference backend is the SAME YOLOMasterKit the macOS CLI/GUI use, pulled
 # as a local Swift package from ../mac.
@@ -62,8 +66,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: YOLO-Master
-        CFBundleName: YOLO-Master
+        CFBundleDisplayName: YOLO-Master Edge   # the name under the icon and in system prompts
+        CFBundleName: YOLO-Master Edge
         CFBundleShortVersionString: "1.1.0"   # marketing version (the About card reads it from the bundle)
         CFBundleVersion: "2"                    # build number - MUST increment every upload (1 = the TestFlight build of 2026-08-26)
         ITSAppUsesNonExemptEncryption: false    # only HTTPS/system crypto -> skips the export-compliance prompt
@@ -73,11 +77,42 @@ targets:
         # system picker, which needs no library permission. Only saving needs one
         # (add-only). Do not call PHPhotoLibrary with .readWrite without restoring
         # that key - iOS kills the app on a permission request with no usage string.
+        # That includes performChanges with NO creation request in it (an empty
+        # block): PhotoKit treats it as read-write. It crashed every launch once.
         NSPhotoLibraryAddUsageDescription: "Saves captured detection frames to your photo library."
+        # iPhone: upright only. iPad: all four, which is what makes the app a resizable,
+        # full-screen-capable iPad app (an iPad app that leaves an orientation out, or an
+        # iPhone-only app, runs in the system's compatibility window). The camera follows
+        # the interface there (CameraController.followsInterface).
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # Core ML packages are DIRECTORIES. iOS presents a directory as one selectable
+        # document only when a package type is declared for its extension; without these
+        # the custom-model importer in Settings could not select a .mlpackage or .mlmodelc
+        # (Files showed them as folders). Imported, not exported: the types are Apple's.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.apple.coreml.mlpackage
+            UTTypeDescription: Core ML Model Package
+            UTTypeConformsTo: [com.apple.package, public.composite-content]
+            UTTypeTagSpecification:
+              public.filename-extension: [mlpackage]
+          - UTTypeIdentifier: com.apple.coreml.mlmodelc
+            UTTypeDescription: Compiled Core ML Model
+            UTTypeConformsTo: [com.apple.package, public.composite-content]
+            UTTypeTagSpecification:
+              public.filename-extension: [mlmodelc]
+          - UTTypeIdentifier: com.apple.coreml.model
+            UTTypeDescription: Core ML Model
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [mlmodel]
     settings:
       base:
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"           # iPhone and iPad (universal)
         SWIFT_VERSION: "5.9"
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
