@@ -2,7 +2,7 @@
 
 Effective date: 2026-08-26
 
-YOLO-Master ("the app") is an on-device object detection app. This policy
+YOLO-Master Edge ("the app") is an on-device object detection app. This policy
 explains what the app accesses and what happens to that information.
 
 ## Summary

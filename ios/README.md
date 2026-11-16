@@ -1,10 +1,18 @@
-# YOLO-Master iOS
+# YOLO-Master Edge for iOS
 
 Live camera detection + on-device benchmark. The inference backend is
 `YOLOMasterKit` (../mac/Sources/YOLOMasterKit) **verbatim** - the exact
 letterbox -> Core ML -> decode -> NMS path the macOS CLI and GUI run; this
 directory adds only the iOS shell (AVFoundation camera, SwiftUI views, bench
 harness).
+
+The app is named **YOLO-Master Edge**: under its icon, in the system's
+prompts, in Settings and in its licence notice (it was "YOLO-Master" up to
+1.1.0 build 2). "YOLO-Master" alone means the upstream project and its models.
+The Xcode project, the target and the bundle identifier keep `YOLOMasterIOS`:
+users do not see them, and a new bundle identifier would be a new app to App
+Store Connect and TestFlight. The name on the store page is set in App Store
+Connect.
 
 ## Build (on the Mac)
 

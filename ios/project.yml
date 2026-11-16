@@ -1,4 +1,8 @@
-# XcodeGen spec for the YOLO-Master iOS app.
+# XcodeGen spec for the iOS app, YOLO-Master Edge.
+# The app's NAME is YOLO-Master Edge (CFBundleDisplayName / CFBundleName below, and the
+# texts in App/). The project, target and bundle identifier keep "YOLOMasterIOS": they
+# are not shown to users, and a new bundle identifier would be a new app to App Store
+# Connect and TestFlight.
 #   brew install xcodegen && cd ios && xcodegen   ->  YOLOMasterIOS.xcodeproj
 # The inference backend is the SAME YOLOMasterKit the macOS CLI/GUI use, pulled
 # as a local Swift package from ../mac.
@@ -62,8 +66,8 @@ targets:
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: YOLO-Master
-        CFBundleName: YOLO-Master
+        CFBundleDisplayName: YOLO-Master Edge   # the name under the icon and in system prompts
+        CFBundleName: YOLO-Master Edge
         CFBundleShortVersionString: "1.1.0"   # marketing version (the About card reads it from the bundle)
         CFBundleVersion: "2"                    # build number - MUST increment every upload (1 = the TestFlight build of 2026-08-26)
         ITSAppUsesNonExemptEncryption: false    # only HTTPS/system crypto -> skips the export-compliance prompt

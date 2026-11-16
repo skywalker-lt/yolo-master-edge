@@ -75,50 +75,53 @@ func ackLogo(_ name: String, _ ext: String) -> UIImage? {
     return url.flatMap { UIImage(contentsOfFile: $0.path) }
 }
 
+/// The notice in the box at the end of Licenses & Acknowledgements.
+///
+/// Every paragraph is ONE line of text and the view wraps it to the width it has. It used
+/// to be broken by hand at 64 columns. The box holds about 44 characters of this font on
+/// an iPhone, so every line broke a second time in its middle, and the two rules of 64
+/// "=" ran onto a second line (reported with 1016.png, 2026-11-16). A backslash at the
+/// end of a source line joins it to the next one, which keeps the source readable
+/// without putting a line break into the text. Do not break paragraphs by hand again.
+/// The words are those of the hand-broken notice; only its line breaks, the indentation
+/// of the list and the two rules went. The app is named YOLO-Master Edge in it since
+/// 2026-11-16 (it was "YOLO-Master iOS App"); "YOLO-Master" alone is the upstream project
+/// and its models, and stays where it means those.
 let iosLicenseNotice = """
-================================================================
-YOLO-Master iOS App
+YOLO-Master Edge iOS App
 Copyright (C) 2026 (Thomas) RUIHENG LI
-(Author affiliated with The Hong Kong University of Science and
-Technology)
+(Author affiliated with The Hong Kong University of Science and Technology)
 
-YOLO-Master iOS App runs YOLO-Master models on-device using
-Apple's Core ML. It shares the YOLOMasterKit inference path with
-the macOS tools.
+YOLO-Master Edge iOS App runs YOLO-Master models on-device using Apple's Core ML. \
+It shares the YOLOMasterKit inference path with the macOS tools.
 
-The source code of this app is licensed under the GNU Affero
-General Public License, version 3 (AGPL-3.0). See
-<https://www.gnu.org/licenses/> for the full terms.
+The source code of this app is licensed under the GNU Affero General Public License, \
+version 3 (AGPL-3.0). See <https://www.gnu.org/licenses/> for the full terms.
 
 It builds upon the following third-party projects:
 
-  * YOLO-Master - Copyright (C) 2026 Tencent. Licensed under the
-    AGPL-3.0. Based on ultralytics.
+* YOLO-Master - Copyright (C) 2026 Tencent. Licensed under the AGPL-3.0. \
+Based on ultralytics.
 
-  * ultralytics - Copyright (c) 2025 Ultralytics. Licensed under
-    the AGPL-3.0.
+* ultralytics - Copyright (c) 2025 Ultralytics. Licensed under the AGPL-3.0.
 
-  * MMPose - Copyright 2018-2020 Open-MMLab. Licensed under the
-    Apache License 2.0. Source of the RTMW whole-body pose
-    model. <https://github.com/open-mmlab/mmpose>
+* MMPose - Copyright 2018-2020 Open-MMLab. Licensed under the Apache License 2.0. \
+Source of the RTMW whole-body pose model. <https://github.com/open-mmlab/mmpose>
 
-  * coremltools - Copyright (c) 2020-2023, Apple Inc. Licensed
-    under the BSD-3-Clause License.
+* coremltools - Copyright (c) 2020-2023, Apple Inc. Licensed under the \
+BSD-3-Clause License.
 
-The models bundled with this app come from YOLO-Master,
-ultralytics and MMPose, and remain under the terms of those
-projects.
+The models bundled with this app come from YOLO-Master, ultralytics and MMPose, \
+and remain under the terms of those projects.
 
-USE NOTICE: This app, as distributed with the models it bundles,
-is non-commercial. The authors release it for research and
-personal experience only, and neither intend nor support
-commercial use. This notice does not change the AGPL-3.0 terms of
-the source code.
+USE NOTICE: This app, as distributed with the models it bundles, is non-commercial. \
+The authors release it for research and personal experience only, and neither intend \
+nor support commercial use. This notice does not change the AGPL-3.0 terms of the \
+source code.
 
-NO WARRANTY: This program is distributed in the hope that it will
-be useful, but WITHOUT ANY WARRANTY; without even the implied
-warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-================================================================
+NO WARRANTY: This program is distributed in the hope that it will be useful, but \
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or \
+FITNESS FOR A PARTICULAR PURPOSE.
 """
 
 // MARK: - Settings
@@ -279,7 +282,7 @@ struct SettingsView: View {
         HStack(spacing: 14) {
             appMark
             VStack(alignment: .leading, spacing: 3) {
-                Text("YOLO-Master").font(.title3.bold())
+                Text("YOLO-Master Edge").font(.title3.bold())   // the APP's name; "YOLO-Master" alone is the upstream project
                 Text(versionText).font(.caption).foregroundStyle(.secondary)
                 Text("On-device MoE multi-task detection with Core ML.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -421,7 +424,7 @@ struct SettingsView: View {
         Section {
             DisclosureGroup(isExpanded: $privacyOpen) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("YOLO-Master runs entirely on your device.")
+                    Text("YOLO-Master Edge runs entirely on your device.")
                         .font(.footnote.weight(.semibold))
 
                     VStack(alignment: .leading, spacing: 8) {
