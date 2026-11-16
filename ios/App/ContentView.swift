@@ -267,7 +267,7 @@ struct SettingsView: View {
         }
     }
 
-    /// "Version 1.1.0 (2)" read from the bundle, so the About card always shows
+    /// "Version 1.2.0 (1)" read from the bundle, so the About card always shows
     /// what was actually built (project.yml is the single source of truth).
     private var versionText: String {
         let info = Bundle.main.infoDictionary

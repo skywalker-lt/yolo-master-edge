@@ -68,8 +68,12 @@ targets:
       properties:
         CFBundleDisplayName: YOLO-Master Edge   # the name under the icon and in system prompts
         CFBundleName: YOLO-Master Edge
-        CFBundleShortVersionString: "1.1.0"   # marketing version (the About card reads it from the bundle)
-        CFBundleVersion: "2"                    # build number - MUST increment every upload (1 = the TestFlight build of 2026-08-26)
+        CFBundleShortVersionString: "1.2.0"   # marketing version (the About card reads it from the bundle). 1.1.0 was the TestFlight beta of 2026-08-26 and the device builds up to 2026-11-16
+        CFBundleVersion: "1"                    # build number - MUST increment every upload of the same version; a new version starts at 1 again (1.1.0: 1 = the TestFlight build, 2 = the device builds, the "1.1.0 build 2" of the notes)
+        # Xcode's General tab shows these three as Version, Build and App Category. Set them
+        # HERE: the project and Info.plist are generated, so a value typed into Xcode is gone
+        # at the next `xcodegen`. The category on the store page is chosen in App Store Connect.
+        LSApplicationCategoryType: public.app-category.developer-tools
         ITSAppUsesNonExemptEncryption: false    # only HTTPS/system crypto -> skips the export-compliance prompt
         UILaunchScreen: {}
         NSCameraUsageDescription: "Live object detection uses the camera."
