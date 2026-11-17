@@ -3,21 +3,23 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct ContentView: View {
+    @ObservedObject private var localizer = Localizer.shared   // the tab titles follow the language
+
     var body: some View {
         // `screenEdgeAware`: the three tabs with a bar floating at the top are told how far
         // to keep it from the screen's edge on an iPhone Duo (0 on every other iPhone).
         TabView {
             LiveView()
                 .screenEdgeAware()
-                .tabItem { Label("Live", systemImage: "camera.viewfinder") }
+                .tabItem { Label(tr("Live"), systemImage: "camera.viewfinder") }
             PhotoTestView()
                 .screenEdgeAware()
-                .tabItem { Label("Photo", systemImage: "photo") }
+                .tabItem { Label(tr("Photo"), systemImage: "photo") }
             BenchView()
                 .screenEdgeAware()
-                .tabItem { Label("Bench", systemImage: "speedometer") }
+                .tabItem { Label(tr("Bench"), systemImage: "speedometer") }
             SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tabItem { Label(tr("Settings"), systemImage: "gearshape") }
         }
     }
 }
@@ -28,6 +30,8 @@ struct ContentView: View {
 /// Credits are TEXT only - no logos, icons or glyph tiles, for third parties
 /// or for this project (trademark artwork does not belong in an App Store
 /// build, and a row of stand-in icons only added clutter).
+/// `blurb` is shown through `tr` (`ackRow`), and so is a name with something to translate
+/// in it; project names, copyright lines and licence names stay as they are in every language.
 struct Ack: Identifiable {
     var id: String { repo }
     let name: String
@@ -43,26 +47,26 @@ struct Ack: Identifiable {
 /// states who holds the rights.
 let baseProjects: [Ack] = [
     Ack(name: "YOLO-Master",
-        blurb: "The MoE YOLO detector family this app accelerates.",
+        blurb: trKey("The MoE YOLO detector family this app accelerates."),
         copyright: "Copyright 2026 Tencent", license: "AGPL-3.0",
         repo: "https://github.com/Tencent/YOLO-Master"),
-    Ack(name: "YOLO-Master Edge (this app)",
-        blurb: "The source code of this app and the Core ML export toolchain.",
+    Ack(name: trKey("YOLO-Master Edge (this app)"),
+        blurb: trKey("The source code of this app and the Core ML export toolchain."),
         copyright: "Copyright 2026 Thomas (Ruiheng Li), HKUST", license: "AGPL-3.0",
         repo: "https://github.com/skywalker-lt/yolo-master-edge"),
 ]
 
 let acknowledgements: [Ack] = [
     Ack(name: "Ultralytics",
-        blurb: "The YOLO training and inference framework YOLO-Master builds on.",
+        blurb: trKey("The YOLO training and inference framework YOLO-Master builds on."),
         copyright: "Copyright 2025 Ultralytics", license: "AGPL-3.0",
         repo: "https://github.com/ultralytics/ultralytics"),
     Ack(name: "MMPose",
-        blurb: "The RTMW whole-body pose model bundled with this app.",
+        blurb: trKey("The RTMW whole-body pose model bundled with this app."),
         copyright: "Copyright 2018 to 2020 Open-MMLab", license: "Apache-2.0",
         repo: "https://github.com/open-mmlab/mmpose"),
     Ack(name: "Core ML",
-        blurb: "Model conversion and the on-device inference runtime.",
+        blurb: trKey("Model conversion and the on-device inference runtime."),
         copyright: "Copyright 2020 to 2023 Apple Inc.", license: "BSD-3-Clause",
         repo: "https://github.com/apple/coremltools"),
 ]
@@ -87,6 +91,8 @@ func ackLogo(_ name: String, _ ext: String) -> UIImage? {
 /// of the list and the two rules went. The app is named YOLO-Master Edge in it since
 /// 2026-11-16 (it was "YOLO-Master iOS App"); "YOLO-Master" alone is the upstream project
 /// and its models, and stays where it means those.
+/// The notice is shown in ENGLISH in every language of the app: it is the notice itself,
+/// not a description of it. The three paragraphs above it in Settings are translated.
 let iosLicenseNotice = """
 YOLO-Master Edge iOS App
 Copyright (C) 2026 (Thomas) RUIHENG LI
@@ -140,6 +146,7 @@ struct SettingsView: View {
 
     @AppStorage("allowCPU") private var allowCPU = false
     @ObservedObject private var history = BenchHistory.shared
+    @ObservedObject private var localizer = Localizer.shared   // the language, and its picker
     @State private var customModels: [BundledModel] = []
     @State private var importing = false
     @State private var confirmErase = false
@@ -181,6 +188,7 @@ struct SettingsView: View {
                 aboutSection
                 licensesSection
                 privacySection
+                languageSection
                 computeSection
                 modelGallerySection
                 customModelsSection
@@ -190,22 +198,22 @@ struct SettingsView: View {
             // a little more room under the last row (Report an issue and its footer), which
             // otherwise ends close above the tab bar when the list is scrolled to its end
             .contentMargins(.bottom, 28, for: .scrollContent)
-            .navigationTitle("Settings")
+            .navigationTitle(tr("Settings"))
             // one importer, two modes: model documents, or (the fallback for a package that
             // Files still shows as a plain folder) a folder. Mixing `.folder` with document
             // types in one picker is unreliable on iOS, hence the separate mode.
             .fileImporter(isPresented: $importing,
                           allowedContentTypes: importingFolder ? [.folder] : modelTypes,
                           allowsMultipleSelection: !importingFolder) { importModels($0) }
-            .alert("Erase all history?", isPresented: $confirmErase) {
-                Button("Erase", role: .destructive) { history.clear() }
-                Button("Cancel", role: .cancel) {}
+            .alert(tr("Erase all history?"), isPresented: $confirmErase) {
+                Button(tr("Erase"), role: .destructive) { history.clear() }
+                Button(tr("Cancel"), role: .cancel) {}
             } message: {
-                Text("This permanently deletes all \(history.runs.count) saved benchmark runs.")
+                Text(tr("This permanently deletes all {0} saved benchmark runs.", history.runs.count))
             }
-            .alert("Import failed", isPresented: Binding(
+            .alert(tr("Import failed"), isPresented: Binding(
                 get: { importError != nil }, set: { if !$0 { importError = nil } })) {
-                Button("OK") { importError = nil }
+                Button(tr("OK")) { importError = nil }
             } message: {
                 Text(importError ?? "")
             }
@@ -222,10 +230,10 @@ struct SettingsView: View {
         Section {
             DisclosureGroup(isExpanded: $aboutOpen) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("YOLO-Master extends the real-time YOLO detector with Mixture-of-Experts (MoE) routing. Instead of one dense network, lightweight expert branches specialize on different feature patterns, and a learned router activates only the most relevant experts for each image.")
+                    Text(tr("YOLO-Master extends the real-time YOLO detector with Mixture-of-Experts (MoE) routing. Instead of one dense network, lightweight expert branches specialize on different feature patterns, and a learned router activates only the most relevant experts for each image."))
                         .font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("That adds capacity where it matters, with clear gains on small and crowded objects, while keeping inference light enough to run in real time. On \(deviceName) the model is compiled to Core ML and runs on the Neural Engine, GPU, or CPU.")
+                    Text(tr("That adds capacity where it matters, with clear gains on small and crowded objects, while keeping inference light enough to run in real time. On {0} the model is compiled to Core ML and runs on the Neural Engine, GPU, or CPU.", deviceName))
                         .font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Divider()
@@ -245,9 +253,9 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var links: some View {
-        linkChip("Paper", "doc.richtext", Self.paperURL)
-        linkChip("Model Repo", "shippingbox", Self.modelRepoURL)
-        linkChip("App Repo", "chevron.left.forwardslash.chevron.right", Self.appRepoURL)
+        linkChip(tr("Paper"), "doc.richtext", Self.paperURL)
+        linkChip(tr("Model Repo"), "shippingbox", Self.modelRepoURL)
+        linkChip(tr("App Repo"), "chevron.left.forwardslash.chevron.right", Self.appRepoURL)
     }
 
     private func linkChip(_ title: String, _ icon: String, _ urlString: String) -> some View {
@@ -267,15 +275,15 @@ struct SettingsView: View {
         }
     }
 
-    /// "Version 1.2.0 (1)" read from the bundle, so the About card always shows
+    /// "Version 1.2.1 (1)" read from the bundle, so the About card always shows
     /// what was actually built (project.yml is the single source of truth).
     private var versionText: String {
         let info = Bundle.main.infoDictionary
         let short = info?["CFBundleShortVersionString"] as? String ?? "-"
         guard let build = info?["CFBundleVersion"] as? String, !build.isEmpty else {
-            return "Version \(short)"
+            return tr("Version {0}", short)
         }
-        return "Version \(short) (\(build))"
+        return tr("Version {0} ({1})", short, build)
     }
 
     private var header: some View {
@@ -284,7 +292,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("YOLO-Master Edge").font(.title3.bold())   // the APP's name; "YOLO-Master" alone is the upstream project
                 Text(versionText).font(.caption).foregroundStyle(.secondary)
-                Text("On-device MoE multi-task detection with Core ML.")
+                Text(tr("On-device MoE multi-task detection with Core ML."))
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -319,24 +327,24 @@ struct SettingsView: View {
                         // Only the SOURCE CODE is AGPL-3.0. The bundled models are not
                         // relicensed here: each stays under its own project's terms
                         // (the RTMW whole-body model comes from MMPose, Apache-2.0).
-                        Text("The source code of this app is licensed under AGPL-3.0. The models it bundles come from the projects below and remain under their terms: YOLO-Master and Ultralytics under AGPL-3.0, MMPose under Apache-2.0. coremltools is licensed under BSD-3-Clause.")
+                        Text(tr("The source code of this app is licensed under AGPL-3.0. The models it bundles come from the projects below and remain under their terms: YOLO-Master and Ultralytics under AGPL-3.0, MMPose under Apache-2.0. coremltools is licensed under BSD-3-Clause."))
                             .font(.footnote).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("This app is non-commercial. The authors release it for research and personal experience only, and neither intend nor support any commercial use.")
+                        Text(tr("This app is non-commercial. The authors release it for research and personal experience only, and neither intend nor support any commercial use."))
                             .font(.footnote.bold())
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("This notice is about the app as distributed, with the models it bundles. It does not change the AGPL-3.0 terms of the source code.")
+                        Text(tr("This notice is about the app as distributed, with the models it bundles. It does not change the AGPL-3.0 terms of the source code."))
                             .font(.caption2).foregroundStyle(.tertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Divider()
-                    ackGroup("Built on", baseProjects)
+                    ackGroup(tr("Built on"), baseProjects)
 
                     Divider()
-                    ackGroup("Acknowledgements", acknowledgements)
+                    ackGroup(tr("Acknowledgements"), acknowledgements)
 
                     // tertiary GROUPED background: one step off the form cell in
                     // both appearances (the plain secondary background is the
@@ -352,7 +360,7 @@ struct SettingsView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 8)
             } label: {
-                Label("Licenses & Acknowledgements", systemImage: "doc.text")
+                Label(tr("Licenses & Acknowledgements"), systemImage: "doc.text")
             }
         }
     }
@@ -387,9 +395,9 @@ struct SettingsView: View {
     private func ackRow(_ a: Ack) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(a.name).font(.callout.weight(.semibold))
+                Text(tr(a.name)).font(.callout.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
-                Text(a.blurb).font(.footnote).foregroundStyle(.secondary)
+                Text(tr(a.blurb)).font(.footnote).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -424,26 +432,26 @@ struct SettingsView: View {
         Section {
             DisclosureGroup(isExpanded: $privacyOpen) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("YOLO-Master Edge runs entirely on your device.")
+                    Text(tr("YOLO-Master Edge runs entirely on your device."))
                         .font(.footnote.weight(.semibold))
 
                     VStack(alignment: .leading, spacing: 8) {
-                        accessRow("camera", "Camera",
-                                  "Live on-device detection. Frames are processed in memory and never stored or transmitted.")
-                        accessRow("photo.on.rectangle", "Photo Library",
-                                  "Reads only the images you pick for the Photo tab, and saves detection frames you explicitly export.")
+                        accessRow("camera", tr("Camera"),
+                                  tr("Live on-device detection. Frames are processed in memory and never stored or transmitted."))
+                        accessRow("photo.on.rectangle", tr("Photo Library"),
+                                  tr("Reads only the images you pick for the Photo tab, and saves detection frames you explicitly export."))
                     }
                 }
                 .padding(.top, 6)
             } label: {
-                Label("Privacy & Security", systemImage: "lock.shield")
+                Label(tr("Privacy & Security"), systemImage: "lock.shield")
             }
             // always visible (not inside the disclosure): App Review wants the
             // policy reachable from within the app, not only on the store page
             if let url = URL(string: Self.privacyURL) {
                 Link(destination: url) {
                     HStack {
-                        Label("Privacy Policy", systemImage: "hand.raised")
+                        Label(tr("Privacy Policy"), systemImage: "hand.raised")
                         Spacer(minLength: 0)
                         // no colour of its own: it takes the row's, like the title beside it
                         // (it was tertiary, and looked dimmer than the text)
@@ -466,15 +474,35 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: Language
+
+    /// The language of the app's own text (`Localizer`): System, which follows the device,
+    /// or one of the three the app has. Each language is listed by its own name, so it can
+    /// be found from any other. The change shows at once, in every tab.
+    private var languageSection: some View {
+        Section {
+            Picker(selection: Binding(get: { localizer.choice },
+                                      set: { localizer.select($0) })) {
+                ForEach(AppLanguage.allCases) { language in
+                    Text(language.displayName).tag(language)
+                }
+            } label: {
+                Label(tr("Language"), systemImage: "globe")
+            }
+        } footer: {
+            Text(tr("System uses the language of this {0}. Screens that the system provides, such as the photo picker, stay in the language of the {0}.", deviceName))
+        }
+    }
+
     // MARK: Compute / Custom models / Erase
 
     private var computeSection: some View {
         Section {
-            Toggle("Allow CPU inference", isOn: $allowCPU)
+            Toggle(tr("Allow CPU inference"), isOn: $allowCPU)
         } header: {
-            Text("Compute")
+            Text(tr("Compute"))
         } footer: {
-            Text("Inference on CPU is slow and heats up the device rapidly. Some models may not run reliably on CPU.")
+            Text(tr("Inference on CPU is slow and heats up the device rapidly. Some models may not run reliably on CPU."))
         }
     }
 
@@ -498,10 +526,10 @@ struct SettingsView: View {
                     }
                 }
             } label: {
-                Label("Model gallery", systemImage: "square.grid.2x2")
+                Label(tr("Model gallery"), systemImage: "square.grid.2x2")
             }
         } header: {
-            Text("Models")
+            Text(tr("Models"))
         }
     }
 
@@ -567,66 +595,70 @@ struct SettingsView: View {
     private func attributeRows(_ m: BundledModel) -> [(name: String, value: String)] {
         let f = m.facts
         var rows: [(name: String, value: String)] = []
-        rows.append(("Type", f.kindIsGuess
-                     ? f.kind.label + " (going by the file name: the model has not been compiled yet)"
+        // The names and the app's own wording are translated. What the MODEL says about
+        // itself - class names, port names, its description, author, licence - is shown as
+        // the model has it.
+        rows.append((tr("Type"), f.kindIsGuess
+                     ? tr("{0} (going by the file name: the model has not been compiled yet)", f.kind.label)
                      : f.kind.label))
         if f.keypoints == 133 {
-            rows.append(("Keypoints", "133 per person: 17 body, 6 feet, 68 face, 42 hands"))
+            rows.append((tr("Keypoints"), tr("133 per person: 17 body, 6 feet, 68 face, 42 hands")))
         } else if f.keypoints > 0 {
-            rows.append(("Keypoints", "\(f.keypoints) per person"))
+            rows.append((tr("Keypoints"), tr("{0} per person", f.keypoints)))
         }
         if f.topDown {
-            rows.append(("Pipeline", "Top-down: a detection model finds the people, this model runs once per person"))
+            rows.append((tr("Pipeline"), tr("Top-down: a detection model finds the people, this model runs once per person")))
         } else if !f.kindIsGuess {
-            rows.append(("Pipeline", f.end2end ? "One pass, NMS-free output" : "One pass, NMS in the app"))
+            rows.append((tr("Pipeline"), f.end2end ? tr("One pass, NMS-free output") : tr("One pass, NMS in the app")))
         }
         if f.classNames.count == 1 {
-            rows.append(("Classes", f.classNames[0]))
+            rows.append((tr("Classes"), f.classNames[0]))
         } else if f.classNames.count > 1 {
             let shown = f.classNames.prefix(6).joined(separator: ", ")
             let more = f.classNames.count - 6
-            let tail = more > 0 ? " and \(more) more" : ""
-            rows.append(("Classes", "\(f.classNames.count): " + shown + tail))
+            rows.append((tr("Classes"), more > 0
+                         ? tr("{0}: {1} and {2} more", f.classNames.count, shown, more)
+                         : "\(f.classNames.count): " + shown))
         }
-        for p in f.inputs { rows.append(("Input", portText(p))) }
-        for p in f.outputs { rows.append(("Output", portText(p))) }
+        for p in f.inputs { rows.append((tr("Input"), portText(p))) }
+        for p in f.outputs { rows.append((tr("Output"), portText(p))) }
         if let name = precisionName(f) {
             var text = name
             switch name {
-            case "FP16": text = "FP16: 16-bit float weights and activations"
-            case "W8A16": text = "W8A16: 8-bit weights, 16-bit float activations"
-            case "W8A8": text = "W8A8: 8-bit weights and activations"
+            case "FP16": text = tr("FP16: 16-bit float weights and activations")
+            case "W8A16": text = tr("W8A16: 8-bit weights, 16-bit float activations")
+            case "W8A8": text = tr("W8A8: 8-bit weights and activations")
             default: break
             }
-            if let stored = f.storagePrecision, stored != name { text += ". Stored as " + stored }
-            rows.append(("Precision", text))
+            if let stored = f.storagePrecision, stored != name { text = tr("{0}. Stored as {1}", text, stored) }
+            rows.append((tr("Precision"), text))
         }
         if let format = f.format {
             var text = format
-            if let spec = f.specVersion { text += ", specification \(spec)" }
-            if let os = f.minimumIOS { text += ", iOS " + os + " or later" }
-            rows.append(("Format", text))
+            if let spec = f.specVersion { text = tr("{0}, specification {1}", text, spec) }
+            if let os = f.minimumIOS { text = tr("{0}, iOS {1} or later", text, os) }
+            rows.append((tr("Format"), text))
         }
-        if let n = f.operations, n > 0 { rows.append(("Operations", "\(n)")) }
+        if let n = f.operations, n > 0 { rows.append((tr("Operations"), "\(n)")) }
         if let size = gallerySizes[m.id], size > 0 {
-            rows.append(("Size", ByteCountFormatter.string(fromByteCount: size, countStyle: .file)))
+            rows.append((tr("Size"), ByteCountFormatter.string(fromByteCount: size, countStyle: .file)))
         }
-        rows.append(("Origin", m.isImported ? "Imported in Settings" : "Bundled with the app"))
+        rows.append((tr("Origin"), m.isImported ? tr("Imported in Settings") : tr("Bundled with the app")))
         if let cut = f.metadata["kpt_score"], !cut.isEmpty {
-            rows.append(("Kpt score", "drawn from " + cut))
+            rows.append((tr("Kpt score"), tr("drawn from {0}", cut)))
         }
-        if let source = f.metadata["source"], !source.isEmpty { rows.append(("Source", source)) }
-        if let about = f.summary { rows.append(("About", about)) }
-        if let author = f.author { rows.append(("Author", author)) }
-        if let license = f.license { rows.append(("License", license)) }
-        if let version = f.version { rows.append(("Version", version)) }
-        rows.append(("File", m.id))
+        if let source = f.metadata["source"], !source.isEmpty { rows.append((tr("Source"), source)) }
+        if let about = f.summary { rows.append((tr("About"), about)) }
+        if let author = f.author { rows.append((tr("Author"), author)) }
+        if let license = f.license { rows.append((tr("License"), license)) }
+        if let version = f.version { rows.append((tr("Version"), version)) }
+        rows.append((tr("File"), m.id))
         return rows
     }
 
     /// "image  1 x 3 x 640 x 640  Float16"
     private func portText(_ p: ModelPort) -> String {
-        var parts = [p.name, p.shape.isEmpty ? "shape not declared" : p.shape]
+        var parts = [p.name, p.shape.isEmpty ? tr("shape not declared") : p.shape]
         if !p.dataType.isEmpty { parts.append(p.dataType) }
         return parts.joined(separator: "   ")
     }
@@ -637,20 +669,20 @@ struct SettingsView: View {
                 importingFolder = false
                 importing = true
             } label: {
-                Label("Load custom Core ML model", systemImage: "plus.circle")
+                Label(tr("Load custom Core ML model"), systemImage: "plus.circle")
             }
             .disabled(checkingImport)
             Button {
                 importingFolder = true
                 importing = true
             } label: {
-                Label("Load models from a folder", systemImage: "folder.badge.plus")
+                Label(tr("Load models from a folder"), systemImage: "folder.badge.plus")
             }
             .disabled(checkingImport)
             if checkingImport {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("Checking the model...")
+                    Text(tr("Checking the model..."))
                 }
                 .font(.callout).foregroundStyle(.secondary)
             }
@@ -670,9 +702,9 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("Custom models")
+            Text(tr("Custom models"))
         } footer: {
-            Text("Import a .mlpackage, .mlmodelc, or .mlmodel. Use Load models from a folder if Files displays a model package as a folder.")
+            Text(tr("Import a .mlpackage, .mlmodelc, or .mlmodel. Use Load models from a folder if Files displays a model package as a folder."))
         }
     }
 
@@ -683,13 +715,14 @@ struct SettingsView: View {
             } label: {
                 // red, stated here and not left to the destructive role. With nothing to erase
                 // the button is disabled, and shows it by fading.
-                Label("Erase all benchmark history", systemImage: "trash")
+                Label(tr("Erase all benchmark history"), systemImage: "trash")
                     .foregroundStyle(.red)
                     .opacity(history.runs.isEmpty ? 0.4 : 1)
             }
             .disabled(history.runs.isEmpty)
         } footer: {
-            Text("\(history.runs.count) saved run\(history.runs.count == 1 ? "" : "s").")
+            Text(history.runs.count == 1 ? tr("{0} saved run.", history.runs.count)
+                                         : tr("{0} saved runs.", history.runs.count))
         }
     }
 
@@ -700,7 +733,7 @@ struct SettingsView: View {
             Section {
                 Link(destination: url) {
                     HStack {
-                        Label("Report an issue", systemImage: "exclamationmark.bubble")
+                        Label(tr("Report an issue"), systemImage: "exclamationmark.bubble")
                         Spacer(minLength: 0)
                         // no colour of its own: it takes the row's, like the title beside it
                         // (it was tertiary, and looked dimmer than the text)
@@ -709,7 +742,7 @@ struct SettingsView: View {
                     }
                 }
             } footer: {
-                Text("Opens a new issue on GitHub in your browser.")
+                Text(tr("Opens a new issue on GitHub in your browser."))
             }
         }
     }
@@ -747,7 +780,7 @@ struct SettingsView: View {
             defer { if scoped { picked.stopAccessingSecurityScopedResource() } }
             let items = modelItems(at: picked)
             if items.isEmpty {
-                problems.append("\(picked.lastPathComponent) is not a Core ML model and contains none (.mlpackage, .mlmodelc, .mlmodel).")
+                problems.append(tr("{0} is not a Core ML model and contains none (.mlpackage, .mlmodelc, .mlmodel).", picked.lastPathComponent))
                 continue
             }
             for src in items {
@@ -762,7 +795,7 @@ struct SettingsView: View {
                                          url: dir.appendingPathComponent(src.lastPathComponent))
                 if let why = model.loadProblem() {
                     BundledModel.deleteCustom(model)
-                    problems.append("\(src.lastPathComponent) was not imported. \(why)")
+                    problems.append(tr("{0} was not imported. {1}", src.lastPathComponent, why))
                 }
             }
         }

@@ -107,17 +107,17 @@ private func importMessage(tooBig: [String], unreadable: Int) -> String {
     if !tooBig.isEmpty {
         let limit = "\(photoByteLimit / 1_000_000) MB"
         lines.append(tooBig.count == 1
-            ? "The following image failed to import because it is over \(limit):"
-            : "The following images failed to import because they are over \(limit):")
+            ? tr("The following image failed to import because it is over {0}:", limit)
+            : tr("The following images failed to import because they are over {0}:", limit))
         lines += tooBig.prefix(oversizeListed)
         if tooBig.count > oversizeListed {
-            lines.append("and \(tooBig.count - oversizeListed) more")
+            lines.append(tr("and {0} more", tooBig.count - oversizeListed))
         }
     }
     if unreadable == 1 {
-        lines.append("1 image could not be read.")
+        lines.append(tr("1 image could not be read."))
     } else if unreadable > 1 {
-        lines.append("\(unreadable) images could not be read.")
+        lines.append(tr("{0} images could not be read.", unreadable))
     }
     return lines.joined(separator: "\n")
 }
@@ -215,14 +215,14 @@ private enum SelectionPrompt {
 
     var title: String {
         switch self {
-        case .save(let n): return n == 1 ? "Save 1 image to Photos?" : "Save \(n) images to Photos?"
-        case .remove(let n): return n == 1 ? "Remove 1 photo from this run?" : "Remove \(n) photos from this run?"
+        case .save(let n): return n == 1 ? tr("Save 1 image to Photos?") : tr("Save {0} images to Photos?", n)
+        case .remove(let n): return n == 1 ? tr("Remove 1 photo from this run?") : tr("Remove {0} photos from this run?", n)
         }
     }
     var message: String {
         switch self {
-        case .save: return "The annotated images are added to your photo library."
-        case .remove: return "The photos stay in your photo library. To have one back in the run, add it again."
+        case .save: return tr("The annotated images are added to your photo library.")
+        case .remove: return tr("The photos stay in your photo library. To have one back in the run, add it again.")
         }
     }
 }
@@ -232,14 +232,17 @@ private struct SaveFailure {
     let message: String
     let offerSettings: Bool     // the fix is a switch in the app's page of the Settings app
 
-    static let denied = SaveFailure(
-        message: "This app is not allowed to add to your photo library, so nothing was saved. "
-            + "Turn on Photos access for it in Settings, then save again.",
-        offerSettings: true)
-    static let restricted = SaveFailure(
-        message: "Adding to the photo library is restricted on this \(deviceName), for example by "
-            + "Screen Time or a device management profile. Nothing was saved.",
-        offerSettings: false)
+    // computed, not constants: the words are those of the language in use when it happens
+    static var denied: SaveFailure {
+        SaveFailure(
+            message: tr("This app is not allowed to add to your photo library, so nothing was saved. Turn on Photos access for it in Settings, then save again."),
+            offerSettings: true)
+    }
+    static var restricted: SaveFailure {
+        SaveFailure(
+            message: tr("Adding to the photo library is restricted on this {0}, for example by Screen Time or a device management profile. Nothing was saved.", deviceName),
+            offerSettings: false)
+    }
 
     /// The reason behind an error of the save itself. The photo library's own codes for a
     /// refused or restricted access and for a full disk are spelled out; anything else is
@@ -252,13 +255,13 @@ private struct SaveFailure {
             case 3310: return restricted
             case 3305:
                 return SaveFailure(
-                    message: "There is not enough free storage on this \(deviceName) to save the images.",
+                    message: tr("There is not enough free storage on this {0} to save the images.", deviceName),
                     offerSettings: false)
             default: break
             }
         }
         return SaveFailure(
-            message: "The photo library reported: \(ns.localizedDescription) (\(ns.domain) \(ns.code))",
+            message: tr("The photo library reported: {0} ({1} {2})", ns.localizedDescription, ns.domain, ns.code),
             offerSettings: false)
     }
 }
@@ -271,6 +274,7 @@ struct PhotoTestView: View {
     @State private var selectedModel: BundledModel?
     @State private var compute: ComputeChoice = ComputeChoice.deviceDefault
     @AppStorage("allowCPU") private var allowCPU = false
+    @ObservedObject private var localizer = Localizer.shared   // the text follows the language
     @State private var style: BoxStyle = .chip
     @State private var picks: [PhotosPickerItem] = []
     @State private var loadingPicks: Set<String> = []    // identifiers of the photos being loaded
@@ -374,18 +378,18 @@ struct PhotoTestView: View {
                 // A save that did not happen says WHY, and stays until it is read: an alert,
                 // not the toast with the red cross. When the reason is the app's Photos
                 // permission, the alert leads to the switch.
-                .alert("Could not save to Photos",
+                .alert(tr("Could not save to Photos"),
                        isPresented: Binding(get: { saveProblem != nil },
                                             set: { if !$0 { saveProblem = nil } }),
                        presenting: saveProblem) { problem in
                     if problem.offerSettings {
-                        Button("Open Settings") {
+                        Button(tr("Open Settings")) {
                             if let url = URL(string: UIApplication.openSettingsURLString) {
                                 UIApplication.shared.open(url)
                             }
                         }
                     }
-                    Button("OK", role: .cancel) { }
+                    Button(tr("OK"), role: .cancel) { }
                 } message: { problem in
                     Text(problem.message)
                 }
@@ -416,17 +420,17 @@ struct PhotoTestView: View {
         let e2e = p + i + d + (isSeg ? mk : 0)
         var extras: [(String, String)] = []
         if let s = shown {
-            extras = [("image", "\(page + 1)/\(shots.count)"),
-                      ("size", "\(s.image.width)x\(s.image.height)"),
-                      ("file", s.name),
-                      ("type", s.type),
+            extras = [(tr("image"), "\(page + 1)/\(shots.count)"),
+                      (tr("size", context: "image"), "\(s.image.width)x\(s.image.height)"),
+                      (tr("file"), s.name),
+                      (tr("type"), s.type),
                       ("e2e", String(format: "%.1f ms", e2e)),
-                      ("dets", "\(s.dets.count)")]
+                      (tr("dets"), "\(s.dets.count)")]
         } else if !done.isEmpty {
-            extras = [("images", "\(shots.count)"),
-                      ("wall", String(format: "%.2f s", wall)),
-                      ("total dets", "\(totalDets)"),
-                      ("avg e2e", String(format: "%.1f ms", e2e))]
+            extras = [(tr("images"), "\(shots.count)"),
+                      (tr("wall"), String(format: "%.2f s", wall)),
+                      (tr("total dets"), "\(totalDets)"),
+                      (tr("avg e2e"), String(format: "%.1f ms", e2e))]
         }
         // the green number: this photo's detections in the pager, the run's total in the gallery
         var count = totalDets
@@ -446,8 +450,8 @@ struct PhotoTestView: View {
 
     @ViewBuilder private var content: some View {
         if shots.isEmpty {
-            ContentUnavailableView("No photos", systemImage: "photo.on.rectangle.angled",
-                                   description: Text("Pick up to 100 images"))
+            ContentUnavailableView(tr("No photos"), systemImage: "photo.on.rectangle.angled",
+                                   description: Text(tr("Pick up to 100 images")))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             // The gallery is ALWAYS there, and the pager lies over it while a photo is open.
@@ -635,11 +639,11 @@ struct PhotoTestView: View {
         HStack(spacing: 10) {
             if phase == .loadingModel {
                 ProgressView()
-                Text("Loading the model (\(compute.rawValue))")
+                Text(tr("Loading the model ({0})", compute.label))
                     .font(.caption)
                 Spacer(minLength: 0)
             } else {
-                Text(phase == .loading ? "Loading / iCloud" : "Inference")
+                Text(phase == .loading ? tr("Loading / iCloud") : tr("Inference"))
                     .font(.caption)
                 ProgressView(value: Double(progress), total: Double(max(progressTotal, 1)))
                     .progressViewStyle(.linear)
@@ -697,7 +701,7 @@ struct PhotoTestView: View {
     private var controls: some View {
         HStack(spacing: narrow ? 6 : nil) {
             Menu {
-                Picker("Model", selection: $selectedModel) {
+                Picker(tr("Model"), selection: $selectedModel) {
                     ForEach(models) { m in
                         // the model's type as an icon beside its name
                         Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }
@@ -709,9 +713,9 @@ struct PhotoTestView: View {
             }
             .fixedSize()
             .disabled(busy)
-            Picker("Compute", selection: $compute) {
+            Picker(tr("Compute"), selection: $compute) {
                 ForEach(ComputeChoice.available(allowCPU: allowCPU)) { c in
-                    Text(c.rawValue).lineLimit(1).fixedSize().tag(c)
+                    Text(c.label).lineLimit(1).fixedSize().tag(c)
                 }
             }
             .fixedSize()
@@ -792,7 +796,7 @@ struct PhotoTestView: View {
                 barIcon("xmark")
             }
             .buttonStyle(.bordered)
-            Text(selected.isEmpty ? "Select photos" : "\(selected.count) selected")
+            Text(selected.isEmpty ? tr("Select photos") : tr("{0} selected", selected.count))
                 .font(.subheadline.monospacedDigit())
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
@@ -801,7 +805,7 @@ struct PhotoTestView: View {
             Button {
                 selected = all ? [] : Set(shots.map { $0.id })
             } label: {
-                Text(all ? "Deselect" : "Select all")
+                Text(all ? tr("Deselect") : tr("Select all"))
                     .font(.subheadline)
                     .frame(height: 20)
             }
@@ -834,11 +838,11 @@ struct PhotoTestView: View {
         .alert(Text(prompt.title), isPresented: $asking) {
             switch prompt {
             case .save:
-                Button("Save") { exportImages(selected) }
+                Button(tr("Save")) { exportImages(selected) }
             case .remove:
-                Button("Remove", role: .destructive) { removeSelected() }
+                Button(tr("Remove"), role: .destructive) { removeSelected() }
             }
-            Button("Cancel", role: .cancel) { }
+            Button(tr("Cancel"), role: .cancel) { }
         } message: {
             Text(prompt.message)
         }
@@ -981,7 +985,7 @@ struct PhotoTestView: View {
                 if bytes > photoByteLimit {
                     // by the file's own name. The picker gave none: the photo is counted
                     // off among those picked, no name is made up for it.
-                    let shown = fileName ?? "Image \(idx + 1) of \(take.count)"
+                    let shown = fileName ?? tr("Image {0} of {1}", idx + 1, take.count)
                     tooBig.append("\(shown) (\(megabytes(bytes)))")
                 } else if let data, let img = decodedPhoto(data) {
                     added.append(Shot(id: firstID + idx, image: img, name: name, type: type,
@@ -1097,7 +1101,7 @@ struct PhotoTestView: View {
                 }
                 await MainActor.run { finishRun() }
             } catch {
-                let text = error.localizedDescription
+                let text = localizedReason(error)
                 let loadFailed = !ready
                 await MainActor.run { failRun(text, loadFailed: loadFailed) }
             }
@@ -1178,7 +1182,7 @@ struct PhotoTestView: View {
     }
 
     private func failRun(_ text: String, loadFailed: Bool) {
-        errorText = "ERROR: \(text)"
+        errorText = tr("ERROR: {0}", text)
         isRunning = false
         phase = .idle
         guard loadFailed else { return }
@@ -1318,7 +1322,7 @@ struct PhotoTestView: View {
         exportToastGen += 1
         let gen = exportToastGen
         withAnimation(.spring(duration: 0.3)) {
-            exportMsg = n == 1 ? "Saved 1 image to Photos" : "Saved \(n) images to Photos"
+            exportMsg = n == 1 ? tr("Saved 1 image to Photos") : tr("Saved {0} images to Photos", n)
         }
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_600_000_000)

@@ -67,6 +67,7 @@ struct StatsHUD: View {
     var mask: Double? = nil    // seg mask-compose ms; nil hides the bar (det models)
 
     @Environment(\.duoOuterDisplay) private var narrow   // iPhone Duo, outer display
+    @ObservedObject private var localizer = Localizer.shared   // the row names follow the language
     @State private var thermal = ProcessInfo.processInfo.thermalState
     @State private var expanded = false   // tap toggles the detailed-stats section
     @State private var rowWidth: CGFloat = 0   // measured main-row width: the expanded
@@ -119,14 +120,14 @@ struct StatsHUD: View {
     /// postprocess and end-to-end rows on wider scales.
     private var details: some View {
         VStack(alignment: .leading, spacing: 5) {
-            DetailBar(icon: "aspectratio", name: "preprocess", ms: pre)
-            DetailBar(icon: "cpu", name: "inference", ms: inf)
-            DetailBar(icon: "rectangle.dashed", name: "decode", ms: dec)
+            DetailBar(icon: "aspectratio", name: tr("preprocess"), ms: pre)
+            DetailBar(icon: "cpu", name: tr("inference"), ms: inf)
+            DetailBar(icon: "rectangle.dashed", name: tr("decode"), ms: dec)
             if let mask {
-                DetailBar(icon: "person.and.background.dotted", name: "mask", ms: mask)
+                DetailBar(icon: "person.and.background.dotted", name: tr("mask"), ms: mask)
             }
-            DetailBar(icon: "gearshape.2", name: "postprocess", ms: dec + (mask ?? 0))
-            DetailBar(icon: "timer", name: "end to end",
+            DetailBar(icon: "gearshape.2", name: tr("postprocess"), ms: dec + (mask ?? 0))
+            DetailBar(icon: "timer", name: tr("end to end"),
                       ms: pre + inf + dec + (mask ?? 0), fullScale: 100, greenUntil: 50)
         }
     }
@@ -171,7 +172,8 @@ struct StatsHUD: View {
                 Text("\(dets)")
                     .font(.system(.title3, design: .rounded).bold())
                     .foregroundStyle(.green)
-                Text("dets").font(.caption2).foregroundStyle(.secondary)
+                Text(tr("dets")).font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.7)   // the column is 40 pt whatever the language
             }
             .frame(width: 40)
         }
@@ -507,6 +509,7 @@ enum ModelIcon {
 /// the full name (`Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }`).
 struct ModelChip: View {
     let model: BundledModel?
+    @ObservedObject private var localizer = Localizer.shared   // "Model", while none is chosen
     var body: some View {
         HStack(spacing: 4) {
             if let model {
@@ -514,7 +517,7 @@ struct ModelChip: View {
                     .resizable().scaledToFit()
                     .frame(width: 17, height: 17)
             }
-            Text(model?.shortID ?? "Model").lineLimit(1)
+            Text(model?.shortID ?? tr("Model")).lineLimit(1)
             Image(systemName: "chevron.up.chevron.down").font(.caption2)
         }
     }
@@ -749,6 +752,7 @@ struct TuningPanel: View {
     var pose: Binding<PoseDisplay>? = nil        // non-nil only for pose models
     var wholeBody = false                        // the pose model reports 133 keypoints
     var boxScale: Binding<CGFloat>? = nil        // non-nil only in Photo: box thickness and label size
+    @ObservedObject private var localizer = Localizer.shared   // the labels follow the language
 
     /// A pose model showing skeletons only: nothing the box styles would change is drawn.
     private var skeletonOnly: Bool { pose?.wrappedValue.overlay == .skeleton }
@@ -762,7 +766,7 @@ struct TuningPanel: View {
     var body: some View {
         VStack(spacing: 8) {
             if let style, !skeletonOnly {
-                Picker("Style", selection: style) {
+                Picker(tr("Style"), selection: style) {
                     ForEach(BoxStyle.allCases) { s in
                         Text(s.label).lineLimit(1).fixedSize().tag(s)
                     }
@@ -770,26 +774,26 @@ struct TuningPanel: View {
                 .pickerStyle(.segmented)
             }
             if let segOverlay {
-                Picker("Overlay", selection: segOverlay) {
+                Picker(tr("Overlay"), selection: segOverlay) {
                     ForEach(SegOverlay.allCases, id: \.self) { o in
-                        Text(o.rawValue.capitalized).lineLimit(1).fixedSize().tag(o)
+                        Text(o.label).lineLimit(1).fixedSize().tag(o)
                     }
                 }
                 .pickerStyle(.segmented)
             }
             if let pose {
-                Picker("Pose overlay", selection: pose.overlay) {
+                Picker(tr("Pose overlay"), selection: pose.overlay) {
                     ForEach(PoseOverlay.allCases, id: \.self) { o in
-                        Text(o.rawValue.capitalized).lineLimit(1).fixedSize().tag(o)
+                        Text(o.label).lineLimit(1).fixedSize().tag(o)
                     }
                 }
                 .pickerStyle(.segmented)
                 if wholeBody && pose.wrappedValue.drawsSkeleton {
                     HStack(spacing: 8) {
-                        OnOffButton(title: "Body", isOn: pose.body)
-                        OnOffButton(title: "Feet", isOn: pose.feet)
-                        OnOffButton(title: "Face", isOn: pose.face)
-                        OnOffButton(title: "Hands", isOn: pose.hands)
+                        OnOffButton(title: tr("Body"), isOn: pose.body)
+                        OnOffButton(title: tr("Feet"), isOn: pose.feet)
+                        OnOffButton(title: tr("Face"), isOn: pose.face)
+                        OnOffButton(title: tr("Hands"), isOn: pose.hands)
                     }
                 }
             }
@@ -799,10 +803,10 @@ struct TuningPanel: View {
             if handLines != nil || hudVisible != nil {
                 HStack(spacing: 18) {
                     if let handLines {
-                        Toggle("Hand skeleton", isOn: handLines)
+                        Toggle(tr("Hand skeleton"), isOn: handLines)
                     }
                     if let hudVisible {
-                        Toggle("Show stats HUD", isOn: hudVisible)
+                        Toggle(tr("Show stats HUD"), isOn: hudVisible)
                     }
                 }
                 .font(.caption)
@@ -823,7 +827,7 @@ struct TuningPanel: View {
             }
             if let boxScale, !skeletonOnly {
                 HStack {
-                    Text("box").font(.caption).frame(width: 34, alignment: .leading)
+                    Text(tr("box")).font(.caption).frame(width: 34, alignment: .leading)
                     Slider(value: boxScale, in: 0.5...2.5)
                     Text(String(format: "%.1fx", Double(boxScale.wrappedValue)))
                         .font(.caption.monospacedDigit()).frame(width: 34)
@@ -837,7 +841,7 @@ struct TuningPanel: View {
                         .font(.caption.monospacedDigit()).frame(width: 34)
                 }
                 HStack {
-                    Text("size").font(.caption).frame(width: 34, alignment: .leading)
+                    Text(tr("size")).font(.caption).frame(width: 34, alignment: .leading)
                     Slider(value: pose.size, in: 0.5...2.5)
                     Text(String(format: "%.1fx", Double(pose.wrappedValue.size)))
                         .font(.caption.monospacedDigit()).frame(width: 34)
@@ -846,6 +850,28 @@ struct TuningPanel: View {
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+// What the tuning panel calls the Kit's overlay choices. The Kit's raw values ("masks",
+// "boxes" ...) are its own and are not shown.
+extension SegOverlay {
+    var label: String {
+        switch self {
+        case .masks: return tr("Masks")
+        case .boxes: return tr("Boxes")
+        case .both: return tr("Both")
+        }
+    }
+}
+
+extension PoseOverlay {
+    var label: String {
+        switch self {
+        case .skeleton: return tr("Skeleton")
+        case .boxes: return tr("Boxes")
+        case .both: return tr("Both")
+        }
     }
 }
 

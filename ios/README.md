@@ -65,7 +65,54 @@ Before every upload:
    branch - the same URL goes into App Store Connect;
 5. the app is universal: App Store Connect asks for iPad screenshots beside
    the iPhone ones, and once a version with iPad support is on sale a later
-   version cannot leave the iPad out.
+   version cannot leave the iPad out;
+6. run `python3 ios/tools/translations.py check` (see Languages below): a text
+   added without its two translations is shown in English.
+
+## Languages
+
+The app's text is in English, Simplified Chinese and Traditional Chinese
+(since 1.2.1). **Settings > Language** switches between them while the app
+runs; "System", the default, follows the languages of the device in the
+user's order, so the app is Chinese on a Chinese iPhone without a tap.
+Traditional Chinese is one translation for Taiwan, Hong Kong and Macau.
+
+- Every text is written in the code in English and passed through `tr`
+  (`App/Localization.swift`): `Text(tr("No photos"))`,
+  `tr("Saved {0} images to Photos", n)`. The English text is the key;
+  `App/Translations.swift` holds one row per text with its two translations.
+  A text with no row is shown in English.
+- A view that shows text holds
+  `@ObservedObject private var localizer = Localizer.shared`, which is what
+  redraws it when the language changes. The views are redrawn in place, not
+  built again: the photos of a run, a benchmark in progress and the camera
+  are left alone.
+- Not translated, on purpose: CPU, GPU, Neural Engine, Core ML, NMS, IoU,
+  conf, kpt, FPS, ms and the other terms of the trade; model names; class
+  names (they are the model's own output and are drawn into saved images);
+  licence names and copyright lines; the licence notice in Settings (its
+  English text is the notice); CSV exports and the stored names of compute
+  units and benchmark modes; the Kit's reasons for refusing a model, which
+  quote the model's own tensor names.
+- A message that is kept, such as the note about a photo that was not
+  imported or the name of a saved benchmark run, stays in the language it was
+  made in.
+- What iOS draws itself is not the app's to switch: the photo picker, the
+  Files browser, the share sheet, the two permission prompts, Edit and Done
+  in History's toolbar. They follow the device, or the language set for the
+  app in the Settings app. `project.yml` declares the three languages
+  (`CFBundleLocalizations`) so that iOS shows them in Chinese on a Chinese
+  device, and the two permission prompts are translated in
+  `App/<language>.lproj/InfoPlist.strings`. `en.lproj` has to stay: XcodeGen
+  hangs the other two languages on it.
+
+`ios/tools/translations.py` (Python 3, no packages, not needed to build):
+
+```bash
+python3 ios/tools/translations.py check              # every text has both translations, and more
+python3 ios/tools/translations.py export review.md   # a three-column table for a reviewer
+python3 ios/tools/translations.py import review.md   # the reviewer's changes, back into the code
+```
 
 ## What the app does
 
@@ -246,6 +293,8 @@ Before every upload:
   (top-down, NMS-free), classes, declared inputs and outputs, precision,
   format and minimum iOS, operation count, size on disk, origin, and what
   the exporter stamped (source checkpoint, keypoint score).
+- **Language** - Settings > Language: System, English, 简体中文, 繁體中文,
+  each listed by its own name. See Languages above.
 - **Bench tab** - the criterion harness:
   - *cold run*: the selected models x the selected compute units, 50-iter
     median + p90 after warmup. The model menu is a list of switches, all on by

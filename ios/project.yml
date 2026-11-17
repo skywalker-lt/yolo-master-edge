@@ -19,6 +19,9 @@ targets:
     type: application
     platform: iOS
     sources:
+      # App also holds en.lproj, zh-Hans.lproj and zh-Hant.lproj (InfoPlist.strings: the
+      # two permission prompts in each language). XcodeGen makes one localized resource
+      # of them; en.lproj is the base the other two hang on and must stay.
       - App
       # group (NOT folder reference): members are individual files, so Xcode's
       # coremlc compiles each .mlpackage into a bundle-root .mlmodelc
@@ -68,12 +71,20 @@ targets:
       properties:
         CFBundleDisplayName: YOLO-Master Edge   # the name under the icon and in system prompts
         CFBundleName: YOLO-Master Edge
-        CFBundleShortVersionString: "1.2.0"   # marketing version (the About card reads it from the bundle). 1.1.0 was the TestFlight beta of 2026-08-26 and the device builds up to 2026-11-16
-        CFBundleVersion: "1"                    # build number - MUST increment every upload of the same version; a new version starts at 1 again (1.1.0: 1 = the TestFlight build, 2 = the device builds, the "1.1.0 build 2" of the notes)
+        CFBundleShortVersionString: "1.2.1"   # marketing version (the About card reads it from the bundle). 1.1.0 was the TestFlight beta of 2026-08-26 and the device builds up to 2026-11-16; 1.2.0 (1) is the TestFlight build of 2026-11-17; 1.2.1 adds the two Chinese languages and carries the fixes found in that beta
+        CFBundleVersion: "1"                    # build number - MUST increment every upload of the same version; a new version starts at 1 again (1.1.0: 1 = the TestFlight build, 2 = the device builds, the "1.1.0 build 2" of the notes; 1.2.0: 1 = the TestFlight build)
         # Xcode's General tab shows these three as Version, Build and App Category. Set them
         # HERE: the project and Info.plist are generated, so a value typed into Xcode is gone
         # at the next `xcodegen`. The category on the store page is chosen in App Store Connect.
         LSApplicationCategoryType: public.app-category.developer-tools
+        # The languages the app has. Its text is translated in code (App/Translations.swift,
+        # switched in Settings while the app runs), which iOS cannot see, so they are
+        # declared here: this is what makes iOS show its own screens inside the app (alerts,
+        # the photo picker) in Chinese on a Chinese device, offer the app under
+        # Settings > Language, and what the store page lists. The two permission prompts
+        # below are translated in App/<language>.lproj/InfoPlist.strings; keep their
+        # English text there and here the same.
+        CFBundleLocalizations: [en, zh-Hans, zh-Hant]
         ITSAppUsesNonExemptEncryption: false    # only HTTPS/system crypto -> skips the export-compliance prompt
         UILaunchScreen: {}
         NSCameraUsageDescription: "Live object detection uses the camera."

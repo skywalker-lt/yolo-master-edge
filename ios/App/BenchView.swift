@@ -100,10 +100,22 @@ func thermalLevelColor(_ level: Int) -> Color {
     switch level { case 0: return .blue; case 1: return .green; case 2: return .orange; default: return .red }
 }
 
+/// What the interface calls a run's mode. The history file stores "Cold run" or "Sustained"
+/// (the raw values of `BenchView.Mode`) whatever language the app was in when the run was
+/// made, and the code compares against those two: they are never translated in place.
+func benchModeLabel(_ stored: String) -> String {
+    switch stored {
+    case "Cold run": return tr("Cold run")
+    case "Sustained": return tr("Sustained")
+    default: return stored
+    }
+}
+
 struct BenchView: View {
     enum Mode: String, CaseIterable, Identifiable {
         case cold = "Cold run", sustained = "Sustained"
         var id: String { rawValue }
+        var label: String { benchModeLabel(rawValue) }   // shown; the raw value is what history stores
     }
     enum Phase: Equatable {
         case idle
@@ -122,6 +134,7 @@ struct BenchView: View {
     @State private var paused = false
     @State private var control = BenchControl()
     @ObservedObject private var history = BenchHistory.shared
+    @ObservedObject private var localizer = Localizer.shared   // the text follows the language
     @State private var showHistory = false
     @State private var runThermalStart = 0
     @State private var runThermalPeak = 0
@@ -162,9 +175,9 @@ struct BenchView: View {
         ZStack {
             if results.isEmpty && !running {
                 // vertically centered, matching the Photo tab's "No photos" empty state
-                ContentUnavailableView("No benchmarks yet",
+                ContentUnavailableView(tr("No benchmarks yet"),
                     systemImage: "speedometer",
-                    description: Text("Run a cold pass across the selected models and compute units."))
+                    description: Text(tr("Run a cold pass across the selected models and compute units.")))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -231,8 +244,8 @@ struct BenchView: View {
     private var topBar: some View {
         VStack(spacing: 8) {
             HStack {
-                Picker("Mode", selection: $mode) {
-                    ForEach(Mode.allCases) { m in Text(m.rawValue).tag(m) }
+                Picker(tr("Mode"), selection: $mode) {
+                    ForEach(Mode.allCases) { m in Text(m.label).tag(m) }
                 }
                 .pickerStyle(.segmented)
                 .disabled(running)
@@ -289,8 +302,8 @@ struct BenchView: View {
     /// or "No units" (the play button is disabled then).
     private var benchUnitsLabel: String {
         let chosen = benchUnitList
-        if chosen.count == ComputeChoice.allCases.count { return "All \(chosen.count) units" }
-        return chosen.isEmpty ? "No units" : chosen.map(\.rawValue).joined(separator: " + ")
+        if chosen.count == ComputeChoice.allCases.count { return tr("All {0} units", chosen.count) }
+        return chosen.isEmpty ? tr("No units") : chosen.map(\.label).joined(separator: " + ")
     }
 
     /// Cold run: which models to measure and on which compute units. Two menus of switches
@@ -303,7 +316,7 @@ struct BenchView: View {
         let chosen = benchModels.count
         return HStack {
             Menu {
-                Button(chosen == models.count ? "Deselect all" : "Select all") {
+                Button(chosen == models.count ? tr("Deselect all") : tr("Select all")) {
                     benchExcluded = chosen == models.count ? Set(models.map(\.id)) : []
                 }
                 .menuActionDismissBehavior(.disabled)
@@ -320,17 +333,17 @@ struct BenchView: View {
                 }
             } label: {
                 HStack(spacing: 4) {
-                    Text(chosen == models.count ? "All \(models.count) models"
-                         : "\(chosen) of \(models.count) models").lineLimit(1)
+                    Text(chosen == models.count ? tr("All {0} models", models.count)
+                         : tr("{0} of {1} models", chosen, models.count)).lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down").font(.caption2)
                 }
             }
             .fixedSize()
             Spacer(minLength: 0)
-            Text("on").font(.caption).foregroundStyle(.secondary)
+            Text(tr("on")).font(.caption).foregroundStyle(.secondary)
             Menu {
                 ForEach(ComputeChoice.allCases) { c in
-                    Toggle(c.rawValue, isOn: Binding(
+                    Toggle(c.label, isOn: Binding(
                         get: { benchUnits.contains(c) },
                         set: { on in
                             if on { benchUnits.insert(c) } else { benchUnits.remove(c) }
@@ -354,7 +367,7 @@ struct BenchView: View {
         VStack(spacing: 8) {
             HStack {
                 Menu {
-                    Picker("Model", selection: $selectedModel) {
+                    Picker(tr("Model"), selection: $selectedModel) {
                         ForEach(models) { m in
                             Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }
                                 .tag(Optional(m))
@@ -364,15 +377,15 @@ struct BenchView: View {
                     ModelChip(model: selectedModel)
                 }
                 .fixedSize()
-                Picker("Unit", selection: $selectedCompute) {
-                    ForEach(ComputeChoice.allCases) { c in Text(c.rawValue).tag(c) }
+                Picker(tr("Unit"), selection: $selectedCompute) {
+                    ForEach(ComputeChoice.allCases) { c in Text(c.label).tag(c) }
                 }
                 .pickerStyle(.segmented)
             }
             // manual duration selection: a fine stepper plus quick presets
             HStack(spacing: 8) {
                 Stepper(value: $sustainedMinutes, in: 1...Double(maxSustained), step: 1) {
-                    Text("Duration: \(Int(sustainedMinutes)) min")
+                    Text(tr("Duration: {0} min", Int(sustainedMinutes)))
                         .font(.caption.monospacedDigit())
                 }
                 ForEach([3, 5, 10, 20].filter { $0 < maxSustained }, id: \.self) { p in
@@ -399,14 +412,14 @@ struct BenchView: View {
     private var advancedSettings: some View {
         VStack(spacing: 6) {
             Stepper(value: $iters, in: 20...200, step: 10) {
-                Text("Timed iters: \(iters)").font(.caption)
+                Text(tr("Timed iters: {0}", iters)).font(.caption)
             }
             Stepper(value: $warmup, in: 0...50, step: 5) {
-                Text("Warmup: \(warmup)").font(.caption)
+                Text(tr("Warmup: {0}", warmup)).font(.caption)
             }
             Text(mode == .sustained
-                 ? "In Sustained mode these set the cold baseline the throttle is measured against."
-                 : "Per model x unit cell in the cold run.")
+                 ? tr("In Sustained mode these set the cold baseline the throttle is measured against.")
+                 : tr("Per model x unit cell in the cold run."))
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -423,7 +436,7 @@ struct BenchView: View {
             if paused {
                 HStack(spacing: 4) {
                     Image(systemName: "pause.circle.fill")
-                    Text("Paused").font(.caption.bold())
+                    Text(tr("Paused")).font(.caption.bold())
                 }
                 .foregroundStyle(.orange)
                 .frame(maxWidth: .infinity)
@@ -452,9 +465,9 @@ struct BenchView: View {
             }
             HStack(spacing: 6) {
                 if let b = sparkBaseline {
-                    Text("cold \(fmt(b))").font(.caption2).foregroundStyle(.secondary)
+                    Text(tr("cold {0}", fmt(b))).font(.caption2).foregroundStyle(.secondary)
                 }
-                Text("→ \(running ? "live" : "final") \(fmt(liveMs)) ms")
+                Text(running ? tr("→ live {0} ms", fmt(liveMs)) : tr("→ final {0} ms", fmt(liveMs)))
                     .font(.caption2.monospacedDigit())
                 Spacer()
                 if runDuration > 0 {
@@ -472,17 +485,17 @@ struct BenchView: View {
         case .loadingModel(let m, let u):
             HStack(spacing: 8) {
                 ProgressView()
-                Text("Loading \(m) @ \(u)").font(.caption)
+                Text(tr("Loading {0} @ {1}", m, u)).font(.caption)
             }
         case .benchmarking(let m, let u, let d, let t):
             VStack(alignment: .leading, spacing: 4) {
-                Text("Benchmarking \(m) @ \(u)").font(.caption)
+                Text(tr("Benchmarking {0} @ {1}", m, u)).font(.caption)
                 ProgressView(value: Double(d), total: Double(max(t, 1)))
                 Text("\(d)/\(t)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
             }
         case .sustained(let m, let u, let e, let tot):
             VStack(alignment: .leading, spacing: 4) {
-                Text("Sustained \(m) @ \(u)").font(.caption)
+                Text(tr("Sustained {0} @ {1}", m, u)).font(.caption)
                 ProgressView(value: Double(e), total: Double(max(tot, 1)))
                 Text("\(e / 60)m \(e % 60)s / \(tot / 60)m")
                     .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
@@ -504,9 +517,9 @@ struct BenchView: View {
             .tint(msColor(r.coldMedian))
             .frame(width: 60, height: 60)
             VStack(alignment: .leading, spacing: 2) {
-                Text("FASTEST").font(.caption2).foregroundStyle(.secondary)
+                Text(tr("FASTEST")).font(.caption2).foregroundStyle(.secondary)
                 Text(r.fullName).font(.headline).lineLimit(1).minimumScaleFactor(0.6)
-                Text("\(r.compute.rawValue)  ·  \(fmt(r.coldMedian)) ms  ·  \(Int(r.fpsEquiv)) FPS")
+                Text("\(r.compute.label)  ·  \(fmt(r.coldMedian)) ms  ·  \(Int(r.fpsEquiv)) FPS")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
@@ -527,7 +540,7 @@ struct BenchView: View {
                 Text(title).font(.subheadline.bold()).lineLimit(1).minimumScaleFactor(0.6)
                 Spacer()
                 if let f = fastestUnit {
-                    Text("fastest \(f.rawValue)").font(.caption2)
+                    Text(tr("fastest {0}", f.label)).font(.caption2)
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(.green.opacity(0.2), in: Capsule())
                 }
@@ -535,23 +548,23 @@ struct BenchView: View {
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             ForEach(rows) { r in
-                DetailBar(icon: unitIcon(r.compute), name: r.compute.rawValue,
+                DetailBar(icon: unitIcon(r.compute), name: r.compute.label,
                           ms: r.coldMedian, fullScale: 50,
                           color: msColor(r.coldMedian), value: "\(fmt(r.coldMedian))")
                 if let s = r.sustainedMedian, let tp = r.throttlePct {
-                    DetailBar(icon: "flame", name: "sustained", ms: s, fullScale: 50,
+                    DetailBar(icon: "flame", name: tr("sustained"), ms: s, fullScale: 50,
                               color: msColor(s), value: "+\(Int(tp))%")
                 }
             }
             if expanded {
                 Divider()
                 ForEach(rows) { r in
-                    Text("\(r.compute.rawValue) · \(Int(r.fpsEquiv)) FPS · p90 \(fmt(r.coldP90))")
+                    Text("\(r.compute.label) · \(Int(r.fpsEquiv)) FPS · p90 \(fmt(r.coldP90))")
                         .font(.caption2).foregroundStyle(.secondary)
-                    DetailBar(icon: "aspectratio", name: "preprocess", ms: r.pre)
-                    DetailBar(icon: "cpu", name: "inference", ms: r.inf)
-                    DetailBar(icon: "rectangle.dashed", name: "decode", ms: r.dec)
-                    DetailBar(icon: "timer", name: "end to end", ms: r.pre + r.inf + r.dec,
+                    DetailBar(icon: "aspectratio", name: tr("preprocess"), ms: r.pre)
+                    DetailBar(icon: "cpu", name: tr("inference"), ms: r.inf)
+                    DetailBar(icon: "rectangle.dashed", name: tr("decode"), ms: r.dec)
+                    DetailBar(icon: "timer", name: tr("end to end"), ms: r.pre + r.inf + r.dec,
                               fullScale: 100, greenUntil: 50)
                 }
             }
@@ -657,9 +670,11 @@ struct BenchView: View {
     /// Called on SUCCESSFUL completion (not on cancel): saves the run to history.
     private func finishRun(sustained: Bool, thermalTimeline: [Int]? = nil, durationSec: Int? = nil) {
         if !results.isEmpty {
+            // made once and stored: a run keeps the name it got in the language of that day
+            // (the user can rename it in History)
             let name = sustained
-                ? "\(results.first?.shortID ?? "run") · \(selectedCompute.rawValue) · \(Int(sustainedMinutes))min"
-                : "Cold run · \(modelsWithResults.count) models"
+                ? "\(results.first?.shortID ?? "run") · \(selectedCompute.label) · \(Int(sustainedMinutes))min"
+                : tr("Cold run · {0} models", modelsWithResults.count)
             history.add(BenchRun(
                 name: name, date: Date(),
                 mode: sustained ? "Sustained" : "Cold run",
@@ -713,11 +728,11 @@ struct BenchView: View {
                 for c in units {
                     if control.cancelled { return }
                     if !(await pauseGate()) { return }
-                    await MainActor.run { phase = .loadingModel(m.fullName, c.rawValue) }
+                    await MainActor.run { phase = .loadingModel(m.fullName, c.label) }
                     guard let det = try? m.makeDetector(compute: c.mode) else {
                         done += 1; continue
                     }
-                    await MainActor.run { phase = .benchmarking(m.fullName, c.rawValue, done, total) }
+                    await MainActor.run { phase = .benchmarking(m.fullName, c.label, done, total) }
                     for _ in 0..<warmN { autoreleasepool { _ = try? det.inferOnly(img) } }
                     var ms: [Double] = []
                     for _ in 0..<iterN {
@@ -735,7 +750,7 @@ struct BenchView: View {
                     let d = done
                     await MainActor.run {
                         withAnimation(.spring(duration: 0.3)) { results.append(r) }
-                        phase = .benchmarking(m.fullName, c.rawValue, d, total)
+                        phase = .benchmarking(m.fullName, c.label, d, total)
                         lightHaptic.impactOccurred(); lightHaptic.prepare()
                     }
                 }
@@ -750,7 +765,7 @@ struct BenchView: View {
         let totalS = Int(sustainedMinutes * 60)
         loopTask = Task.detached(priority: .userInitiated) {
             let img = testImage()
-            await MainActor.run { phase = .loadingModel(m.fullName, c.rawValue) }
+            await MainActor.run { phase = .loadingModel(m.fullName, c.label) }
             guard let det = try? m.makeDetector(compute: c.mode) else {
                 await MainActor.run { running = false; phase = .idle }; return
             }
@@ -793,7 +808,7 @@ struct BenchView: View {
                     await MainActor.run {
                         sparkSamples = pts; sparkThermal = winTherm; liveMs = liveMed
                         runDuration = Int(elapsed)
-                        phase = .sustained(m.fullName, c.rawValue, Int(elapsed), totalS)
+                        phase = .sustained(m.fullName, c.label, Int(elapsed), totalS)
                     }
                 }
             }
@@ -845,7 +860,7 @@ struct BenchView: View {
         let gen = exportGen
         withAnimation(.spring(duration: 0.3)) {
             exportOK = ok
-            exportMsg = ok ? "benchmark.csv ready" : "Export failed"
+            exportMsg = ok ? tr("benchmark.csv ready") : tr("Export failed")
         }
         if ok { share(url) }
         Task {
@@ -902,6 +917,7 @@ struct ThermalBar: View {
 /// throttle sparkline + thermal-timeline bar.
 struct HistoryView: View {
     @ObservedObject var history: BenchHistory
+    @ObservedObject private var localizer = Localizer.shared   // the text follows the language
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var sort: SortKey = .time
@@ -915,7 +931,16 @@ struct HistoryView: View {
     @State private var exportOK = false
     @State private var exportGen = 0
 
-    enum SortKey: String, CaseIterable, Identifiable { case time = "Time", name = "Name"; var id: String { rawValue } }
+    enum SortKey: String, CaseIterable, Identifiable {
+        case time = "Time", name = "Name"
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .time: return tr("Time")
+            case .name: return tr("Name")
+            }
+        }
+    }
 
     private var shown: [BenchRun] {
         var r = history.runs
@@ -924,6 +949,7 @@ struct HistoryView: View {
             r = r.filter { run in
                 run.name.localizedCaseInsensitiveContains(q)
                 || run.mode.localizedCaseInsensitiveContains(q)
+                || benchModeLabel(run.mode).localizedCaseInsensitiveContains(q)   // the mode as the card shows it
                 || run.results.contains { $0.fullName.localizedCaseInsensitiveContains(q) }
             }
         }
@@ -939,8 +965,8 @@ struct HistoryView: View {
         NavigationStack {
             ZStack {
                 if history.runs.isEmpty {
-                    ContentUnavailableView("No saved runs", systemImage: "clock.arrow.circlepath",
-                        description: Text("Completed cold and sustained runs are saved here."))
+                    ContentUnavailableView(tr("No saved runs"), systemImage: "clock.arrow.circlepath",
+                        description: Text(tr("Completed cold and sustained runs are saved here.")))
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 8) {
@@ -949,7 +975,7 @@ struct HistoryView: View {
                         .padding(.horizontal)
                         .padding(.vertical, 8)
                     }
-                    .searchable(text: $query, prompt: "Search runs or models")
+                    .searchable(text: $query, prompt: tr("Search runs or models"))
                 }
                 if let msg = exportMsg {
                     ExportToast(success: exportOK, message: msg)
@@ -957,13 +983,13 @@ struct HistoryView: View {
                         .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { exportMsg = nil } }
                 }
             }
-            .navigationTitle("History")
+            .navigationTitle(tr("History"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
-                        Picker("Sort", selection: $sort) {
-                            ForEach(SortKey.allCases) { Text($0.rawValue).tag($0) }
+                        Picker(tr("Sort"), selection: $sort) {
+                            ForEach(SortKey.allCases) { Text($0.label).tag($0) }
                         }
                     } label: {
                         Image(systemName: "arrow.up.arrow.down")
@@ -974,14 +1000,14 @@ struct HistoryView: View {
                         Button { exportRuns() } label: { Image(systemName: "square.and.arrow.up") }
                         EditButton()
                     }
-                    Button("Done") { dismiss() }
+                    Button(tr("Done")) { dismiss() }
                 }
             }
-            .alert("Rename run", isPresented: Binding(
+            .alert(tr("Rename run"), isPresented: Binding(
                 get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-                TextField("Name", text: $newName)
-                Button("Cancel", role: .cancel) { renaming = nil }
-                Button("Save") {
+                TextField(tr("Name"), text: $newName)
+                Button(tr("Cancel"), role: .cancel) { renaming = nil }
+                Button(tr("Save")) {
                     if let r = renaming, !newName.isEmpty { history.rename(r.id, newName) }
                     renaming = nil
                 }
@@ -1003,7 +1029,7 @@ struct HistoryView: View {
                 }
                 Text(run.name).font(.subheadline.bold()).lineLimit(1)
                 Spacer()
-                Text(run.mode).font(.caption2)
+                Text(benchModeLabel(run.mode)).font(.caption2)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background((run.mode == "Sustained" ? Color.orange : Color.blue).opacity(0.2),
                                 in: Capsule())
@@ -1021,7 +1047,7 @@ struct HistoryView: View {
             }
             .font(.caption2).foregroundStyle(.secondary)
             if let f = run.fastest {
-                Text("fastest \(f.shortID) @ \(f.compute.rawValue) · \(fmt(f.coldMedian)) ms · \(Int(f.fpsEquiv)) FPS")
+                Text(tr("fastest {0} @ {1} · {2} ms · {3} FPS", f.shortID, f.compute.label, fmt(f.coldMedian), Int(f.fpsEquiv)))
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             if isOpen {
@@ -1032,7 +1058,7 @@ struct HistoryView: View {
                     if run.mode == "Sustained", let tl = run.thermalTimeline, !tl.isEmpty {
                         ThermalBar(levels: tl).frame(height: 8).padding(.top, 8)
                         if let tp = run.fastest?.throttlePct {
-                            Text("throttle +\(Int(tp))%").font(.caption2.monospacedDigit())
+                            Text(tr("throttle +{0}%", Int(tp))).font(.caption2.monospacedDigit())
                                 .foregroundStyle(.orange)
                         }
                     }
@@ -1044,7 +1070,7 @@ struct HistoryView: View {
                             : $0.modelId < $1.modelId          // group by model, not by global rank
                     }) { r in
                         DetailBar(icon: benchUnitIcon(r.compute),
-                                  name: "\(r.shortID) \(r.compute.rawValue)",
+                                  name: "\(r.shortID) \(r.compute.label)",
                                   ms: r.coldMedian, fullScale: scale,
                                   color: msColor(r.coldMedian),
                                   value: asFPS ? "\(Int(r.fpsEquiv)) fps" : "\(fmt(r.coldMedian)) ms",
@@ -1078,9 +1104,9 @@ struct HistoryView: View {
             }
         }
         .contextMenu {
-            Button { renaming = run; newName = run.name } label: { Label("Rename", systemImage: "pencil") }
-            Button { exportRuns([run]) } label: { Label("Export", systemImage: "square.and.arrow.up") }
-            Button(role: .destructive) { history.delete([run.id]) } label: { Label("Delete", systemImage: "trash") }
+            Button { renaming = run; newName = run.name } label: { Label(tr("Rename"), systemImage: "pencil") }
+            Button { exportRuns([run]) } label: { Label(tr("Export"), systemImage: "square.and.arrow.up") }
+            Button(role: .destructive) { history.delete([run.id]) } label: { Label(tr("Delete"), systemImage: "trash") }
         }
     }
 
@@ -1095,7 +1121,8 @@ struct HistoryView: View {
         UINotificationFeedbackGenerator().notificationOccurred(ok ? .success : .error)
         withAnimation(.spring(duration: 0.3)) {
             exportOK = ok
-            exportMsg = ok ? "\(runs.count) run\(runs.count == 1 ? "" : "s") exported" : "Export failed"
+            exportMsg = !ok ? tr("Export failed")
+                : (runs.count == 1 ? tr("{0} run exported", runs.count) : tr("{0} runs exported", runs.count))
         }
         if ok { share(url) }
         Task {

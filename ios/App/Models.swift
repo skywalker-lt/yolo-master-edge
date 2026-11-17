@@ -131,7 +131,7 @@ struct BundledModel: Identifiable, Hashable {
             _ = try makeDetector(compute: ComputeMode("cpu"))
             return nil
         } catch {
-            return error.localizedDescription
+            return localizedReason(error)
         }
     }
 
@@ -185,10 +185,10 @@ enum ModelKind: String {
 
     var label: String {
         switch self {
-        case .detection: return "Detection"
-        case .segmentation: return "Segmentation"
-        case .pose: return "Pose"
-        case .wholeBody: return "Whole-body pose"
+        case .detection: return tr("Detection")
+        case .segmentation: return tr("Segmentation")
+        case .pose: return tr("Pose")
+        case .wholeBody: return tr("Whole-body pose")
         }
     }
 
@@ -443,6 +443,16 @@ enum ComputeChoice: String, CaseIterable, Identifiable, Codable {
     case cpu = "CPU"        // CPU only
     var id: String { rawValue }
 
+    /// What the interface calls the unit. GPU and CPU are the same in every language;
+    /// Auto is a word and is translated. The raw value is what benchmark history and the
+    /// CSV exports store: never show or store one in place of the other.
+    var label: String {
+        switch self {
+        case .auto: return tr("Auto")
+        case .gpu, .cpu: return rawValue
+        }
+    }
+
     /// Benchmark history written before the rename stored this unit as "ANE".
     /// Read it as `.auto` (those runs WERE Core ML's automatic split) instead
     /// of failing: BenchHistory treats an undecodable file as empty, so one
@@ -539,3 +549,23 @@ let runsOnPad: Bool = {
 
 /// What the app calls the device in a message to the user: "iPad" or "iPhone".
 let deviceName = runsOnPad ? "iPad" : "iPhone"
+
+/// Why something failed, in the app's language, for a message to the user.
+///
+/// The Kit words its own errors in English (`DetectorError.errorDescription`) and is shared
+/// with the macOS tools, so its three fixed messages are translated here. The reasons of
+/// `unsupportedModel` quote the model's own tensor names and shapes and stay as the Kit
+/// writes them. Any other error is the system's, which words it in the device's language.
+func localizedReason(_ error: Error) -> String {
+    guard let known = error as? DetectorError else { return error.localizedDescription }
+    switch known {
+    case .inputBuildFailed:
+        return tr("The image could not be turned into the model's input.")
+    case .badOutput:
+        return tr("The model did not return a detection tensor this app can read.")
+    case .needsPersonDetector:
+        return tr("This pose model works on one person at a time and needs a detection model with a “person” class next to it (for example yolo26n). Add one first.")
+    case .unsupportedModel(let why):
+        return why
+    }
+}

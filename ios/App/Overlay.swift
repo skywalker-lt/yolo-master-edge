@@ -10,11 +10,11 @@ enum BoxStyle: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .solid: return "Solid"
-        case .neon: return "Neon"
-        case .hud: return "HUD"
-        case .chip: return "Chip"
-        case .minimal: return "Minimal"
+        case .solid: return tr("Solid")
+        case .neon: return tr("Neon")
+        case .hud: return "HUD"          // a term: the same in every language
+        case .chip: return tr("Chip")
+        case .minimal: return tr("Minimal")
         }
     }
 }

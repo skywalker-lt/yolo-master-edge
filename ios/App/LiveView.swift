@@ -47,6 +47,7 @@ struct CameraPreview: UIViewRepresentable {
 
 struct LiveView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var localizer = Localizer.shared   // the text follows the language
     @StateObject private var camera = CameraController()
     @State private var models: [BundledModel] = []
     @State private var initializing = true    // first-launch discovery/compile in flight
@@ -112,15 +113,15 @@ struct LiveView: View {
                     // first run after install: .mlpackage -> .mlmodelc compile
                     HStack(spacing: 10) {
                         ProgressView()
-                        Text("Initializing...")
+                        Text(tr("Initializing..."))
                     }
                     .font(.caption)
                     .padding(14)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
                 } else {
-                    ContentUnavailableView("No models bundled",
+                    ContentUnavailableView(tr("No models bundled"),
                                            systemImage: "shippingbox",
-                                           description: Text("Copy .mlpackage files into ios/Models/, re-run xcodegen, rebuild."))
+                                           description: Text(tr("Copy .mlpackage files into ios/Models/, re-run xcodegen, rebuild.")))
                 }
             } else if camera.authorized {
                 // preview and overlay MUST share one coordinate space: both
@@ -176,7 +177,7 @@ struct LiveView: View {
             if loadingModel {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("Loading the model (\(compute.rawValue))")
+                    Text(tr("Loading the model ({0})", compute.label))
                 }
                 .font(.caption)
                 .padding(14)
@@ -225,9 +226,9 @@ struct LiveView: View {
                              dec: statDec, dets: statDets,
                              active: running && !loadingModel,
                              extras: running && !loadingModel
-                                 ? [("camera", String(format: "%.1f fps", statCamHz)),
-                                    ("loop", String(format: "%.1f fps", statLoopHz)),
-                                    ("frame age", String(format: "%.0f ms", statAgeMs))]
+                                 ? [(tr("camera"), String(format: "%.1f fps", statCamHz)),
+                                    (tr("loop"), String(format: "%.1f fps", statLoopHz)),
+                                    (tr("frame age"), String(format: "%.0f ms", statAgeMs))]
                                  : [],
                              fullWidth: true,
                              mask: isSegModel ? statMask : nil)
@@ -425,8 +426,8 @@ struct LiveView: View {
         }
         .buttonStyle(ShutterStyle())
         .disabled(switchingCamera || capturing)
-        .accessibilityLabel(camera.isFront ? "Switch to the back camera"
-                                           : "Switch to the front camera")
+        .accessibilityLabel(camera.isFront ? tr("Switch to the back camera")
+                                           : tr("Switch to the front camera"))
     }
 
     /// Flip between the back and the front camera.
@@ -485,11 +486,11 @@ struct LiveView: View {
     /// alignment moved) instead of being part of it: as part of it, it would make the block
     /// taller and push the text up.
     private var cameraAccessNeeded: some View {
-        ContentUnavailableView("Camera access required", systemImage: "camera.fill",
-                               description: Text("Allow camera access to run live detection"))
+        ContentUnavailableView(tr("Camera access required"), systemImage: "camera.fill",
+                               description: Text(tr("Allow camera access to run live detection")))
             .fixedSize(horizontal: false, vertical: true)
             .overlay(alignment: .bottom) {
-                Button("Open Settings") {
+                Button(tr("Open Settings")) {
                     if let url = URL(string: UIApplication.openSettingsURLString) {
                         UIApplication.shared.open(url)
                     }
@@ -511,7 +512,7 @@ struct LiveView: View {
     private var controls: some View {
         HStack(spacing: narrow ? 6 : nil) {
             Menu {
-                Picker("Model", selection: $selectedModel) {
+                Picker(tr("Model"), selection: $selectedModel) {
                     ForEach(models) { m in
                         // the model's type as an icon beside its name
                         Label { Text(m.fullName) } icon: { ModelIcon.image(m.kind) }
@@ -525,9 +526,9 @@ struct LiveView: View {
             // pause inference before switching (mac GUI rule). Without camera access nothing
             // runs and the play button is off, so the pickers must not stay locked.
             .disabled(wantRun && camera.authorized)
-            Picker("Compute", selection: $compute) {
+            Picker(tr("Compute"), selection: $compute) {
                 ForEach(ComputeChoice.available(allowCPU: allowCPU)) { c in
-                    Text(c.rawValue).lineLimit(1).fixedSize().tag(c)
+                    Text(c.label).lineLimit(1).fixedSize().tag(c)
                 }
             }
             .fixedSize()
@@ -655,13 +656,13 @@ struct LiveView: View {
                 // detector the Kit can decode): say why and go back to the paused state.
                 // It used to look like a hung run - pause glyph, pickers greyed out,
                 // nothing drawn, no message.
-                let why = error.localizedDescription
+                let why = localizedReason(error)
                 await MainActor.run {
                     running = false
                     keepAwake(false)
                     loadingModel = false
                     wantRun = false
-                    loadError = "\(model.fullName) could not be loaded. \(why)"
+                    loadError = tr("{0} could not be loaded. {1}", model.fullName, why)
                 }
                 return
             }

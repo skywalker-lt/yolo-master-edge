@@ -1,0 +1,5 @@
+/* The two permission prompts, which iOS shows itself, in the language of the device.
+   English is the text in project.yml; keep the two the same.
+   The app's name (CFBundleDisplayName) is not here: it is YOLO-Master Edge in every language. */
+"NSCameraUsageDescription" = "Live object detection uses the camera.";
+"NSPhotoLibraryAddUsageDescription" = "Saves captured detection frames to your photo library.";
