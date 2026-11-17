@@ -230,10 +230,10 @@ struct SettingsView: View {
         Section {
             DisclosureGroup(isExpanded: $aboutOpen) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(tr("YOLO-Master extends the real-time YOLO detector with Mixture-of-Experts (MoE) routing. Instead of one dense network, lightweight expert branches specialize on different feature patterns, and a learned router activates only the most relevant experts for each image."))
+                    Text(tr("YOLO-Master Edge runs YOLO-Master and other modern object detection models completely on your device, using Core ML for acceleration. It is one of the best open-source on-device computer vision tools for iOS. You can run and benchmark your own models with the “Load custom Core ML model” feature."))
                         .font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(tr("That adds capacity where it matters, with clear gains on small and crowded objects, while keeping inference light enough to run in real time. On {0} the model is compiled to Core ML and runs on the Neural Engine, GPU, or CPU.", deviceName))
+                    Text(tr("YOLO-Master extends the real-time YOLO detector with Mixture-of-Experts (MoE) routing. Instead of one dense network, lightweight expert branches specialize on different feature patterns, and a learned router activates only the most relevant experts for each image."))
                         .font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Divider()
@@ -292,7 +292,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("YOLO-Master Edge").font(.title3.bold())   // the APP's name; "YOLO-Master" alone is the upstream project
                 Text(versionText).font(.caption).foregroundStyle(.secondary)
-                Text(tr("On-device MoE multi-task detection with Core ML."))
+                Text(tr("On-device multi-task detection with Core ML."))
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -327,11 +327,11 @@ struct SettingsView: View {
                         // Only the SOURCE CODE is AGPL-3.0. The bundled models are not
                         // relicensed here: each stays under its own project's terms
                         // (the RTMW whole-body model comes from MMPose, Apache-2.0).
-                        Text(tr("The source code of this app is licensed under AGPL-3.0. The models it bundles come from the projects below and remain under their terms: YOLO-Master and Ultralytics under AGPL-3.0, MMPose under Apache-2.0. coremltools is licensed under BSD-3-Clause."))
+                        Text(tr("The source code of this app is licensed under AGPL-3.0. The models it bundles come from the projects below and remain under their own terms: YOLO-Master and Ultralytics under AGPL-3.0, MMPose under Apache-2.0. coremltools is licensed under BSD-3-Clause."))
                             .font(.footnote).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text(tr("This app is non-commercial. The authors release it for research and personal experience only, and neither intend nor support any commercial use."))
+                        Text(tr("This app is non-commercial. The authors release it for research and personal use only."))
                             .font(.footnote.bold())
                             .fixedSize(horizontal: false, vertical: true)
 

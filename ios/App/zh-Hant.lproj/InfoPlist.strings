@@ -1,3 +1,3 @@
 /* The two permission prompts in Traditional Chinese (see en.lproj/InfoPlist.strings). */
 "NSCameraUsageDescription" = "即時物件偵測需要使用相機。";
-"NSPhotoLibraryAddUsageDescription" = "用於將拍攝的偵測畫面儲存到你的照片圖庫。";
+"NSPhotoLibraryAddUsageDescription" = "用於將截取的偵測畫面儲存到你的照片圖庫。";

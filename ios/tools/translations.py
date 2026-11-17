@@ -15,7 +15,10 @@
     python3 ios/tools/translations.py import review.md
         Reads an amended review file back: the two Chinese columns replace the rows of
         Translations.swift and the two permission prompts in App/zh-*.lproj. The English
-        column is the key and must come back as it went out.
+        column is the key and must come back as it went out: a text that is to be
+        reworded, added or dropped in English is changed in the code first (the tr() call
+        and its row), then the file is read. A row whose first cell begins with /// is a
+        note to the developer; it is printed and never read into the app.
 
 Nothing here is needed to build the app. Python 3.8 or later, no packages.
 """
@@ -31,6 +34,7 @@ PROMPTS = {"hans": os.path.join(APP, "zh-Hans.lproj", "InfoPlist.strings"),
            "hant": os.path.join(APP, "zh-Hant.lproj", "InfoPlist.strings"),
            "en": os.path.join(APP, "en.lproj", "InfoPlist.strings")}
 PROMPT_HEADING = "iOS permission prompts"
+NOTE_ROW = "///"        # a review-file row that starts with this is a note to the developer
 
 LIT = r'"((?:[^"\\]|\\.)*)"'
 ROW = re.compile(r'^(\s*)T\(' + LIT + r', ' + LIT + r', ' + LIT + r'(?:, context: "([^"]*)")?\),\s*$')
@@ -335,6 +339,7 @@ def export(target):
            "- Traditional Chinese is one translation for Taiwan, Hong Kong and Macau.",
            "- Do not use the straight double quote `\"` or a backslash in a translation.",
            "- An *(note: ...)* after an English text says where it appears. It is not shown in the app.",
+           "- To say something to the developer (an English text that should change, a text to add or to drop), add a row whose first cell begins with `///`. Such a row is read as a note and never shown in the app.",
            "- The licence notice in the grey box in Settings is not in this file: it stays in English.",
            ""]
     section = None
@@ -386,12 +391,15 @@ def import_review(source):
     en_prompts = read_strings(PROMPTS["en"])
     prompt_key = {text: key for key, text in en_prompts.items()}
     new_prompts = {"hans": dict(read_strings(PROMPTS["hans"])), "hant": dict(read_strings(PROMPTS["hant"]))}
-    problems, changed, seen, in_prompts = [], [], set(), False
+    problems, changed, seen, in_prompts, notes = [], [], set(), False, []
     for no, line in enumerate(open(source, encoding="utf8"), 1):
         if line.startswith("## "):
             in_prompts = line[3:].strip() == PROMPT_HEADING
             continue
         cells = split_row(line)
+        if cells and cells[0].startswith(NOTE_ROW):
+            notes.append(f"{source}:{no}: {' | '.join(c for c in cells if c)[len(NOTE_ROW):].strip()}")
+            continue
         if cells is None or len(cells) != 3 or cells[0] == "English" or set(cells[0]) <= set("-: "):
             continue
         en, hans, hant = cells
@@ -428,6 +436,10 @@ def import_review(source):
             changed.append(en[:70])
             r["hans"], r["hant"] = hans, hant
     missing = [r["en"] for r in rows if (r["en"], r["ctx"]) not in seen]
+    if notes:
+        print(f"{len(notes)} note(s) to the developer in the file (not read into the app):")
+        for n in notes:
+            print("   ", n)
     if problems:
         for p in problems:
             print("FAIL", p)

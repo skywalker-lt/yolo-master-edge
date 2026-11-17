@@ -114,6 +114,12 @@ python3 ios/tools/translations.py export review.md   # a three-column table for 
 python3 ios/tools/translations.py import review.md   # the reviewer's changes, back into the code
 ```
 
+`import` takes the two Chinese columns; the English column is the key and has
+to come back as it went out. To reword, add or drop an English text, change
+the code first (the `tr()` call and its row in `Translations.swift`), then
+import. A row of the review file whose first cell begins with `///` is a note
+to the developer: it is printed by `import` and never read into the app.
+
 ## What the app does
 
 - **Live tab** - camera preview with detection overlay; back/front camera

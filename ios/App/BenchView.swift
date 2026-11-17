@@ -419,7 +419,7 @@ struct BenchView: View {
             }
             Text(mode == .sustained
                  ? tr("In Sustained mode these set the cold baseline the throttle is measured against.")
-                 : tr("Per model x unit cell in the cold run."))
+                 : tr("Per model × unit cell in the cold run."))
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
