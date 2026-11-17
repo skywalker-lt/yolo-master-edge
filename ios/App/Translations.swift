@@ -68,7 +68,7 @@ enum Translations {
     private static let settings: [Translation] = [
         T("Language", "语言", "語言"),
         T("System", "系统", "系統"),
-        T("System uses the language of this {0}. Screens that the system provides, such as the photo picker, stay in the language of the {0}.", "“系统”会使用此 {0} 的语言。由系统提供的界面（例如照片选取器）始终使用 {0} 的语言。", "「系統」會使用此 {0} 的語言。"),
+        T("System uses the language of this {0}.", "“系统”会使用此 {0} 的语言。", "「系統」會使用此 {0} 的語言。"),
         T("Erase all history?", "删除全部历史记录？", "刪除所有歷史紀錄？"),
         T("Erase", "删除", "刪除"),
         T("This permanently deletes all {0} saved benchmark runs.", "这将永久删除全部 {0} 条已保存的基准测试记录。", "這將永久刪除全部 {0} 筆已儲存的基準測試紀錄。"),
@@ -190,7 +190,7 @@ enum Translations {
         T("Hands", "手部", "手部"),
         T("Hand skeleton", "手部骨架", "手部骨架"),
         T("Show stats HUD", "实时状态面板", "即時統計面板"),
-        T("box", "框", "框"),
+        T("box", "检测框", "偵測框"),
         T("size", "大小", "大小"),
     ]
 

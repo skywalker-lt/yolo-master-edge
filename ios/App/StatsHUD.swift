@@ -763,6 +763,11 @@ struct TuningPanel: View {
         return pose.handLines
     }
 
+    /// Width of the column of lever names. 34 pt holds "conf", "IoU", "box" and "size", as it
+    /// always did; the Chinese name of the box lever has three characters (检测框, 偵測框),
+    /// 36 pt at this size, so in Chinese the column is 40 and the sliders 6 pt shorter.
+    private var leverNameWidth: CGFloat { localizer.language == .english ? 34 : 40 }
+
     var body: some View {
         VStack(spacing: 8) {
             if let style, !skeletonOnly {
@@ -772,6 +777,7 @@ struct TuningPanel: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .id(localizer.language)   // a picker keeps its options' names: a new one per language (Localization.swift)
             }
             if let segOverlay {
                 Picker(tr("Overlay"), selection: segOverlay) {
@@ -780,6 +786,7 @@ struct TuningPanel: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .id(localizer.language)   // a picker keeps its options' names: a new one per language (Localization.swift)
             }
             if let pose {
                 Picker(tr("Pose overlay"), selection: pose.overlay) {
@@ -788,6 +795,7 @@ struct TuningPanel: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .id(localizer.language)   // a picker keeps its options' names: a new one per language (Localization.swift)
                 if wholeBody && pose.wrappedValue.drawsSkeleton {
                     HStack(spacing: 8) {
                         OnOffButton(title: tr("Body"), isOn: pose.body)
@@ -814,20 +822,20 @@ struct TuningPanel: View {
                 .minimumScaleFactor(0.85)
             }
             HStack {
-                Text("conf").font(.caption).frame(width: 34, alignment: .leading)
+                Text("conf").font(.caption).frame(width: leverNameWidth, alignment: .leading)
                 Slider(value: $conf, in: 0.05...0.9)
                 Text(String(format: "%.2f", conf)).font(.caption.monospacedDigit()).frame(width: 34)
             }
             if let iou {
                 HStack {
-                    Text("IoU").font(.caption).frame(width: 34, alignment: .leading)
+                    Text("IoU").font(.caption).frame(width: leverNameWidth, alignment: .leading)
                     Slider(value: iou, in: 0.1...0.9)
                     Text(String(format: "%.2f", iou.wrappedValue)).font(.caption.monospacedDigit()).frame(width: 34)
                 }
             }
             if let boxScale, !skeletonOnly {
                 HStack {
-                    Text(tr("box")).font(.caption).frame(width: 34, alignment: .leading)
+                    Text(tr("box")).font(.caption).lineLimit(1).minimumScaleFactor(0.8).frame(width: leverNameWidth, alignment: .leading)
                     Slider(value: boxScale, in: 0.5...2.5)
                     Text(String(format: "%.1fx", Double(boxScale.wrappedValue)))
                         .font(.caption.monospacedDigit()).frame(width: 34)
@@ -835,13 +843,13 @@ struct TuningPanel: View {
             }
             if let pose, pose.wrappedValue.drawsSkeleton {
                 HStack {
-                    Text("kpt").font(.caption).frame(width: 34, alignment: .leading)
+                    Text("kpt").font(.caption).frame(width: leverNameWidth, alignment: .leading)
                     Slider(value: pose.minConfidence, in: 0.05...0.95)
                     Text(String(format: "%.2f", pose.wrappedValue.minConfidence))
                         .font(.caption.monospacedDigit()).frame(width: 34)
                 }
                 HStack {
-                    Text(tr("size")).font(.caption).frame(width: 34, alignment: .leading)
+                    Text(tr("size")).font(.caption).lineLimit(1).minimumScaleFactor(0.8).frame(width: leverNameWidth, alignment: .leading)
                     Slider(value: pose.size, in: 0.5...2.5)
                     Text(String(format: "%.1fx", Double(pose.wrappedValue.size)))
                         .font(.caption.monospacedDigit()).frame(width: 34)

@@ -531,6 +531,7 @@ struct LiveView: View {
                     Text(c.label).lineLimit(1).fixedSize().tag(c)
                 }
             }
+            .id(localizer.language)   // a picker keeps its options' names: a new one per language (Localization.swift)
             .fixedSize()
             .disabled(wantRun && camera.authorized)
             Spacer(minLength: 0)        // pickers left, buttons right: the bar spans the full width

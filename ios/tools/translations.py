@@ -4,7 +4,8 @@
     python3 ios/tools/translations.py check
         Every text the code passes to tr() / trKey() has a row in App/Translations.swift and
         every row is used; a row's three texts hold the same {n} placeholders and each call
-        hands over as many values; every View that calls tr() observes the Localizer.
+        hands over as many values; every View that calls tr() observes the Localizer; every
+        Picker whose options have translated names is built again for a new language.
         Also lists, to be looked at by hand, tr() calls whose text is not a literal and
         interface literals that do not go through tr().
 
@@ -76,8 +77,8 @@ NOTES = {
     ("Boxes", ""): "overlay choice: bounding boxes",
     ("Both", ""): "overlay choice",
     ("Skeleton", ""): "overlay choice",
-    ("box", ""): "lever: box line thickness and label size; at most 2 characters",
-    ("size", ""): "lever: skeleton size; at most 2 characters",
+    ("box", ""): "lever: box line thickness and label size; at most 3 characters",
+    ("size", ""): "lever: skeleton size; at most 3 characters",
     ("size", "image"): "stats row: the image's dimensions in pixels",
     ("image", ""): "stats row: which image of the batch is open",
     ("images", ""): "stats row: number of images in the batch",
@@ -200,6 +201,65 @@ def call_args(text, start):
     return None
 
 
+def close_of(text, i):
+    """text[i] opens a bracket: the index of the bracket that closes it, or None."""
+    depth, instr = 0, False
+    while i < len(text):
+        c = text[i]
+        if instr:
+            if c == '\\':
+                i += 2
+                continue
+            if c == '"':
+                instr = False
+        elif c == '"':
+            instr = True
+        elif c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def picker_parts(code, start):
+    """code[start] is the '(' of `Picker(`: -> (its options, the modifiers that follow it), or None."""
+    def blank(j):
+        while j < len(code) and code[j].isspace():
+            j += 1
+        return j
+    end = close_of(code, start)
+    if end is None:
+        return None
+    j, options = blank(end + 1), ""
+    if code[j:j + 1] == "{":
+        end = close_of(code, j)
+        if end is None:
+            return None
+        options, j = code[j:end + 1], blank(end + 1)
+        label = re.match(r'label:\s*\{', code[j:])
+        if label:
+            end = close_of(code, j + label.end() - 1)
+            if end is None:
+                return None
+            j = blank(end + 1)
+    first = j
+    while code[j:j + 1] == ".":
+        name = re.match(r'\.\w+', code[j:])
+        if not name:
+            break
+        j += name.end()
+        if code[j:j + 1] == "(":
+            end = close_of(code, j)
+            if end is None:
+                return None
+            j = end + 1
+        j = blank(j)
+    return options, code[first:j]
+
+
 UI = re.compile(
     r'\b(Text|Label|Button|Toggle|Picker|TextField|Section|Menu|Link|ContentUnavailableView|ProgressView'
     r'|DisclosureGroup|LabeledContent)\(\s*"([^"]*[A-Za-z][^"]*)"'
@@ -258,6 +318,15 @@ def check():
                     problems.append(f"{name}:{line}: placeholders are not {{0}}..{{n}}: {en[:60]!r}")
                 if len(values) != len(idx):
                     problems.append(f"{name}:{line}: {len(idx)} placeholders but {len(values)} values: {en[:60]!r}")
+        for m in re.finditer(r'\bPicker\(', code):
+            line = code.count("\n", 0, m.start()) + 1
+            parts = picker_parts(code, m.end() - 1)
+            if parts is None:
+                problems.append(f"{name}:{line}: unbalanced Picker")
+            elif (re.search(r'\.label\b|\.displayName\b|\btr\(', parts[0])
+                  and ".id(localizer.language)" not in parts[1]):
+                problems.append(f"{name}:{line}: a Picker whose options have translated names "
+                                "lacks .id(localizer.language)")
         for m in UI.finditer(code):
             line = code.count("\n", 0, m.start()) + 1
             bypass.append(f"{name}:{line}: {code[m.start():m.end()][:90]}")

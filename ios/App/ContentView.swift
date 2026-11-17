@@ -489,8 +489,14 @@ struct SettingsView: View {
             } label: {
                 Label(tr("Language"), systemImage: "globe")
             }
+            // A new picker for each text language (see Localization.swift). Reported from a
+            // device (2026-11-17): after "System" was chosen the app changed language and
+            // this row went on showing the choice by its old name ("系統" in an app that had
+            // turned English). "System" is the one choice here whose name is translated.
+            // Nothing else in Settings is rebuilt.
+            .id(localizer.language)
         } footer: {
-            Text(tr("System uses the language of this {0}. Screens that the system provides, such as the photo picker, stay in the language of the {0}.", deviceName))
+            Text(tr("System uses the language of this {0}.", deviceName))
         }
     }
 

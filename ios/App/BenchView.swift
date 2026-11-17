@@ -248,6 +248,7 @@ struct BenchView: View {
                     ForEach(Mode.allCases) { m in Text(m.label).tag(m) }
                 }
                 .pickerStyle(.segmented)
+                .id(localizer.language)   // a picker keeps its options' names: a new one per language (Localization.swift)
                 .disabled(running)
                 Button { withAnimation { showSettings.toggle() } } label: {
                     Image(systemName: "slider.horizontal.3")
@@ -381,6 +382,7 @@ struct BenchView: View {
                     ForEach(ComputeChoice.allCases) { c in Text(c.label).tag(c) }
                 }
                 .pickerStyle(.segmented)
+                .id(localizer.language)   // a picker keeps its options' names: a new one per language (Localization.swift)
             }
             // manual duration selection: a fine stepper plus quick presets
             HStack(spacing: 8) {
@@ -991,6 +993,7 @@ struct HistoryView: View {
                         Picker(tr("Sort"), selection: $sort) {
                             ForEach(SortKey.allCases) { Text($0.label).tag($0) }
                         }
+                        .id(localizer.language)   // a picker keeps its options' names: a new one per language (Localization.swift)
                     } label: {
                         Image(systemName: "arrow.up.arrow.down")
                     }

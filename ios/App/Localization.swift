@@ -15,6 +15,13 @@
 //         @ObservedObject private var localizer = Localizer.shared
 //     so its text is drawn again the moment the language changes. A view without that line
 //     keeps its old text until something else redraws it.
+//   - A Picker whose options have translated names also carries `.id(localizer.language)`.
+//     Seen on a device: after a switch a picker went on showing its options by their old
+//     names (the Language row once "System" was chosen, Bench's Cold run / Sustained
+//     switch). Its options are the same ones, only their names changed, and that alone
+//     does not make SwiftUI draw them again. A new identity does: the picker is built
+//     anew for the new language. What is selected lives in the view around it and stays.
+//     `tools/translations.py check` looks for the line.
 //
 // What is NOT translated, on purpose: CPU, GPU, Neural Engine, Core ML, NMS, IoU, conf,
 // kpt, FPS, ms and the other terms of the trade; model names; class names (they are the
