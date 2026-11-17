@@ -65,6 +65,10 @@ struct StatsHUD: View {
     var mode: DialMode = .fps
     var fullWidth: Bool = false
     var mask: Double? = nil    // seg mask-compose ms; nil hides the bar (det models)
+    /// A two-stage model (top-down pose: a person detector, then the pose model): the time
+    /// of each model, ms; `inf` is their sum. The two get a bar each - retracted, in place
+    /// of preprocess and inference; expanded, in place of inference. nil for one model.
+    var models: (first: Double, second: Double)? = nil
 
     @Environment(\.duoOuterDisplay) private var narrow   // iPhone Duo, outer display
     @ObservedObject private var localizer = Localizer.shared   // the row names follow the language
@@ -121,7 +125,12 @@ struct StatsHUD: View {
     private var details: some View {
         VStack(alignment: .leading, spacing: 5) {
             DetailBar(icon: "aspectratio", name: tr("preprocess"), ms: pre)
-            DetailBar(icon: "cpu", name: tr("inference"), ms: inf)
+            if let models {
+                DetailBar(icon: "1.square", name: tr("model 1"), ms: models.first)
+                DetailBar(icon: "2.square", name: tr("model 2"), ms: models.second)
+            } else {
+                DetailBar(icon: "cpu", name: tr("inference"), ms: inf)
+            }
             DetailBar(icon: "rectangle.dashed", name: tr("decode"), ms: dec)
             if let mask {
                 DetailBar(icon: "person.and.background.dotted", name: tr("mask"), ms: mask)
@@ -159,8 +168,14 @@ struct StatsHUD: View {
                 // bar has on the outer display of an iPhone Duo, where the bars are 60 pt
                 let bar: CGFloat = narrow ? 60 : 90
                 VStack(alignment: .leading, spacing: 5) {
-                    StageBar(icon: "aspectratio", ms: pre, barWidth: bar)        // preprocess
-                    StageBar(icon: "cpu", ms: inf, barWidth: bar)                // inference
+                    if let models {
+                        // two models: three bars as ever, the models and the decoding
+                        StageBar(icon: "1.square", ms: models.first, barWidth: bar)    // model 1
+                        StageBar(icon: "2.square", ms: models.second, barWidth: bar)   // model 2
+                    } else {
+                        StageBar(icon: "aspectratio", ms: pre, barWidth: bar)        // preprocess
+                        StageBar(icon: "cpu", ms: inf, barWidth: bar)                // inference
+                    }
                     StageBar(icon: "rectangle.dashed", ms: dec, barWidth: bar)   // decode
                     if let mask {                                                // mask compose
                         StageBar(icon: "person.and.background.dotted", ms: mask, barWidth: bar)

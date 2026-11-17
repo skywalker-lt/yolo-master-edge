@@ -768,12 +768,26 @@ public final class Detector {
         /// score. `candidates` returns these instead of decoding `y` (which is then the person
         /// detector's tensor, kept only to satisfy the field).
         fileprivate let poses: [Detection]?
+        /// The parts of a two-stage pass (top-down pose), in ms: the first model (the person
+        /// detector) and the second (the pose model, summed over the people), which together
+        /// are `inferMs`, and the decoding done inside the pass - the detector's boxes with
+        /// their NMS, and the keypoints of each person. `decodeMs` is also counted in `preMs`,
+        /// which is everything of the pass that is not model time; a frontend that shows the
+        /// decoding on its own takes it off there.
+        public struct TwoStage: Sendable {
+            public let firstMs: Double
+            public let secondMs: Double
+            public let decodeMs: Double
+        }
+        /// nil for a model that is one stage.
+        public let twoStage: TwoStage?
         fileprivate init(y: MLMultiArray, proto: MLMultiArray?, scaleX: CGFloat, scaleY: CGFloat, padX: CGFloat, padY: CGFloat,
                          origW: Int, origH: Int, inferMs: Double, preMs: Double = 0, preGpuMs: Double = 0,
-                         poses: [Detection]? = nil) {
+                         poses: [Detection]? = nil, twoStage: TwoStage? = nil) {
             self.y = y; self.proto = proto; self.scaleX = scaleX; self.scaleY = scaleY; self.padX = padX; self.padY = padY
             self.origW = origW; self.origH = origH; self.inferMs = inferMs; self.preMs = preMs; self.preGpuMs = preGpuMs
             self.poses = poses
+            self.twoStage = twoStage
         }
 
         /// A copy retaining ONLY what mask rendering needs (proto tensor + letterbox geometry),
@@ -899,6 +913,7 @@ public final class Detector {
         let people = person.decode(praw, conf: Detector.personFloor, iou: 0.7)
             .filter { $0.cls == personClass }
             .prefix(Detector.maxPersons)
+        var decodeMs = Date().timeIntervalSince(t0) * 1000     // the detector's boxes and their NMS
         var poses: [Detection] = []
         var poseMs = 0.0
         for p in people {
@@ -906,18 +921,21 @@ public final class Detector {
             guard let input = poseInput(image, region: region) else { continue }
             let ti = Date()
             let out = try model.prediction(from: input)
-            poseMs += Date().timeIntervalSince(ti) * 1000
+            let tk = Date()
+            poseMs += tk.timeIntervalSince(ti) * 1000
             guard let k = out.featureValue(for: outputName)?.multiArrayValue else { continue }
-            poses.append(Detection(cls: 0, score: p.score, rect: p.rect,
-                                   keypoints: poseKeypoints(k, region: region)))
+            let keypoints = poseKeypoints(k, region: region)
+            decodeMs += Date().timeIntervalSince(tk) * 1000     // this person's keypoints
+            poses.append(Detection(cls: 0, score: p.score, rect: p.rect, keypoints: keypoints))
         }
         // model time is both stages together; decoding the boxes and cutting the crops counts
-        // as preprocessing
+        // as preprocessing here, and `twoStage` says how much of it was decoding
         let stageMs = Date().timeIntervalSince(t0) * 1000
         return RawOutput(y: praw.y, proto: nil, scaleX: praw.scaleX, scaleY: praw.scaleY,
                          padX: praw.padX, padY: praw.padY, origW: image.width, origH: image.height,
                          inferMs: praw.inferMs + poseMs, preMs: praw.preMs + max(0, stageMs - poseMs),
-                         poses: poses)
+                         poses: poses,
+                         twoStage: RawOutput.TwoStage(firstMs: praw.inferMs, secondMs: poseMs, decodeMs: decodeMs))
     }
 
     /// The part of the frame one person's crop is cut from, as mmpose's top-down pipeline does

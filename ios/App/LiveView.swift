@@ -59,6 +59,7 @@ struct LiveView: View {
     @State private var statPre: Double = 0
     @State private var statInf: Double = 0
     @State private var statDec: Double = 0
+    @State private var statModels: (first: Double, second: Double)? = nil   // a two-stage model: each model's time
     @State private var statMask: Double = 0
     @State private var statHz: Double = 0
     @State private var statDets = 0
@@ -175,15 +176,7 @@ struct LiveView: View {
                 .opacity(flipCover)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
-            if loadingModel {
-                HStack(spacing: 10) {
-                    ProgressView()
-                    Text(tr("Loading the model ({0})", compute.label))
-                }
-                .font(.caption)
-                .padding(14)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            }
+            // (the notice of a model being loaded is an overlay of the whole tab, further down)
             VStack {
                 Spacer()
                 if camera.authorized, !models.isEmpty {
@@ -232,7 +225,8 @@ struct LiveView: View {
                                     (tr("frame age"), String(format: "%.0f ms", statAgeMs))]
                                  : [],
                              fullWidth: true,
-                             mask: isSegModel ? statMask : nil)
+                             mask: isSegModel ? statMask : nil,
+                             models: statModels)
                         .barColumn()   // as wide as the tab bar; a phone's width on a wide screen
                         // 20 pt above the tab bar. Where the tabs are in the strip at the
                         // side (iPhone Duo) there is none: the HUD goes down to where the
@@ -272,6 +266,32 @@ struct LiveView: View {
                 }
             }
             .padding(.top, topGap)      // 0 except on an iPhone Duo (`screenEdgeAware`)
+        }
+        // While a model loads, everything is dimmed and the notice lies over all of it, in
+        // the middle of the screen. The notice used to be one layer of the stack above:
+        // under the shutter row and the stats HUD, and centred in what the top bar and an
+        // open tuning panel left free. With the panel open and the HUD expanded it was
+        // squeezed between the two and covered. The dimming is only seen - nothing is
+        // switched off by it, so a load can still be paused and the tab left.
+        .overlay {
+            ZStack {
+                if loadingModel {
+                    Color.black.opacity(0.45)
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text(tr("Loading the model ({0})", compute.label))
+                    }
+                    .font(.caption)
+                    .padding(14)
+                    // a denser material than the bars': it is read against the dimmed screen
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: loadingModel)
+            .allowsHitTesting(false)
         }
         // The shutter's picture did not reach the photo library. The shutter has already
         // clicked and blinked as if it had, so this says that nothing was saved, and why;
@@ -727,7 +747,8 @@ struct LiveView: View {
                 // iPhone 0 for an upright buffer and a quarter-turn for a sideways one,
                 // as before; on an iPad whatever the interface's direction asks for.
                 let sideways = turn == 90 || turn == 270    // width and height swap
-                let frame: ([Detection], CGImage?, Double, Double, Double, Double)? = autoreleasepool {
+                let frame: ([Detection], CGImage?, Double, Double, Double, Double,
+                            (first: Double, second: Double)?)? = autoreleasepool {
                     let forwarded: Detector.RawOutput?
                     if turn != 0 {
                         forwarded = uprightFrame(pb, turn: turn).flatMap { try? det.forward($0) }
@@ -744,10 +765,17 @@ struct LiveView: View {
                         ? det.maskOverlay(Array(d.prefix(100)), raw, maxSide: 640) : nil
                     let t3 = CFAbsoluteTimeGetCurrent()
                     let fwd = (t1 - t0) * 1000
-                    return (d, mask, fwd - raw.inferMs, raw.inferMs,
-                            (t2 - t1) * 1000, (t3 - t2) * 1000)
+                    // A two-stage model decodes the detector's boxes inside its pass, between
+                    // the two models: that time belongs to the decode bar, not to preprocess,
+                    // and each model gets a bar of its own. (`decode` above only hands the
+                    // finished people over then, and the bar read 0.0.)
+                    let stages = raw.twoStage
+                    let decodedInPass = stages?.decodeMs ?? 0
+                    return (d, mask, fwd - raw.inferMs - decodedInPass, raw.inferMs,
+                            (t2 - t1) * 1000 + decodedInPass, (t3 - t2) * 1000,
+                            stages.map { (first: $0.firstMs, second: $0.secondMs) })
                 }
-                guard let (dets, mask, preMS, infMS, decMS, maskMS) = frame else { continue }
+                guard let (dets, mask, preMS, infMS, decMS, maskMS, modelsMS) = frame else { continue }
                 uiTicks += 1
                 let nowT = CFAbsoluteTimeGetCurrent()
                 if nowT - uiWindowStart >= 1.0 {
@@ -781,6 +809,7 @@ struct LiveView: View {
                     statPre = preMS
                     statInf = infMS
                     statDec = decMS
+                    statModels = modelsMS
                     statMask = maskMS
                     statHz = e2eFPS
                     statLoopHz = uiHz
@@ -938,6 +967,7 @@ struct LiveView: View {
         statPre = 0
         statInf = 0
         statDec = 0
+        statModels = nil
         statMask = 0
         statHz = 0
         statLoopHz = 0

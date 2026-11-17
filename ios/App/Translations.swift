@@ -169,6 +169,8 @@ enum Translations {
         T("frame age", "帧延迟", "影格延遲"),
         T("preprocess", "预处理", "前處理"),
         T("inference", "推理", "推論"),
+        T("model 1", "模型 1", "模型 1"),
+        T("model 2", "模型 2", "模型 2"),
         T("decode", "解码", "解碼"),
         T("mask", "分割", "遮罩"),
         T("postprocess", "后处理", "後處理"),

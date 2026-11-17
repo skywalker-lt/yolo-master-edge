@@ -165,6 +165,7 @@ private struct Shot: Identifiable {
     var pre = 0.0                           // stage times of its pass, ms
     var inf = 0.0
     var dec = 0.0
+    var models: (first: Double, second: Double)? = nil   // a two-stage model: each model's time (their sum is `inf`)
     var maskMs = 0.0
     var wall = 0.0                          // seconds its pass took in the run loop
     var done = false                        // has a result from the model that is loaded now
@@ -188,6 +189,7 @@ private struct Pass: @unchecked Sendable {
     let inf: Double
     let dec: Double
     let maskMs: Double
+    let models: (first: Double, second: Double)?    // a two-stage model: each model's time
 }
 
 /// One mask for the levers' worker to draw again (`remask`): a photo's prototypes, its
@@ -335,10 +337,11 @@ struct PhotoTestView: View {
     var body: some View {
         NavigationStack {
             // Like Live: the photos fill the screen and the bars float over them on a
-            // translucent material. The top controls and the bottom group (messages, progress,
-            // tuning panel, stats HUD) are safe-area insets, so the gallery scrolls under them
-            // and comes to rest clear of them, and the pager's photo lies under them the way
-            // the camera preview does.
+            // translucent material. The top controls and the stats HUD are safe-area insets,
+            // so the gallery scrolls under them and comes to rest clear of them, and the
+            // pager's photo lies under them the way the camera preview does. The messages,
+            // the progress bar and the tuning panel float above the HUD (`floatingBars`):
+            // the gallery keeps clear of them too, an open photo does not (`bottomBars`).
             // The bars are exactly as wide as the tab bar and as the same bars in Live
             // (`barSideInset`), so nothing shifts sideways when switching between the two tabs.
             // The photos keep their own, narrower margin.
@@ -418,6 +421,12 @@ struct PhotoTestView: View {
         let i = shown?.inf ?? avgInf
         let d = shown?.dec ?? avgDec
         let mk = shown?.maskMs ?? avgMask
+        // a two-stage model: each model's time - this photo's, or the run's averages
+        var models = shown?.models
+        if shown == nil, !done.isEmpty, done.allSatisfy({ $0.models != nil }) {
+            models = (first: done.reduce(0.0) { $0 + ($1.models?.first ?? 0) } / n,
+                      second: done.reduce(0.0) { $0 + ($1.models?.second ?? 0) } / n)
+        }
         let e2e = p + i + d + (isSeg ? mk : 0)
         var extras: [(String, String)] = []
         if let s = shown {
@@ -442,7 +451,7 @@ struct PhotoTestView: View {
                         dets: count,
                         fpsLabel: perImage ? "ms" : "FPS", active: !done.isEmpty,
                         extras: extras, mode: perImage ? .ms : .fps, fullWidth: true,
-                        mask: isSeg ? mk : nil)
+                        mask: isSeg ? mk : nil, models: models)
             .frame(maxWidth: .infinity)
             .barColumn()   // as wide as the tab bar, like Live's HUD; a phone's width on a wide screen
     }
@@ -454,6 +463,7 @@ struct PhotoTestView: View {
             ContentUnavailableView(tr("No photos"), systemImage: "photo.on.rectangle.angled",
                                    description: Text(tr("Pick up to 100 images")))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .safeAreaInset(edge: .bottom, spacing: 0) { floatingBarsRoom }
         } else {
             // The gallery is ALWAYS there, and the pager lies over it while a photo is open.
             // The two used to replace each other, each with a transition, and a gallery that
@@ -464,6 +474,7 @@ struct PhotoTestView: View {
             // where it was scrolled to).
             ZStack {
                 gallery
+                    .safeAreaInset(edge: .bottom, spacing: 0) { floatingBarsRoom }
                     .allowsHitTesting(viewMode == .gallery)
                     .accessibilityHidden(viewMode != .gallery)
                 if viewMode == .pager {
@@ -491,9 +502,11 @@ struct PhotoTestView: View {
     /// The pager itself is the whole screen, so a photo that is zoomed in passes behind the
     /// bars. At REST the photo is fitted into what the bars leave free - centred on the whole
     /// screen, its lower edge lay under the stats HUD. The reader is laid out in the safe
-    /// area, between the top bar and the bottom group, and tells each page how far that area
-    /// is from the edges of the screen; it follows the bars when the HUD is expanded or
-    /// hidden or the tuning panel opens. The background covers the gallery underneath.
+    /// area, between the top bar and the stats HUD, and tells each page how far that area
+    /// is from the edges of the screen; it follows the HUD when that is expanded or hidden.
+    /// Nothing else takes room from the photo: the tuning panel, the progress bar and the
+    /// messages lie over it (`floatingBars`). The panel used to push the photo up and make
+    /// it smaller each time it was opened. The background covers the gallery underneath.
     private var pager: some View {
         GeometryReader { free in
             let clear = free.safeAreaInsets
@@ -611,10 +624,36 @@ struct PhotoTestView: View {
             .barColumn()
     }
 
-    /// What floats over the bottom of the photos, above the tab bar. The stats HUD is last
-    /// and keeps the place it has in Live (20 pt above the tab bar, `hudBottomGap`); the rest
-    /// stacks on it.
+    /// The bottom safe-area inset: the stats HUD, in the place it has in Live (20 pt above
+    /// the tab bar, `hudBottomGap`). Its height is the only room taken from an open photo.
+    /// `floatingBars` hang above it as an overlay, which adds nothing to that height: their
+    /// lower edge is 8 pt over the HUD, or on the edge of the safe area when the HUD is
+    /// hidden - where they were when they were part of this inset. The line of no height on
+    /// top is what they hang from when there is no HUD; it is as wide as the screen.
     private var bottomBars: some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: 0)
+            if showHUD { hud.padding(.bottom, hudGap) }
+        }
+        .overlay(alignment: .top) {
+            if hasFloatingBars {
+                floatingBars
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, showHUD ? 8 : 0)
+                    .alignmentGuide(.top) { d in d[VerticalAlignment.bottom] }   // wholly above the inset
+            }
+        }
+    }
+
+    /// Whether anything floats above the stats HUD just now.
+    private var hasFloatingBars: Bool {
+        !importNote.isEmpty || !errorText.isEmpty || phase != .idle || showTuning
+    }
+
+    /// What lies over the photos, above the stats HUD: the messages, the progress bar and
+    /// the tuning panel. They come and go, and an open photo keeps its size and place under
+    /// them; only the HUD takes room from it.
+    private var floatingBars: some View {
         VStack(spacing: 8) {
             if !importNote.isEmpty {
                 noticeBox(importNote)
@@ -632,7 +671,19 @@ struct PhotoTestView: View {
                             boxScale: $boxScale)
                     .barColumn()
             }
-            if showHUD { hud.padding(.bottom, hudGap) }
+        }
+    }
+
+    /// The room `floatingBars` take, as a bottom inset for what has to stay clear of them:
+    /// the gallery, which comes to rest above them, and the empty screen, which centres its
+    /// text above them. It is the bars themselves, laid out and not drawn, so it is exactly
+    /// as high as they are, 8 pt gap to the HUD included; nothing when there are none.
+    @ViewBuilder private var floatingBarsRoom: some View {
+        if hasFloatingBars {
+            floatingBars
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, showHUD ? 8 : 0)
+                .hidden()
         }
     }
 
@@ -1091,8 +1142,13 @@ struct PhotoTestView: View {
                         let pool = Array(det.candidates(raw, confFloor: candidateFloor).prefix(candidateCap))
                         return Pass(dets: d, mask: mk, pool: pool,
                                     protos: det.isSegment ? raw.maskOnlyCompact() : nil,
-                                    pre: (b - a) * 1000 - raw.inferMs, inf: raw.inferMs,
-                                    dec: (c - b) * 1000, maskMs: (e - c) * 1000)
+                                    // a two-stage model decodes inside its pass: that time is
+                                    // the decode bar's, not the preprocess bar's (see Live)
+                                    pre: (b - a) * 1000 - raw.inferMs - (raw.twoStage?.decodeMs ?? 0),
+                                    inf: raw.inferMs,
+                                    dec: (c - b) * 1000 + (raw.twoStage?.decodeMs ?? 0),
+                                    maskMs: (e - c) * 1000,
+                                    models: raw.twoStage.map { (first: $0.firstMs, second: $0.secondMs) })
                     }
                     // this photo's share of the run's wall time: from the end of the previous
                     // pass to the end of this one, so the shares add up to the whole loop
@@ -1125,6 +1181,7 @@ struct PhotoTestView: View {
         s.pre = pass.pre
         s.inf = pass.inf
         s.dec = pass.dec
+        s.models = pass.models
         s.maskMs = pass.maskMs
         s.wall = wall
         s.done = true

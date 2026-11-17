@@ -65,6 +65,8 @@ NOTES = {
     ("frame age", ""): "stats row: how old a frame is when it arrives",
     ("dets", ""): "under the number of detected objects; very short",
     ("mask", ""): "stats row: time to draw the segmentation masks",
+    ("model 1", ""): "stats row of a two-model pipeline: time of the first model (it finds the people)",
+    ("model 2", ""): "stats row of a two-model pipeline: time of the second model (the pose of each person)",
     ("end to end", ""): "stats row: total time for one image",
     ("Style", ""): "picker: how boxes are drawn",
     ("Solid", ""): "box style",
