@@ -227,8 +227,9 @@ private enum SelectionPrompt {
     }
 }
 
-/// Why a save to the photo library did not happen, in words for the user.
-private struct SaveFailure {
+/// Why a save to the photo library did not happen, in words for the user. Photo's export
+/// and Live's shutter both report with it.
+struct SaveFailure {
     let message: String
     let offerSettings: Bool     // the fix is a switch in the app's page of the Settings app
 

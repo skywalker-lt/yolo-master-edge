@@ -80,6 +80,7 @@ struct LiveView: View {
     @State private var focusVisible = false
     @State private var shutterFlash = false   // brief black blink on capture
     @State private var capturing = false      // capture->compose->save in flight
+    @State private var saveProblem: SaveFailure?   // the shutter's picture was not saved -> alert with the reason
     @State private var lensExpanded = false   // zoom chip expanded to lens buttons
     @State private var lensCollapse: Task<Void, Never>?
     @State private var lensRect: CGRect = .zero   // global frame of the lens picker
@@ -271,6 +272,25 @@ struct LiveView: View {
                 }
             }
             .padding(.top, topGap)      // 0 except on an iPhone Duo (`screenEdgeAware`)
+        }
+        // The shutter's picture did not reach the photo library. The shutter has already
+        // clicked and blinked as if it had, so this says that nothing was saved, and why;
+        // when the reason is the app's Photos permission it leads to the switch, as the
+        // alert of the Photo tab does. It used to fail without a word.
+        .alert(tr("Failed to save the captured image to library"),
+               isPresented: Binding(get: { saveProblem != nil },
+                                    set: { if !$0 { saveProblem = nil } }),
+               presenting: saveProblem) { problem in
+            if problem.offerSettings {
+                Button(tr("Open Settings")) {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+            }
+            Button(tr("OK"), role: .cancel) { }
+        } message: { problem in
+            Text(problem.message)
         }
         .onChange(of: allowCPU) { _, on in if !on && compute == .cpu { compute = ComputeChoice.deviceDefault } }
         .onChange(of: selectedModel) { _, picked in
@@ -862,11 +882,30 @@ struct LiveView: View {
                                    label: labelMode, drawBoxes: drawBoxes, pose: poseNow) ?? img
                 }
                 let ui = UIImage(cgImage: img)
-                if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
-                    _ = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+                // Add-only access, asked for at the first picture. A refusal (just now, in
+                // the prompt, or earlier), a restriction and an error of the save itself
+                // are all reported: the picture is not in the library.
+                var status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+                if status == .notDetermined {
+                    status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
                 }
-                try? await PHPhotoLibrary.shared().performChanges {
-                    PHAssetChangeRequest.creationRequestForAsset(from: ui)
+                var failure: SaveFailure? = nil
+                if status == .denied {
+                    failure = SaveFailure.denied
+                } else if status == .restricted {
+                    failure = SaveFailure.restricted
+                } else {
+                    do {
+                        try await PHPhotoLibrary.shared().performChanges {
+                            PHAssetChangeRequest.creationRequestForAsset(from: ui)
+                        }
+                    } catch {
+                        failure = SaveFailure.describing(error)
+                    }
+                }
+                let problem = failure
+                if let problem {
+                    await MainActor.run { saveProblem = problem }
                 }
                 await rearmShutter(t0)
             }

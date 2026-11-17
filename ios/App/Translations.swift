@@ -161,6 +161,7 @@ enum Translations {
         T("Camera access required", "需要相机访问权限", "需要相機取用權限"),
         T("Allow camera access to run live detection", "请允许访问相机以进行实时检测", "請允許取用相機以進行即時偵測"),
         T("Switch to the back camera", "切换到后置相机", "切換至後置相機"),
+        T("Failed to save the captured image to library", "无法保存拍摄的照片到本地", "無法存儲截取的相片到裝置"),
         T("Switch to the front camera", "切换到前置相机", "切換至前置相機"),
         T("{0} could not be loaded. {1}", "{0} 无法加载。{1}", "{0} 無法載入。{1}"),
         T("camera", "相机", "相機"),
