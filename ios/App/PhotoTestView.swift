@@ -340,13 +340,17 @@ struct PhotoTestView: View {
             // translucent material. The top controls and the stats HUD are safe-area insets,
             // so the gallery scrolls under them and comes to rest clear of them, and the
             // pager's photo lies under them the way the camera preview does. The messages,
-            // the progress bar and the tuning panel float above the HUD (`floatingBars`):
-            // the gallery keeps clear of them too, an open photo does not (`bottomBars`).
+            // the progress bar and the tuning panel are an overlay of this stack, at the lower
+            // edge of what the two insets leave free - that is just above the HUD - and take
+            // no room from an open photo (`floatingBars`); the gallery keeps clear of them.
             // The bars are exactly as wide as the tab bar and as the same bars in Live
             // (`barSideInset`), so nothing shifts sideways when switching between the two tabs.
             // The photos keep their own, narrower margin.
             ZStack { content }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .bottom) {
+                    floatingBars.fixedSize(horizontal: false, vertical: true)
+                }
                 .toolbar(.hidden, for: .navigationBar)
                 .safeAreaInset(edge: .top) { topBar.padding(.top, topGap) }   // 0 except on an iPhone Duo
                 .safeAreaInset(edge: .bottom) { bottomBars }
@@ -624,24 +628,16 @@ struct PhotoTestView: View {
             .barColumn()
     }
 
-    /// The bottom safe-area inset: the stats HUD, in the place it has in Live (20 pt above
-    /// the tab bar, `hudBottomGap`). Its height is the only room taken from an open photo.
-    /// `floatingBars` hang above it as an overlay, which adds nothing to that height: their
-    /// lower edge is 8 pt over the HUD, or on the edge of the safe area when the HUD is
-    /// hidden - where they were when they were part of this inset. The line of no height on
-    /// top is what they hang from when there is no HUD; it is as wide as the screen.
+    /// The bottom safe-area inset: the stats HUD and nothing else, in the place it has in
+    /// Live (20 pt above the tab bar, `hudBottomGap`). Its height is the only room taken
+    /// from an open photo. The stack is the one the messages, the progress bar and the
+    /// tuning panel used to be in as well, so the HUD is where it was.
+    /// (For one build those bars were an overlay of THIS view, hung above it by an
+    /// alignment guide. On the device the guide had no effect: they began at the HUD's
+    /// upper edge and ran down over it and under the tab bar - 1021.PNG, 1022.PNG.)
     private var bottomBars: some View {
-        VStack(spacing: 0) {
-            Color.clear.frame(height: 0)
+        VStack(spacing: 8) {
             if showHUD { hud.padding(.bottom, hudGap) }
-        }
-        .overlay(alignment: .top) {
-            if hasFloatingBars {
-                floatingBars
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, showHUD ? 8 : 0)
-                    .alignmentGuide(.top) { d in d[VerticalAlignment.bottom] }   // wholly above the inset
-            }
         }
     }
 
@@ -652,7 +648,9 @@ struct PhotoTestView: View {
 
     /// What lies over the photos, above the stats HUD: the messages, the progress bar and
     /// the tuning panel. They come and go, and an open photo keeps its size and place under
-    /// them; only the HUD takes room from it.
+    /// them; only the HUD takes room from it. The body lays them over the content with
+    /// their lower edge on the lower edge of the free area, the line an open photo is
+    /// fitted to: the same small gap to the HUD as the photo has.
     private var floatingBars: some View {
         VStack(spacing: 8) {
             if !importNote.isEmpty {
@@ -677,12 +675,13 @@ struct PhotoTestView: View {
     /// The room `floatingBars` take, as a bottom inset for what has to stay clear of them:
     /// the gallery, which comes to rest above them, and the empty screen, which centres its
     /// text above them. It is the bars themselves, laid out and not drawn, so it is exactly
-    /// as high as they are, 8 pt gap to the HUD included; nothing when there are none.
+    /// as high as they are, plus 8 pt between them and the last row; nothing when there
+    /// are none.
     @ViewBuilder private var floatingBarsRoom: some View {
         if hasFloatingBars {
             floatingBars
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, showHUD ? 8 : 0)
+                .padding(.top, 8)
                 .hidden()
         }
     }
