@@ -25,8 +25,8 @@
 //
 // What is NOT translated, on purpose: CPU, GPU, Neural Engine, Core ML, NMS, IoU, conf,
 // kpt, FPS, ms and the other terms of the trade; model names; class names (they are the
-// model's own output and are drawn into saved images); licence names and copyright lines;
-// the licence notice in Settings (its English text is the notice); CSV exports.
+// model's own output and are drawn into saved images); licence names and copyright lines
+// (also inside the licence notice in Settings, whose sentences are translated); CSV exports.
 //
 // The tables are Swift code and not .strings files because the language is switched while
 // the app runs: iOS loads a .strings table for the language the APP was started in and

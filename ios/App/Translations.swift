@@ -150,6 +150,23 @@ enum Translations {
         T("Opens a new issue on GitHub in your browser.", "在浏览器中打开 GitHub 的新建 Issue 页面。", "在瀏覽器中開啟 GitHub 的新增 Issue 頁面。"),
         T("{0} is not a Core ML model and contains none (.mlpackage, .mlmodelc, .mlmodel).", "{0} 不是 Core ML 模型，其中也不包含任何模型（.mlpackage、.mlmodelc、.mlmodel）。", "{0} 不是 Core ML 模型，其中也不包含任何模型（.mlpackage、.mlmodelc、.mlmodel）。"),
         T("{0} was not imported. {1}", "{0} 未导入。{1}", "{0} 未加載。{1}"),
+
+        // MARK: Settings: the licence notice
+        // The notice in the grey box, paragraph by paragraph and in its order (`iosLicenseNotice`).
+        // Names, copyright lines, licence names and addresses are the same in all three columns.
+        T("YOLO-Master Edge iOS App", "YOLO-Master Edge iOS App", "YOLO-Master Edge iOS App"),
+        T("Copyright (C) 2026 (Thomas) RUIHENG LI", "Copyright (C) 2026 (Thomas) RUIHENG LI", "Copyright (C) 2026 (Thomas) RUIHENG LI"),
+        T("(Author affiliated with The Hong Kong University of Science and Technology)", "（作者隶属于香港科技大学）", "（作者隸屬於香港科技大學）"),
+        T("YOLO-Master Edge iOS App runs YOLO-Master and other modern real-time object detection (RTOD) models on-device using Apple's Core ML.", "YOLO-Master Edge iOS 应用借助 Apple 的 Core ML 在端侧运行 YOLO-Master 及其它现代实时目标检测模型。", "YOLO-Master Edge iOS App 使用 Apple 的 Core ML 在裝置端運行 YOLO-Master 及其它現代即時物件偵測模型。"),
+        T("The source code of this app is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). See <https://www.gnu.org/licenses/> for the full terms.", "本应用的源码以 GNU Affero General Public License 第 3 版（AGPL-3.0）许可证发布。完整条款详见 <https://www.gnu.org/licenses/>。", "本 App 的原始碼以 GNU Affero General Public License 第 3 版（AGPL-3.0）授權條款釋出。完整條款請見 <https://www.gnu.org/licenses/>。"),
+        T("It builds upon or for the following third-party projects:", "本应用基于以下第三方项目构建：", "本 App 基於下列第三方專案構建："),
+        T("* YOLO-Master - Copyright (C) 2026 Tencent. Licensed under the AGPL-3.0. Based on ultralytics.", "* YOLO-Master - Copyright (C) 2026 Tencent. 采用 AGPL-3.0 许可证。基于 ultralytics。", "* YOLO-Master - Copyright (C) 2026 Tencent. 採用 AGPL-3.0 授權條款。基於 ultralytics。"),
+        T("* ultralytics - Copyright (c) 2025 Ultralytics. Licensed under the AGPL-3.0.", "* ultralytics - Copyright (c) 2025 Ultralytics. 采用 AGPL-3.0 许可证。", "* ultralytics - Copyright (c) 2025 Ultralytics. 採用 AGPL-3.0 授權條款。"),
+        T("* MMPose - Copyright 2018-2020 Open-MMLab. Licensed under the Apache License 2.0. Source of the RTMW whole-body pose model. <https://github.com/open-mmlab/mmpose>", "* MMPose - Copyright 2018-2020 Open-MMLab. 采用 Apache License 2.0 许可证。RTMW 全身姿势模型的来源。<https://github.com/open-mmlab/mmpose>", "* MMPose - Copyright 2018-2020 Open-MMLab. 採用 Apache License 2.0 授權條款。RTMW 全身姿態模型的來源。<https://github.com/open-mmlab/mmpose>"),
+        T("* coremltools - Copyright (c) 2020-2023, Apple Inc. Licensed under the BSD-3-Clause License.", "* coremltools - Copyright (c) 2020-2023, Apple Inc. 采用 BSD-3-Clause 许可证。", "* coremltools - Copyright (c) 2020-2023, Apple Inc. 採用 BSD-3-Clause 授權條款。"),
+        T("The models bundled with this app come from YOLO-Master, ultralytics and MMPose, and remain under the terms of those projects.", "本应用内置的默认模型源自 YOLO-Master、ultralytics 和 MMPose，并继续适用这些项目各自的条款。", "本 App 內建的模型來自 YOLO-Master、ultralytics 與 MMPose，並繼續適用這些專案各自的條款。"),
+        T("USE NOTICE: This app as distributed is non-commercial regardless of what model it runs. The authors release it for research and personal experience only. This notice does not change the AGPL-3.0 terms of the source code.", "使用声明：本应用的发行版不可直接商用，无论其所运行的模型本身或源项目是否允许商用。作者发布本应用仅供科研和个人体验用途。本声明不改变源代码所适用的 AGPL-3.0 条款。", "使用聲明：本 App 的釋出版本不允許直接的商業用途，無論其運行的模型本體或原專案是否允許商用。作者釋出本 App 僅供科學研究與個人體驗。本聲明不改變原始碼所適用的 AGPL-3.0 條款。"),
+        T("NO WARRANTY: This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.", "无担保声明：发布本应用程序是希望它能有所用处，但不提供任何担保，甚至不包含对适销性或特定用途适用性的默示担保。", "無擔保聲明：釋出本 App 程式是希望它能有所用處，但不提供任何擔保，甚至不包含對適售性或特定用途適用性的默示擔保。"),
     ]
 
     // MARK: Live, the stats HUD and the tuning panel

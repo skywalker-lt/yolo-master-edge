@@ -81,54 +81,44 @@ func ackLogo(_ name: String, _ ext: String) -> UIImage? {
 
 /// The notice in the box at the end of Licenses & Acknowledgements.
 ///
-/// Every paragraph is ONE line of text and the view wraps it to the width it has. It used
-/// to be broken by hand at 64 columns. The box holds about 44 characters of this font on
-/// an iPhone, so every line broke a second time in its middle, and the two rules of 64
-/// "=" ran onto a second line (reported with 1016.png, 2026-11-16). A backslash at the
-/// end of a source line joins it to the next one, which keeps the source readable
-/// without putting a line break into the text. Do not break paragraphs by hand again.
-/// The words are those of the hand-broken notice; only its line breaks, the indentation
-/// of the list and the two rules went. The app is named YOLO-Master Edge in it since
-/// 2026-11-16 (it was "YOLO-Master iOS App"); "YOLO-Master" alone is the upstream project
-/// and its models, and stays where it means those.
-/// The notice is shown in ENGLISH in every language of the app: it is the notice itself,
-/// not a description of it. The three paragraphs above it in Settings are translated.
-let iosLicenseNotice = """
-YOLO-Master Edge iOS App
-Copyright (C) 2026 (Thomas) RUIHENG LI
-(Author affiliated with The Hong Kong University of Science and Technology)
-
-YOLO-Master Edge iOS App runs YOLO-Master models on-device using Apple's Core ML. \
-It shares the YOLOMasterKit inference path with the macOS tools.
-
-The source code of this app is licensed under the GNU Affero General Public License, \
-version 3 (AGPL-3.0). See <https://www.gnu.org/licenses/> for the full terms.
-
-It builds upon the following third-party projects:
-
-* YOLO-Master - Copyright (C) 2026 Tencent. Licensed under the AGPL-3.0. \
-Based on ultralytics.
-
-* ultralytics - Copyright (c) 2025 Ultralytics. Licensed under the AGPL-3.0.
-
-* MMPose - Copyright 2018-2020 Open-MMLab. Licensed under the Apache License 2.0. \
-Source of the RTMW whole-body pose model. <https://github.com/open-mmlab/mmpose>
-
-* coremltools - Copyright (c) 2020-2023, Apple Inc. Licensed under the \
-BSD-3-Clause License.
-
-The models bundled with this app come from YOLO-Master, ultralytics and MMPose, \
-and remain under the terms of those projects.
-
-USE NOTICE: This app, as distributed with the models it bundles, is non-commercial. \
-The authors release it for research and personal experience only, and neither intend \
-nor support commercial use. This notice does not change the AGPL-3.0 terms of the \
-source code.
-
-NO WARRANTY: This program is distributed in the hope that it will be useful, but \
-WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or \
-FITNESS FOR A PARTICULAR PURPOSE.
-"""
+/// Every paragraph is ONE text and the view wraps it to the width it has. It used to be
+/// broken by hand at 64 columns. The box holds about 44 characters of this font on an
+/// iPhone, so every line broke a second time in its middle, and the two rules of 64 "="
+/// ran onto a second line (reported with 1016.png, 2026-11-16). Do not break paragraphs
+/// by hand again.
+/// The English words are those of the hand-broken notice; only its line breaks, the
+/// indentation of the list and the two rules went. The app is named YOLO-Master Edge in
+/// it since 2026-11-16 (it was "YOLO-Master iOS App"); "YOLO-Master" alone is the upstream
+/// project and its models, and stays where it means those.
+/// Since 2026-11-18 the notice follows the language of the app, paragraph by paragraph
+/// (rows under "Settings: the licence notice" in Translations.swift); up to then it was
+/// English in every language. The app's name, the copyright lines, the names of the
+/// projects and of the licences and the addresses are the same in every language; the
+/// two top lines have rows all the same, with that text in all three columns, so that
+/// the table holds the whole notice and it can be handed to a reviewer as an article.
+/// Three English paragraphs are his of 2026-11-18, written in that review file: what the
+/// app runs ("YOLO-Master and other modern real-time object detection (RTOD) models"; the
+/// sentence about YOLOMasterKit went), "builds upon or for", and the use notice ("as
+/// distributed is non-commercial regardless of what model it runs"; "neither intend nor
+/// support commercial use" went). The other paragraphs are word for word the old ones.
+func iosLicenseNotice() -> String {
+    [
+        [tr("YOLO-Master Edge iOS App"),
+         tr("Copyright (C) 2026 (Thomas) RUIHENG LI"),
+         tr("(Author affiliated with The Hong Kong University of Science and Technology)")]
+            .joined(separator: "\n"),
+        tr("YOLO-Master Edge iOS App runs YOLO-Master and other modern real-time object detection (RTOD) models on-device using Apple's Core ML."),
+        tr("The source code of this app is licensed under the GNU Affero General Public License, version 3 (AGPL-3.0). See <https://www.gnu.org/licenses/> for the full terms."),
+        tr("It builds upon or for the following third-party projects:"),
+        tr("* YOLO-Master - Copyright (C) 2026 Tencent. Licensed under the AGPL-3.0. Based on ultralytics."),
+        tr("* ultralytics - Copyright (c) 2025 Ultralytics. Licensed under the AGPL-3.0."),
+        tr("* MMPose - Copyright 2018-2020 Open-MMLab. Licensed under the Apache License 2.0. Source of the RTMW whole-body pose model. <https://github.com/open-mmlab/mmpose>"),
+        tr("* coremltools - Copyright (c) 2020-2023, Apple Inc. Licensed under the BSD-3-Clause License."),
+        tr("The models bundled with this app come from YOLO-Master, ultralytics and MMPose, and remain under the terms of those projects."),
+        tr("USE NOTICE: This app as distributed is non-commercial regardless of what model it runs. The authors release it for research and personal experience only. This notice does not change the AGPL-3.0 terms of the source code."),
+        tr("NO WARRANTY: This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE."),
+    ].joined(separator: "\n\n")
+}
 
 // MARK: - Settings
 
@@ -349,7 +339,7 @@ struct SettingsView: View {
                     // tertiary GROUPED background: one step off the form cell in
                     // both appearances (the plain secondary background is the
                     // cell's own color in dark mode, so the box vanished there)
-                    Text(iosLicenseNotice)
+                    Text(iosLicenseNotice())
                         .font(.system(size: 11, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)

@@ -90,10 +90,10 @@ Traditional Chinese is one translation for Taiwan, Hong Kong and Macau.
 - Not translated, on purpose: CPU, GPU, Neural Engine, Core ML, NMS, IoU,
   conf, kpt, FPS, ms and the other terms of the trade; model names; class
   names (they are the model's own output and are drawn into saved images);
-  licence names and copyright lines; the licence notice in Settings (its
-  English text is the notice); CSV exports and the stored names of compute
-  units and benchmark modes; the Kit's reasons for refusing a model, which
-  quote the model's own tensor names.
+  licence names and copyright lines, also inside the licence notice in
+  Settings (its sentences are translated since 2026-11-18); CSV exports and
+  the stored names of compute units and benchmark modes; the Kit's reasons
+  for refusing a model, which quote the model's own tensor names.
 - A message that is kept, such as the note about a photo that was not
   imported or the name of a saved benchmark run, stays in the language it was
   made in.
@@ -112,6 +112,8 @@ Traditional Chinese is one translation for Taiwan, Hong Kong and Macau.
 python3 ios/tools/translations.py check              # every text has both translations, and more
 python3 ios/tools/translations.py export review.md   # a three-column table for a reviewer
 python3 ios/tools/translations.py import review.md   # the reviewer's changes, back into the code
+# one section only, and as three articles (English, 简体, 繁體) where a table is hard to read:
+python3 ios/tools/translations.py export notice.md "Settings: the licence notice" articles
 ```
 
 `import` takes the two Chinese columns; the English column is the key and has
@@ -119,6 +121,8 @@ to come back as it went out. To reword, add or drop an English text, change
 the code first (the `tr()` call and its row in `Translations.swift`), then
 import. A row of the review file whose first cell begins with `///` is a note
 to the developer: it is printed by `import` and never read into the app.
+A file of three articles is read back by `import` as well, paragraph by
+paragraph; there a note is a paragraph that begins with `///`.
 
 ## What the app does
 

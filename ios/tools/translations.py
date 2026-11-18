@@ -9,9 +9,15 @@
         Also lists, to be looked at by hand, tr() calls whose text is not a literal and
         interface literals that do not go through tr().
 
-    python3 ios/tools/translations.py export [review.md]
+    python3 ios/tools/translations.py export [review.md ["section" [articles]]]
         A Markdown file with one three-column table per screen: English, Simplified
-        Chinese, Traditional Chinese. Without a file name it is printed.
+        Chinese, Traditional Chinese. Without a file name it is printed. With the title of
+        a section after the file name (a `// MARK:` line of Translations.swift, for
+        instance "Settings: the licence notice") only that section is written; `import`
+        takes such a file as well and leaves every other text as it is.
+        With `articles` after the section, the section is written as three articles, one
+        per language, each text a paragraph of its own: for long texts that read as one
+        piece, where a table is hard to read. `import` reads that form too.
 
     python3 ios/tools/translations.py import review.md
         Reads an amended review file back: the two Chinese columns replace the rows of
@@ -20,6 +26,9 @@
         reworded, added or dropped in English is changed in the code first (the tr() call
         and its row), then the file is read. A row whose first cell begins with /// is a
         note to the developer; it is printed and never read into the app.
+        A file of three articles is read paragraph by paragraph: the n-th paragraph of each
+        Chinese article is the translation of the n-th paragraph of the English one. A
+        paragraph that begins with /// is a note to the developer.
 
 Nothing here is needed to build the app. Python 3.8 or later, no packages.
 """
@@ -36,6 +45,7 @@ PROMPTS = {"hans": os.path.join(APP, "zh-Hans.lproj", "InfoPlist.strings"),
            "en": os.path.join(APP, "en.lproj", "InfoPlist.strings")}
 PROMPT_HEADING = "iOS permission prompts"
 NOTE_ROW = "///"        # a review-file row that starts with this is a note to the developer
+ARTICLES = (("English", "en"), ("简体中文", "hans"), ("繁體中文", "hant"))     # heading, column
 
 LIT = r'"((?:[^"\\]|\\.)*)"'
 ROW = re.compile(r'^(\s*)T\(' + LIT + r', ' + LIT + r', ' + LIT + r'(?:, context: "([^"]*)")?\),\s*$')
@@ -395,11 +405,49 @@ def english_cell(r):
     return out
 
 
-def export(target):
-    rows = read_table()
+def export_articles(target, only, rows):
+    """One section as three articles. A paragraph is one text; the order is the table's."""
+    for r in rows:
+        if r["ctx"]:
+            fail_exit(f"Translations.swift:{r['line']}: a text with a context cannot go into an article")
     out = ["# YOLO-Master Edge for iOS: translations for review",
            "",
-           "Every text of the app in English, Simplified Chinese and Traditional Chinese.",
+           f"The texts of “{only}” three times over: in English, in Simplified Chinese and in Traditional Chinese.",
+           "",
+           "How to edit",
+           "",
+           "- The three articles have the same paragraphs in the same order, with an empty line between two paragraphs. Keep their number and their order, and keep each paragraph on one line.",
+           "- Change the two Chinese articles freely.",
+           "- A change to the English article changes the English text of the app. That is fine: the developer carries it into the code before the file is read.",
+           "- Do not use the straight double quote `\"` or a backslash.",
+           "- A paragraph that begins with `///` is a note to the developer. It is never shown in the app.",
+           ""]
+    for heading, column in ARTICLES:
+        out += [f"## {heading}", ""]
+        for r in rows:
+            out += [r[column], ""]
+    text = "\n".join(out)
+    if target:
+        open(target, "w", encoding="utf8").write(text)
+        print(f"{target}: {len(rows)} texts as three articles")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def export(target, only=None, articles=False):
+    rows = read_table()
+    if only is not None:
+        rows = [r for r in rows if r["section"] == only]
+        if not rows:
+            fail_exit(f"no section {only!r} in Translations.swift")
+    if articles:
+        return export_articles(target, only, rows)
+    out = ["# YOLO-Master Edge for iOS: translations for review",
+           "",
+           (f"The texts of the section “{only}” in English, Simplified Chinese and Traditional Chinese."
+            if only is not None else
+            "Every text of the app in English, Simplified Chinese and Traditional Chinese."),
            "",
            "How to review",
            "",
@@ -411,7 +459,7 @@ def export(target):
            "- Do not use the straight double quote `\"` or a backslash in a translation.",
            "- An *(note: ...)* after an English text says where it appears. It is not shown in the app.",
            "- To say something to the developer (an English text that should change, a text to add or to drop), add a row whose first cell begins with `///`. Such a row is read as a note and never shown in the app.",
-           "- The licence notice in the grey box in Settings is not in this file: it stays in English.",
+           "- The section “Settings: the licence notice” is the notice in the grey box, one row per paragraph. The names of projects and licences, the copyright lines and the addresses in it are the same in every language.",
            ""]
     section = None
     for r in rows:
@@ -420,9 +468,12 @@ def export(target):
             out += ["", f"## {section}", "", "| English | 简体中文 | 繁體中文 |", "|---|---|---|"]
         out.append(f"| {english_cell(r)} | {cell(r['hans'])} | {cell(r['hant'])} |")
     en, hans, hant = (read_strings(PROMPTS[k]) for k in ("en", "hans", "hant"))
-    out += ["", f"## {PROMPT_HEADING}", "",
-            "Shown by iOS itself when the app first asks for the camera, and when it first saves a picture.", "",
-            "| English | 简体中文 | 繁體中文 |", "|---|---|---|"]
+    if only is not None:
+        en = {}             # one section: the permission prompts are not part of it
+    else:
+        out += ["", f"## {PROMPT_HEADING}", "",
+                "Shown by iOS itself when the app first asks for the camera, and when it first saves a picture.", "",
+                "| English | 简体中文 | 繁體中文 |", "|---|---|---|"]
     for key in en:
         out.append(f"| {cell(en[key])} | {cell(hans.get(key, ''))} | {cell(hant.get(key, ''))} |")
     text = "\n".join(out) + "\n"
@@ -456,6 +507,54 @@ def split_row(line):
     return cells
 
 
+def read_articles(source):
+    """A file of three articles -> (table lines for import, problems), or None when the file is not one.
+    The n-th paragraph of each Chinese article goes with the n-th of the English one."""
+    lines = open(source, encoding="utf8").read().split("\n")
+    headings = {h: c for h, c in ARTICLES}
+    if not any(l.strip() == "## English" for l in lines):
+        return None
+    paras, column, cur, start = {c: [] for _, c in ARTICLES}, None, [], 0
+    def close():
+        if column and cur:
+            paras[column].append((start, list(cur)))
+        del cur[:]
+    for no, line in enumerate(lines, 1):
+        s = line.strip()
+        if s.startswith("## "):
+            close()
+            column = headings.get(s[3:].strip())
+        elif s.startswith("# "):
+            close()
+            column = None
+        elif not s:
+            close()
+        elif column:
+            if not cur:
+                start = no
+            cur.append(s)
+    close()
+    problems, notes, texts = [], [], {}
+    for _, c in ARTICLES:
+        texts[c] = []
+        for start, para in paras[c]:
+            if para[0].startswith(NOTE_ROW):
+                notes.append(f"{source}:{start}: {' '.join(para)[len(NOTE_ROW):].strip()}")
+            elif len(para) > 1:
+                problems.append(f"{source}:{start}: a paragraph on {len(para)} lines (keep each paragraph on one line)")
+            else:
+                texts[c].append((start, para[0]))
+    n = len(texts["en"])
+    for heading, c in ARTICLES[1:]:
+        if len(texts[c]) != n:
+            problems.append(f"{source}: the article {heading} has {len(texts[c])} paragraphs, the English one {n}")
+    table = []
+    if not problems:
+        for (no, en), (_, hans), (_, hant) in zip(texts["en"], texts["hans"], texts["hant"]):
+            table.append((no, f"| {cell(en)} | {cell(hans)} | {cell(hant)} |"))
+    return table, problems, notes
+
+
 def import_review(source):
     rows = read_table()
     by_key = {(r["en"], r["ctx"]): r for r in rows}
@@ -463,7 +562,13 @@ def import_review(source):
     prompt_key = {text: key for key, text in en_prompts.items()}
     new_prompts = {"hans": dict(read_strings(PROMPTS["hans"])), "hant": dict(read_strings(PROMPTS["hant"]))}
     problems, changed, seen, in_prompts, notes = [], [], set(), False, []
-    for no, line in enumerate(open(source, encoding="utf8"), 1):
+    articles = read_articles(source)
+    if articles is not None:
+        numbered, problems, found = articles
+        notes += found
+    else:
+        numbered = list(enumerate(open(source, encoding="utf8"), 1))
+    for no, line in numbered:
         if line.startswith("## "):
             in_prompts = line[3:].strip() == PROMPT_HEADING
             continue
@@ -542,8 +647,9 @@ def main():
     args = sys.argv[1:]
     if args[:1] == ["check"] and len(args) == 1:
         return check()
-    if args[:1] == ["export"] and len(args) <= 2:
-        return export(args[1] if len(args) == 2 else None)
+    if args[:1] == ["export"] and (len(args) <= 3 or (len(args) == 4 and args[3] == "articles")):
+        return export(args[1] if len(args) >= 2 else None, args[2] if len(args) >= 3 else None,
+                      articles=len(args) == 4)
     if args[:1] == ["import"] and len(args) == 2:
         return import_review(args[1])
     print(__doc__)
