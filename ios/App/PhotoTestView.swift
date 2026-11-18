@@ -285,6 +285,8 @@ struct PhotoTestView: View {
     @State private var nextShotID = 0
     @State private var page = 0
     @State private var viewMode: ViewMode = .gallery
+    @State private var leaving = false               // a photo is being left: the pager fades, then goes (`closePager`)
+    @State private var leaveGen = 0                  // which leaving a wait belongs to
     @State private var selecting = false             // gallery: taps choose photos
     @State private var selected: Set<Int> = []       // ids of the chosen photos
     @State private var conf = 0.25
@@ -474,17 +476,31 @@ struct PhotoTestView: View {
             // was being faded in was confined to the safe area until its transition ended:
             // for a quarter of a second the strips behind the top bar and the stats HUD were
             // black, then the photos appeared there. Now leaving a photo only takes the pager
-            // away, and the gallery under it is already laid out behind the bars (and is
-            // where it was scrolled to).
+            // away (`closePager`), and the gallery under it is already laid out behind the
+            // bars (and is where it was scrolled to).
             ZStack {
                 gallery
                     .safeAreaInset(edge: .bottom, spacing: 0) { floatingBarsRoom }
                     .allowsHitTesting(viewMode == .gallery)
                     .accessibilityHidden(viewMode != .gallery)
                 if viewMode == .pager {
+                    // Coming up, the pager has a transition. Going away it has none: while
+                    // `leaving` it stays in this stack, laid out exactly as it was, and is
+                    // only DRAWN fainter and smaller; `closePager` takes it out once it
+                    // can no longer be seen. It used to leave with the transition it came
+                    // with, and on the phone the photo jumped about and flickered for that
+                    // third of a second. Why was not seen here; two things could move the
+                    // photo then, and neither can now. A view that is on its way out is laid
+                    // out as SwiftUI sees fit (the gallery, faded in like this, was held to
+                    // the safe area until it had arrived). And the bars changed to the
+                    // gallery's at the same moment, under a photo that is fitted between them.
                     pager
+                        .opacity(leaving ? 0 : 1)
+                        .scaleEffect(leaving ? 0.92 : 1)
+                        .allowsHitTesting(!leaving)
                         .zIndex(1)      // on top of the gallery also while it fades out
-                        .transition(.scale(scale: 1.08).combined(with: .opacity))
+                        .transition(.asymmetric(insertion: .scale(scale: 1.08).combined(with: .opacity),
+                                                removal: .identity))
                 }
             }
         }
@@ -516,9 +532,7 @@ struct PhotoTestView: View {
             let clear = free.safeAreaInsets
             TabView(selection: $page) {
                 ForEach(Array(shots.enumerated()), id: \.element.id) { i, shot in
-                    ZoomableScrollView(onExit: {
-                        withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
-                    }) {
+                    ZoomableScrollView(onExit: { closePager() }) {
                         annotated(shot, clear: clear)
                     }
                     .ignoresSafeArea()
@@ -611,7 +625,30 @@ struct PhotoTestView: View {
             }
         } else {
             page = shots.firstIndex(where: { $0.id == shot.id }) ?? 0
+            leaving = false
             withAnimation(.spring(duration: 0.35)) { viewMode = .pager }
+        }
+    }
+
+    /// Back to the gallery from an open photo (a pinch or a swipe down, `ZoomableScrollView`).
+    /// First the pager is only drawn away - fainter and smaller, in the place and at the
+    /// size it has - and `viewMode` changes when that is over. Until then nothing the photo
+    /// is laid out by changes: not the pager's own place, and not the bars it is fitted
+    /// between (expanded, the stats HUD has a row more for a photo than for the run). So for
+    /// that moment the bars still speak for the photo.
+    /// The wait is 0.4 s: the spring has the pager under 1% of its opacity by then.
+    /// `leaving` stays set while the gallery is up and is cleared where a photo is opened.
+    private func closePager() {
+        guard viewMode == .pager, !leaving else { return }
+        leaveGen += 1
+        let gen = leaveGen
+        withAnimation(.spring(duration: 0.35)) { leaving = true }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            // not when a photo was opened meanwhile (a single photo that finished loading)
+            if leaving, leaveGen == gen {
+                withAnimation(.spring(duration: 0.35)) { viewMode = .gallery }
+            }
         }
     }
 
@@ -1060,8 +1097,9 @@ struct PhotoTestView: View {
                 if !newShots.isEmpty {
                     if wasEmpty {
                         page = 0
+                        leaving = false
                         viewMode = newShots.count > 1 ? .gallery : .pager
-                    } else if viewMode == .pager {
+                    } else if viewMode == .pager, !leaving {
                         page = firstNew         // the pager goes to the first new photo
                     }
                 }
@@ -1674,6 +1712,7 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
         var onExit: (() -> Void)?
         private var exitFired = false
         private var pinchFromRest = false   // the zoom in progress began on a photo at its resting size
+        private var still: UIView?          // the picture standing in for the scroll view on the way out (`hold`)
         init(host: UIHostingController<Content>) { self.host = host }
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { host.view }
@@ -1690,7 +1729,30 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
             if !exitFired, pinchFromRest, sv.zoomScale < sv.minimumZoomScale * 0.85,
                sv.pinchGestureRecognizer?.state == .changed {
                 exitFired = true
+                hold(sv)
                 onExit?()
+            }
+        }
+
+        /// Leaving by a pinch: the fingers are still down, and when they lift, the scroll
+        /// view zooms the photo back up to its resting size. The pager is fading by then,
+        /// so the photo that had just been pinched small grew again on its way out. What
+        /// the scroll view shows at this instant is therefore left in its place as a still
+        /// picture, the scroll view is hidden behind it, and the picture fades with the
+        /// pager. Both are put back afterwards in case the view is kept. When no picture
+        /// can be taken, nothing is hidden and the photo is seen to grow, as before.
+        private func hold(_ sv: UIScrollView) {
+            guard still == nil, let page = sv.superview,
+                  let picture = sv.snapshotView(afterScreenUpdates: false) else { return }
+            picture.frame = sv.frame
+            picture.isUserInteractionEnabled = false
+            page.insertSubview(picture, aboveSubview: sv)
+            sv.isHidden = true
+            still = picture
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self, weak sv] in
+                picture.removeFromSuperview()
+                sv?.isHidden = false
+                self?.still = nil
             }
         }
 
@@ -1751,8 +1813,8 @@ struct ZoomableScrollView<Content: View>: UIViewRepresentable {
                 let speed = pan.velocity(in: sv).y
                 if dy > 110 || (dy > 40 && speed > 900) {
                     onExit?()
-                    // the pager is on its way out and takes this view with it; put the photo
-                    // back afterwards in case the view is kept
+                    // the pager fades out with the photo where the finger left it, and takes
+                    // this view with it; put the photo back afterwards in case the view is kept
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                         view.transform = .identity
                         view.alpha = 1
